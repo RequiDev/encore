@@ -50,4 +50,9 @@ USER encore
 WORKDIR /var/lib/encore
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/encore-api"]
+# CMD rather than ENTRYPOINT, deliberately. All three binaries live in this one
+# image, and an ENTRYPOINT would turn `command:` in docker-compose.yml — and any
+# argument to `docker run` — into arguments *for encore-api* instead of into a
+# choice of binary. That failure is quiet and confusing: the migrate service
+# starts the API and then complains about unrelated missing configuration.
+CMD ["/usr/local/bin/encore-api"]
