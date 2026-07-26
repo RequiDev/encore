@@ -224,6 +224,13 @@ Measured results, and the hardware they were measured on, are in
 - **Spotify's recently-played endpoint returns at most the last 50 plays and reaches back no further.**
   If Encore is offline for a heavy listening day, that day is gone unless you later import a data
   export covering it. This is a Spotify constraint, not an Encore one.
+- **Live sync records a play's length as the track's full duration.** The recently-played endpoint
+  reports *what* was played and *when*, but not for how long. Listening time from live sync is
+  therefore an upper bound: a track skipped after ten seconds still counts as its whole length.
+  Imported history does not have this problem — both export formats carry a real `ms_played` — so a
+  period covered by an import is exact. The `source` column records which is which, and re-importing
+  an export over a period that was synced live corrects it, because the duplicate rules keep one row
+  and the import is the one with the better data.
 - **Account-data imports need alias resolution to merge with extended imports.** That export contains
   no track URIs, so Encore resolves each artist/title pair through Spotify's search API in the
   background. Until a pair resolves, its listens are counted under a names-only identity and may

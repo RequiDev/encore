@@ -126,6 +126,43 @@ fresh AS (
                 CASE d.ts_precision WHEN 2 THEN 60 ELSE 10 END)
     )
 ),
+-- Upgrade a listen that was first seen through the live sync feed when the same
+-- event later arrives from an export.
+--
+-- The recently-played endpoint reports what was played and when, but not for how
+-- long, so a synced listen records the track's full duration. Both export
+-- formats carry a real ms_played and the surrounding playback context. When the
+-- two describe the same event, the export is simply the better record, and
+-- keeping the weaker one merely because it arrived first would leave listening
+-- time permanently overstated for every period that was synced live.
+--
+-- The row keeps its id and its dedupe key; only the payload improves. Running the
+-- same import twice is still a no-op, because the second pass finds the row
+-- already carrying the export's source.
+improve AS (
+    UPDATE listens l
+    SET ms_played    = d.ms_played,
+        ts_precision = d.ts_precision,
+        source       = d.source,
+        platform     = COALESCE(d.platform, l.platform),
+        conn_country = COALESCE(d.conn_country, l.conn_country),
+        reason_start = COALESCE(d.reason_start, l.reason_start),
+        reason_end   = COALESCE(d.reason_end, l.reason_end),
+        shuffle      = COALESCE(d.shuffle, l.shuffle),
+        skipped      = COALESCE(d.skipped, l.skipped),
+        offline      = COALESCE(d.offline, l.offline),
+        incognito    = COALESCE(d.incognito, l.incognito)
+    FROM deduped d
+    WHERE l.user_id = d.user_id
+      AND l.identity_key = d.identity_key
+      AND l.source = 0
+      AND d.source <> 0
+      AND l.played_at >= d.played_at - interval '60 seconds'
+      AND l.played_at <= d.played_at + interval '60 seconds'
+      AND abs(extract(epoch FROM (l.played_at - d.played_at))) <= GREATEST(
+            CASE l.ts_precision WHEN 2 THEN 60 ELSE 10 END,
+            CASE d.ts_precision WHEN 2 THEN 60 ELSE 10 END)
+),
 ins AS (
     INSERT INTO listens (
         user_id, played_at, ts_precision, track_id, alias_artist, alias_title,

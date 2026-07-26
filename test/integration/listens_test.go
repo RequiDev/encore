@@ -144,6 +144,82 @@ func TestCrossSourceSuppression(t *testing.T) {
 	}
 }
 
+// TestImportUpgradesASyncedListen: the live feed cannot report how long a track
+// was played, so a synced listen records the track's whole duration. When an
+// export later describes the same event with a real ms_played, the stored row
+// must take the better value rather than keeping the first one that arrived.
+func TestImportUpgradesASyncedListen(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("upgrade")
+	ensure(t, e, "track-a")
+
+	id := domain.TrackIdentityFromID("track-a")
+
+	// Live sync: full track length, because the feed reports nothing better.
+	synced := stage(user.ID, id, base(), 240_000, domain.SourceSync, domain.PrecisionMillisecond)
+	if n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), []listens.StagedListen{synced}, "UTC"); err != nil || n != 1 {
+		t.Fatalf("seed synced listen: n=%d err=%v", n, err)
+	}
+
+	// The same play from an extended export: it was actually skipped after 31s,
+	// and it carries the playback context sync never had.
+	imported := stage(user.ID, id, base().Add(4*time.Second), 31_000, domain.SourceExtended, domain.PrecisionSecond)
+	imported.ReasonEnd = "fwdbtn"
+	imported.Platform = "android"
+	imported.Skipped = domain.BoolPtr(true)
+
+	n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), []listens.StagedListen{imported}, "UTC")
+	if err != nil {
+		t.Fatalf("import over the synced listen: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("the import inserted %d rows, want 0: it is the same event", n)
+	}
+	if got := e.CountListens(user.ID); got != 1 {
+		t.Fatalf("database holds %d listens, want 1", got)
+	}
+
+	var ms int32
+	var source int16
+	var reasonEnd, platform *string
+	var skipped *bool
+	if err := e.Pool.QueryRow(e.Ctx(),
+		`SELECT ms_played, source, reason_end, platform, skipped FROM listens WHERE user_id = $1`,
+		user.ID.String()).Scan(&ms, &source, &reasonEnd, &platform, &skipped); err != nil {
+		t.Fatalf("read the surviving listen: %v", err)
+	}
+	if ms != 31_000 {
+		t.Fatalf("ms_played = %d, want the export's 31000: listening time would otherwise stay "+
+			"overstated for every period that was synced live", ms)
+	}
+	if source != int16(domain.SourceExtended) {
+		t.Fatalf("source = %d, want the export's %d, so the row says where its data came from",
+			source, domain.SourceExtended)
+	}
+	if reasonEnd == nil || *reasonEnd != "fwdbtn" {
+		t.Fatal("the export's playback context was not carried over")
+	}
+	if platform == nil || *platform != "android" {
+		t.Fatal("the export's platform was not carried over")
+	}
+	if skipped == nil || !*skipped {
+		t.Fatal("the export's skipped flag was not carried over")
+	}
+
+	// Running the same import again must change nothing.
+	if n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), []listens.StagedListen{imported}, "UTC"); err != nil || n != 0 {
+		t.Fatalf("re-import: n=%d err=%v, want 0 and no error", n, err)
+	}
+	var msAgain int32
+	if err := e.Pool.QueryRow(e.Ctx(),
+		`SELECT ms_played FROM listens WHERE user_id = $1`, user.ID.String()).Scan(&msAgain); err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if msAgain != 31_000 {
+		t.Fatalf("ms_played drifted to %d on a repeated import", msAgain)
+	}
+}
+
 // TestSameSourceRepeatIsKept guards against over-suppression. Playing a track,
 // skipping it, and playing it again is two genuine listens seconds apart, and a
 // window applied within a single source would silently delete one of them.

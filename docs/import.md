@@ -139,8 +139,10 @@ Each `import_files` row carries:
 
 All of these are updated **in the same transaction as the batch they describe**. That gives the
 invariant stated at the top: the database can never hold a checkpoint claiming progress that was not
-committed. The update is guarded by `WHERE record_offset <= $new`, so a stale retry cannot move a
-checkpoint backwards.
+committed. The update is guarded by `WHERE record_offset < $new` — strictly less than, because every
+batch advances the offset by at least one record. Requiring real progress makes the statement
+idempotent as well as monotonic: a stale retry cannot wind the checkpoint backwards, and a batch whose
+commit acknowledgement was lost adds its counters once rather than twice when it is retried.
 
 **Resume** takes one of two paths:
 
@@ -237,6 +239,21 @@ delete one of them.
 Duplicates *within* a single incoming batch are collapsed first with `DISTINCT ON (user_id,
 dedupe_key)`, keeping the longer play, so one malformed file cannot trip the unique constraint on
 every row.
+
+### Upgrading a weaker record
+
+Suppression keeps whichever row arrived first, with one deliberate exception. The recently-played
+endpoint reports *what* was played and *when* but not for how long, so a synced listen records the
+track's full duration. When an export later describes the same event, it carries a real `ms_played`
+and the surrounding playback context, and it is simply the better record.
+
+So an incoming *import* record that matches an existing *sync* record updates it in place: `ms_played`,
+`ts_precision`, `source` and the context columns are taken from the export, while the row keeps its id
+and its dedupe key. No row is inserted, and the record is still counted as a duplicate. Without this,
+listening time would stay permanently overstated for every period that happened to be synced live.
+
+It converges: a second run of the same import finds the row already carrying the export's source and
+changes nothing.
 
 ### Layer 3 — relink reconciliation
 
