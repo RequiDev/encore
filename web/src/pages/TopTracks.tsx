@@ -1,19 +1,13 @@
 /**
- * OWNED BY THE PAGES AGENT — placeholder.
+ * The most played tracks in the range.
  *
- * The shell routes to this module so the application builds and navigates as a
- * whole. Replace the whole file with the real page; the router needs no change.
+ * The table, the pagination and the four states are `TopList`, which the artist
+ * and album lists render too; this file is the configuration for one of them.
  */
 
 import type { ReactElement } from 'react'
-import { Placeholder } from './Placeholder'
+import { TopList } from './top/TopList'
 
 export default function TopTracks(): ReactElement {
-  return (
-    <Placeholder
-      title="Top tracks"
-      summary="The most played tracks in the range, with movement against the preceding period."
-      icon="track"
-    />
-  )
+  return <TopList kind="tracks" />
 }
