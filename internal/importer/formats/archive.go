@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/requi/encore/internal/domain"
@@ -82,7 +82,7 @@ func ListArchiveEntries(path string) ([]Entry, error) {
 
 	// Ordering decides the import ordinals, so it must not depend on how the
 	// archive happened to be written.
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	slices.SortFunc(entries, func(a, b Entry) int { return strings.Compare(a.Path, b.Path) })
 	return entries, nil
 }
 
@@ -177,6 +177,24 @@ func OpenMaybeCompressed(path string) (rc io.ReadCloser, seekable bool, err erro
 		return &multiCloser{Reader: gz, closers: []io.Closer{gz, f}}, false, nil
 	}
 	return f, true, nil
+}
+
+// SniffFile reads the head of a spooled upload for classification, unwrapping a
+// .gz so that a compressed export is identified by what is inside it rather than
+// by its wrapper. Pass the result to Detect together with the uploaded name.
+func SniffFile(path string) ([]byte, error) {
+	rc, _, err := OpenMaybeCompressed(path)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+
+	head := make([]byte, SniffBytes)
+	n, err := io.ReadFull(rc, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, fmt.Errorf("read %s: %w", filepath.Base(path), err)
+	}
+	return head[:n], nil
 }
 
 // readEntryHead decompresses at most SniffBytes of an entry for classification.
