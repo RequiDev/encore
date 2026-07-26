@@ -672,3 +672,16 @@ func strPtr(s string) *string {
 	}
 	return &s
 }
+
+// SyncOutcome is what POST /api/sync/now reports back.
+//
+// Spotify's recently-played feed only reaches back fifty plays, so a manual sync
+// usually returns mostly duplicates: the counts are shown so that "nothing new"
+// reads as a normal result rather than as a failure.
+type SyncOutcome struct {
+	Fetched    int        `json:"fetched"`
+	Imported   int        `json:"imported"`
+	Duplicates int        `json:"duplicates"`
+	Skipped    int        `json:"skipped"`
+	NewestAt   *time.Time `json:"newestAt"`
+}

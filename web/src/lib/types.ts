@@ -361,6 +361,19 @@ export interface ImportReject {
 
 // --- misc ------------------------------------------------------------------
 
+/**
+ * What `POST /api/sync/now` reports back. Spotify's recently-played feed only
+ * reaches back fifty plays, so a manual sync usually returns mostly duplicates;
+ * the counts exist so "nothing new" reads as a normal result.
+ */
+export interface SyncOutcome {
+  fetched: number
+  imported: number
+  duplicates: number
+  skipped: number
+  newestAt: Timestamp | null
+}
+
 export interface AdminSettings {
   registrationsEnabled: boolean
 }

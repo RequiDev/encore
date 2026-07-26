@@ -54,10 +54,12 @@ type Deps struct {
 	Version  string
 	// Now is the clock. Tests replace it; production leaves it nil for time.Now.
 	Now func() time.Time
-	// SyncNow triggers an immediate recently-played poll for one account. It is
-	// nil on an instance that does not run the sync loop, and POST /api/sync/now
-	// then reports that plainly rather than pretending to have started something.
-	SyncNow func(ctx context.Context, userID uuid.UUID) error
+	// SyncNow triggers an immediate recently-played poll for one account and
+	// reports what it found, so the interface can say "12 new plays" rather than
+	// only "done". It is nil on an instance that does not run the sync loop, and
+	// POST /api/sync/now then says so plainly rather than pretending to have
+	// started something.
+	SyncNow func(ctx context.Context, userID uuid.UUID) (SyncOutcome, error)
 }
 
 // The narrow interfaces below are the only view the HTTP layer takes of the
@@ -134,7 +136,7 @@ type Server struct {
 	spotify *spotify.Client
 	metrics *metrics.Registry
 
-	syncNow func(ctx context.Context, userID uuid.UUID) error
+	syncNow func(ctx context.Context, userID uuid.UUID) (SyncOutcome, error)
 	syncing *inFlight
 	touched *touchTracker
 	ready   *readyCache
@@ -186,8 +188,8 @@ func New(deps Deps) (*Server, error) {
 	}
 	syncNow := deps.SyncNow
 	if syncNow == nil {
-		syncNow = func(context.Context, uuid.UUID) error {
-			return ErrConflictf("This instance does not run the Spotify synchronisation loop.")
+		syncNow = func(context.Context, uuid.UUID) (SyncOutcome, error) {
+			return SyncOutcome{}, ErrConflictf("This instance does not run the Spotify synchronisation loop.")
 		}
 	}
 

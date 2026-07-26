@@ -80,7 +80,7 @@ The bootstrap call the client makes on load. Returns `401` when signed out.
 | `PATCH` | `/api/me` | `{ "timezone": "Europe/Berlin" }`. Changing it marks the user's rollups dirty so statistics re-bucket. |
 | `DELETE` | `/api/me` | Hard-deletes the account and all its data. Body must be `{ "confirm": "<spotifyUserId>" }`. |
 | `GET` | `/api/me/export?format=json\|csv` | Streams the caller's full listening history. Chunked, never buffered. |
-| `POST` | `/api/sync/now` | Triggers an immediate recently-played poll. `409` if one is already running. |
+| `POST` | `/api/sync/now` | Triggers an immediate recently-played poll and reports what it found: `{ "fetched", "imported", "duplicates", "skipped", "newestAt" }`. `409` if one is already running, if the account is not connected, or if the grant needs re-authorising. Mostly-duplicate results are normal — Spotify's feed only reaches back fifty plays — so the UI should present "nothing new" as a result rather than a failure. |
 
 ## Users and administration
 

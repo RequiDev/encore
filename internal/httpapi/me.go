@@ -179,11 +179,12 @@ func (s *Server) handleSyncNow(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.syncing.release(user.ID)
 
-	if err := s.syncNow(r.Context(), user.ID); err != nil {
+	outcome, err := s.syncNow(r.Context(), user.ID)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeNoContent(w)
+	writeJSON(w, r, http.StatusOK, outcome)
 }
 
 // --- request bodies --------------------------------------------------------
