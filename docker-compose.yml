@@ -1,0 +1,151 @@
+# Encore - self-hosted Spotify listening history.
+#
+#   cp .env.example .env     # then fill in the four REQUIRED values
+#   docker compose up -d --build
+#   open http://localhost:3000
+#
+# Services:
+#   db        PostgreSQL 17, the only stateful component
+#   migrate   applies schema migrations once, then exits; everything waits on it
+#   api       HTTP API
+#   worker    imports, metadata enrichment, recently-played sync, rollups
+#   web       static React bundle behind nginx, which proxies /api to api
+
+name: encore
+
+x-encore-env: &encore-env
+  ENCORE_ENV: ${ENCORE_ENV:-production}
+  ENCORE_DATABASE_URL: postgres://encore:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/encore?sslmode=disable
+  ENCORE_PUBLIC_URL: ${ENCORE_PUBLIC_URL:?set ENCORE_PUBLIC_URL in .env}
+  ENCORE_WEB_URL: ${ENCORE_WEB_URL:?set ENCORE_WEB_URL in .env}
+  ENCORE_SPOTIFY_CLIENT_ID: ${ENCORE_SPOTIFY_CLIENT_ID:?set ENCORE_SPOTIFY_CLIENT_ID in .env}
+  ENCORE_SPOTIFY_CLIENT_SECRET: ${ENCORE_SPOTIFY_CLIENT_SECRET:?set ENCORE_SPOTIFY_CLIENT_SECRET in .env}
+  ENCORE_ENCRYPTION_KEY: ${ENCORE_ENCRYPTION_KEY:?set ENCORE_ENCRYPTION_KEY in .env}
+  ENCORE_LOG_LEVEL: ${ENCORE_LOG_LEVEL:-info}
+  ENCORE_LOG_FORMAT: ${ENCORE_LOG_FORMAT:-json}
+  ENCORE_DEFAULT_TIMEZONE: ${ENCORE_DEFAULT_TIMEZONE:-UTC}
+  ENCORE_REGISTRATIONS_DEFAULT: ${ENCORE_REGISTRATIONS_DEFAULT:-true}
+  ENCORE_IMPORT_DIR: /var/lib/encore/imports
+  ENCORE_IMPORT_BATCH_SIZE: ${ENCORE_IMPORT_BATCH_SIZE:-1000}
+  ENCORE_IMPORT_MIN_MS: ${ENCORE_IMPORT_MIN_MS:-1000}
+  ENCORE_IMPORT_MAX_UPLOAD_BYTES: ${ENCORE_IMPORT_MAX_UPLOAD_BYTES:-4gb}
+  ENCORE_SYNC_ENABLED: ${ENCORE_SYNC_ENABLED:-true}
+  ENCORE_SYNC_INTERVAL: ${ENCORE_SYNC_INTERVAL:-60s}
+  ENCORE_ENRICH_ENABLED: ${ENCORE_ENRICH_ENABLED:-true}
+  ENCORE_METRICS_ENABLED: ${ENCORE_METRICS_ENABLED:-true}
+  ENCORE_METRICS_USERNAME: ${ENCORE_METRICS_USERNAME:-}
+  ENCORE_METRICS_PASSWORD: ${ENCORE_METRICS_PASSWORD:-}
+  # The browser reaches Encore through nginx on the web container, so the API
+  # sits behind a proxy it can trust for client addresses.
+  ENCORE_TRUST_PROXY_HEADERS: "true"
+  ENCORE_COOKIE_SECURE: ${ENCORE_COOKIE_SECURE:-false}
+  TZ: ${ENCORE_DEFAULT_TIMEZONE:-UTC}
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: encore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: encore
+      # Encore stores every timestamp in UTC and converts at query time, so the
+      # server's own timezone must not enter into it.
+      PGTZ: UTC
+    volumes:
+      - encore-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U encore -d encore"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    # Not published by default: nothing outside the compose network needs it.
+    # Uncomment to inspect the database from the host.
+    # ports: ["5432:5432"]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: encore/encore:${ENCORE_VERSION:-latest}
+    command: ["/usr/local/bin/encore-migrate", "up"]
+    environment: *encore-env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: encore/encore:${ENCORE_VERSION:-latest}
+    command: ["/usr/local/bin/encore-api"]
+    environment: *encore-env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - encore-imports:/var/lib/encore/imports
+    ports:
+      - "${ENCORE_API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: encore/encore:${ENCORE_VERSION:-latest}
+    command: ["/usr/local/bin/encore-worker"]
+    environment:
+      <<: *encore-env
+      # Distinguishes this process in import job leases.
+      ENCORE_WORKER_ID: worker-1
+      # The worker serves only health and metrics.
+      ENCORE_HTTP_ADDR: ":8081"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      # The same durable volume as the API: an import resumes by re-reading the
+      # original upload, so the file must be visible to whichever worker claims it.
+      - encore-imports:/var/lib/encore/imports
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    image: encore/encore-web:${ENCORE_VERSION:-latest}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${ENCORE_WEB_PORT:-3000}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz.txt"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+volumes:
+  encore-db:
+  encore-imports:

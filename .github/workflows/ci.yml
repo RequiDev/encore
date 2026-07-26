@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26"
+  NODE_VERSION: "22"
+
+jobs:
+  lint:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^web/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d $unformatted
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+
+      - name: go mod tidy is committed
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Test
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -n 1
+
+  migrations:
+    name: Migrations apply cleanly
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: encore
+          POSTGRES_PASSWORD: encore
+          POSTGRES_DB: encore
+          PGTZ: UTC
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U encore -d encore"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      ENCORE_DATABASE_URL: postgres://encore:encore@localhost:5432/encore?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Apply migrations
+        run: go run ./cmd/encore-migrate up
+      - name: Report status
+        run: go run ./cmd/encore-migrate status
+      # Applying twice must be a no-op: that is what makes a rolling upgrade safe.
+      - name: Re-apply is idempotent
+        run: go run ./cmd/encore-migrate up
+      # Down then up proves the down migrations are not silently broken.
+      - name: Roll all the way down and back up
+        run: |
+          go run ./cmd/encore-migrate reset --yes
+          go run ./cmd/encore-migrate up
+
+  integration:
+    name: Integration and import tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: encore
+          POSTGRES_PASSWORD: encore
+          POSTGRES_DB: encore
+          PGTZ: UTC
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U encore -d encore"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      ENCORE_TEST_DATABASE_URL: postgres://encore:encore@localhost:5432/encore?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Integration tests
+        run: go test -tags=integration -race -count=1 -timeout=20m ./test/...
+
+  benchmark:
+    name: Large synthetic import benchmark
+    runs-on: ubuntu-latest
+    # The million-record benchmark takes several minutes, so it runs on main and
+    # on demand rather than on every pull request.
+    if: github.event_name != 'pull_request'
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: encore
+          POSTGRES_PASSWORD: encore
+          POSTGRES_DB: encore
+          PGTZ: UTC
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U encore -d encore"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      ENCORE_DATABASE_URL: postgres://encore:encore@localhost:5432/encore?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Apply migrations
+        run: go run ./cmd/encore-migrate up
+      - name: Import one million synthetic records
+        run: go run ./cmd/encore-bench run --records 1000000 --format extended --report bench.json
+      - name: Publish benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: import-benchmark
+          path: bench.json
+
+  web:
+    name: Web client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Type-check
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Container images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build service image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/web.Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
