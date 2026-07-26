@@ -1,0 +1,59 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace / coverage
+go.work
+go.work.sum
+coverage.out
+coverage.html
+cpu.prof
+mem.prof
+
+# Node / frontend
+node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+.eslintcache
+playwright-report/
+test-results/
+/web/playwright/.auth/
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!deploy/**/*.key.example
+
+# Local data: databases, uploaded Spotify exports, generated benchmark fixtures
+/data/
+/var/
+*.sqlite
+*.sqlite3
+*.db
+/uploads/
+/imports/
+/testdata/generated/
+/test/testdata/generated/
+/bench-out/
+*.zip
+!test/testdata/fixtures/**/*.zip
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
