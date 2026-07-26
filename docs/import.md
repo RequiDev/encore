@@ -160,6 +160,13 @@ tolerate that.
 checkpoint. `Heartbeat` returns false if another worker has stolen the lease, at which point the
 original worker stops immediately rather than writing over someone else's progress.
 
+A *graceful* shutdown is faster still. A worker being stopped finishes its in-flight batch and parks
+the job as `paused`, which the claim query also treats as a candidate: nobody is working on it and
+nothing is wrong with it, so there is no reason to wait out a lease the departing worker already knew
+it would not renew. A job the **user** stopped becomes `cancelled`, not `paused`, and is deliberately
+not a candidate — as is any job with `cancel_requested` set, so a cancellation cannot be undone by
+another worker picking the job straight back up.
+
 ---
 
 ## 5. Duplicate prevention

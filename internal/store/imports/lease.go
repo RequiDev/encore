@@ -18,10 +18,22 @@ import (
 //
 // The inner SELECT ... FOR UPDATE SKIP LOCKED is what makes several worker
 // processes safe without any coordination between them: each locks a different
-// candidate row and no two workers can ever claim the same job. A running job
-// whose lease has expired is a candidate too, which is the entire crash-recovery
-// mechanism — a worker that dies stops heartbeating, and its job becomes
-// ordinary work again once the lease runs out.
+// candidate row and no two workers can ever claim the same job.
+//
+// Three kinds of job are candidates:
+//
+//   - queued: never started.
+//   - running with an expired lease: this is the entire crash-recovery
+//     mechanism. A worker that dies stops heartbeating, and its job becomes
+//     ordinary work again once the lease runs out.
+//   - paused: a worker stopped it cleanly at a batch boundary while shutting
+//     down. Paused means "no one is working on this and nothing is wrong with
+//     it", so it is picked up immediately rather than waiting out a lease that
+//     the departing worker already knew it would not renew. A job the *user*
+//     stopped is 'cancelled', not 'paused', and is deliberately not a candidate.
+//
+// cancel_requested is excluded in every case: a job the user has asked to stop
+// must not be picked straight back up by another worker.
 const claimJobSQL = `
     UPDATE import_jobs
     SET status = 'running',
@@ -30,7 +42,10 @@ const claimJobSQL = `
         started_at = COALESCE(started_at, now())
     WHERE id = (
         SELECT id FROM import_jobs
-        WHERE status = 'queued' OR (status = 'running' AND lease_expires_at < now())
+        WHERE NOT cancel_requested
+          AND (status = 'queued'
+               OR status = 'paused'
+               OR (status = 'running' AND lease_expires_at < now()))
         ORDER BY created_at
         LIMIT 1
         FOR UPDATE SKIP LOCKED
