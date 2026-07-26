@@ -157,6 +157,24 @@ still sees a single origin and no CORS configuration is needed. Register
 
 On Windows PowerShell, use `$env:ENCORE_DATABASE_URL = '...'` in place of `export`.
 
+<details>
+<summary>If <code>npm run build</code> fails with "Cannot find module @rollup/rollup-…"</summary>
+
+Vite's bundler ships as a set of per-platform binaries installed through npm's optional dependencies,
+and npm resolves those against the platform it *thinks* it is targeting. If an `os=` or `cpu=` line
+is set in `~/.npmrc` — or `npm_config_os` is exported in your shell — npm silently fetches the wrong
+binary and the build fails on a missing module.
+
+Check with `npm config get os`, and reinstall with an explicit target if it is wrong:
+
+```bash
+rm -rf node_modules
+npm install --os=win32   # or --os=linux, --os=darwin
+```
+
+The Docker Compose path is unaffected: the web image builds inside a Linux container.
+</details>
+
 ---
 
 ## Commands
