@@ -1,0 +1,25 @@
+[
+  {
+    "ts": "2018-11-02T09:12:44Z",
+    "username": "listener42",
+    "platform": "OS X 10.13.6 [x86 8]",
+    "ms_played": 187000,
+    "conn_country": "GB",
+    "ip_addr_decrypted": "198.51.100.24",
+    "user_agent_decrypted": "Spotify/1.0.90 OSX/10.13.6",
+    "master_metadata_track_name": "Teardrop",
+    "master_metadata_album_artist_name": "Massive Attack",
+    "master_metadata_album_album_name": "Mezzanine",
+    "spotify_track_uri": "spotify:track:67Hna13dNDkZvBpTXRIaOJ",
+    "episode_name": null,
+    "episode_show_name": null,
+    "spotify_episode_uri": null,
+    "reason_start": "trackdone",
+    "reason_end": "trackdone",
+    "shuffle": null,
+    "skipped": "trackdone",
+    "offline": null,
+    "offline_timestamp": null,
+    "incognito_mode": null
+  }
+]

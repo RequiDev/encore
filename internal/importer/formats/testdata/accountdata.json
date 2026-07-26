@@ -1,0 +1,32 @@
+[
+  {
+    "endTime": "2020-02-14 21:37",
+    "artistName": "Nils Frahm",
+    "trackName": "Says",
+    "msPlayed": 528000
+  },
+  {
+    "endTime": "2020-02-14 21:40",
+    "artistName": "Ólafur Arnalds",
+    "trackName": "Near Light",
+    "msPlayed": 900
+  },
+  {
+    "endTime": "2020-02-15T08:03:11Z",
+    "artistName": "Kiasmos",
+    "trackName": "Blurred - Remastered 2019",
+    "msPlayed": "312000"
+  },
+  {
+    "endTime": "2020-02-15 08:10",
+    "artistName": "",
+    "trackName": "",
+    "msPlayed": 120000
+  },
+  {
+    "endTime": "the fourteenth",
+    "artistName": "Broken Clock",
+    "trackName": "No Date",
+    "msPlayed": 120000
+  }
+]

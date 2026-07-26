@@ -1,0 +1,29 @@
+[
+  {
+    "ts": "2023-01-01T00:00:00Z",
+    "ms_played": 120000,
+    "master_metadata_track_name": "Good Record",
+    "master_metadata_album_artist_name": "Band",
+    "spotify_track_uri": "spotify:track:1301WleyT98MSxVHPZCA6M"
+  },
+  "not an object at all",
+  [1, 2, 3],
+  null,
+  {
+    "playlistName": "Chill",
+    "lastModifiedDate": "2023-01-02"
+  },
+  {
+    "ts": "2023-01-01T00:10:00Z",
+    "ms_played": "abc",
+    "master_metadata_track_name": "Bad Duration",
+    "master_metadata_album_artist_name": "Band"
+  },
+  {
+    "ts": "2023-01-01T00:20:00Z",
+    "ms_played": 90000,
+    "master_metadata_track_name": "Also Good",
+    "master_metadata_album_artist_name": "Band",
+    "spotify_track_uri": null
+  }
+]

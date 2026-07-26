@@ -1,0 +1,65 @@
+[
+  {
+    "ts": "2021-06-01T10:00:00Z",
+    "platform": "windows",
+    "ms_played": "123456",
+    "conn_country": "IS",
+    "master_metadata_track_name": "Hoppipolla",
+    "master_metadata_album_artist_name": "Sigur Rós",
+    "spotify_track_uri": "spotify:track:6Ha4aHVHmMlyTLTZgQtXhE",
+    "reason_start": "fwdbtn",
+    "reason_end": "endplay",
+    "shuffle": "true",
+    "skipped": "false",
+    "offline": "TRUE",
+    "offline_timestamp": "1622541600",
+    "incognito_mode": "false"
+  },
+  {
+    "ts": "2021-06-01T10:30:00Z",
+    "ms_played": 98000,
+    "spotify_track_uri": "spotify:local:Some+Artist:Some+Album:Some+Track:213",
+    "master_metadata_track_name": "Some Track",
+    "master_metadata_album_artist_name": "Some Artist"
+  },
+  {
+    "ts": "2021-06-01T11:00:00Z",
+    "ms_played": 150000,
+    "spotify_track_uri": null,
+    "master_metadata_track_name": "Unresolved Song",
+    "master_metadata_album_artist_name": "Nameless Band"
+  },
+  {
+    "ts": "2021-06-01T11:05:00Z",
+    "ms_played": 400,
+    "spotify_track_uri": "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp",
+    "master_metadata_track_name": "Short",
+    "master_metadata_album_artist_name": "Blip"
+  },
+  {
+    "ts": "",
+    "ms_played": 10000,
+    "master_metadata_track_name": "No Time",
+    "master_metadata_album_artist_name": "Band"
+  },
+  {
+    "ts": "not-a-date",
+    "ms_played": 10000,
+    "master_metadata_track_name": "Bad Time",
+    "master_metadata_album_artist_name": "Band"
+  },
+  {
+    "ts": "2021-06-01T12:00:00Z",
+    "ms_played": 60000,
+    "spotify_track_uri": null,
+    "master_metadata_track_name": null,
+    "master_metadata_album_artist_name": null
+  },
+  {
+    "ts": "2021-06-01 12:30:00",
+    "ms_played": 60000.0,
+    "spotify_track_uri": "https://open.spotify.com/track/1301WleyT98MSxVHPZCA6M?si=abc",
+    "master_metadata_track_name": "Link Form",
+    "master_metadata_album_artist_name": "Band"
+  }
+]
