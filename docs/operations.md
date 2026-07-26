@@ -1,0 +1,180 @@
+# Backup, restore and upgrade
+
+Encore keeps state in exactly two places:
+
+1. **PostgreSQL** — users, sessions, the music catalogue, every listening record, and all import
+   bookkeeping.
+2. **`ENCORE_IMPORT_DIR`** — uploaded Spotify export files, kept so an interrupted import can resume
+   and a completed one can be re-run.
+
+Plus one secret that is *not* stored anywhere Encore controls:
+
+3. **`ENCORE_ENCRYPTION_KEY`** — without it the Spotify access and refresh tokens in a restored
+   database cannot be decrypted, and every user has to reconnect their account. Back it up with your
+   database, not next to it.
+
+A database backup alone is enough to recover all listening history. The import directory is
+convenience, not data of record: a completed import's records already live in the database.
+
+---
+
+## Backup
+
+### With the compose stack
+
+```bash
+# Whole-database logical dump, compressed, to the host.
+docker compose exec -T db pg_dump -U encore -d encore --format=custom \
+  | gzip > encore-$(date +%F).dump.gz
+
+# Uploaded exports, if you want to keep them.
+docker run --rm -v encore_encore-imports:/data -v "$PWD":/backup alpine \
+  tar czf /backup/encore-imports-$(date +%F).tar.gz -C /data .
+```
+
+`--format=custom` is worth the extra flag: it lets you restore selectively and in parallel, and it
+compresses on the way out.
+
+### Without Docker
+
+```bash
+pg_dump "$ENCORE_DATABASE_URL" --format=custom --file=encore-$(date +%F).dump
+tar czf encore-imports-$(date +%F).tar.gz -C "$ENCORE_IMPORT_DIR" .
+```
+
+### What to keep
+
+| Item | Frequency | Why |
+|---|---|---|
+| Database dump | Daily | The only irreplaceable data. Spotify's recently-played endpoint only reaches back 50 plays, so a lost week is lost permanently. |
+| `ENCORE_ENCRYPTION_KEY` | Once, on a change | Losing it costs every user a reconnect but no history. |
+| `ENCORE_IMPORT_DIR` | Optional | Only useful for resuming an in-flight import across a restore. |
+| `.env` | On a change | Everything else is reproducible from the repository. |
+
+### Verifying a backup
+
+A backup you have not restored is a hypothesis. Test it:
+
+```bash
+docker run -d --name encore-restore-test -e POSTGRES_PASSWORD=x -e POSTGRES_USER=encore \
+  -e POSTGRES_DB=encore postgres:17-alpine
+gunzip -c encore-2026-07-26.dump.gz | \
+  docker exec -i encore-restore-test pg_restore -U encore -d encore --clean --if-exists
+docker exec encore-restore-test psql -U encore -d encore \
+  -c "SELECT count(*) AS listens FROM listens; SELECT count(*) AS users FROM users;"
+docker rm -f encore-restore-test
+```
+
+---
+
+## Restore
+
+```bash
+docker compose stop api worker
+
+gunzip -c encore-2026-07-26.dump.gz \
+  | docker compose exec -T db pg_restore -U encore -d encore --clean --if-exists --no-owner
+
+# Bring the schema up to whatever the current binaries expect. Safe to run
+# against an already-current database: it is a no-op.
+docker compose run --rm migrate
+
+docker compose start api worker
+```
+
+Restore `ENCORE_ENCRYPTION_KEY` into `.env` **before** starting the API. If you cannot, users will see
+"Spotify connection needs reauthorising" and can fix it themselves with one click; no listening
+history is affected.
+
+### After a restore
+
+Check that the application agrees with the database:
+
+```bash
+curl -fsS http://localhost:8080/readyz | jq
+```
+
+`readyz` reports not-ready while migrations are pending, so a restore of an older dump against newer
+binaries is visible rather than mysterious.
+
+An import that was mid-flight when the backup was taken will resume by itself: its lease has long
+expired, so a worker re-claims it and continues from the last committed checkpoint. If the uploaded
+file is gone (because the import directory was not restored) the job fails with `file_unreadable`, and
+the records it had already committed are still there — re-upload and re-import is safe, because
+re-importing is idempotent.
+
+---
+
+## Upgrade
+
+Encore's migrations are **forward-only** and additive. The supported path is:
+
+```bash
+git pull
+docker compose build
+docker compose run --rm migrate     # applies pending migrations, then exits
+docker compose up -d
+```
+
+The compose stack already encodes this ordering: `api` and `worker` declare
+`depends_on: migrate: condition: service_completed_successfully`, so a plain
+`docker compose up -d --build` does the right thing on its own.
+
+### Zero-downtime notes
+
+- Migrations take an advisory lock, so starting several replicas at once applies each migration
+  exactly once.
+- `/readyz` fails while migrations are pending, which is what you want a load balancer to see.
+- Stopping a worker mid-import is safe at any moment: the lease expires and another worker resumes
+  from the checkpoint. There is no drain step, and no import state lives in process memory.
+
+### Rolling back
+
+Migrations have `down` sections, exercised in CI, but rolling *back* a production database is not a
+supported upgrade path — a down migration that drops a column loses the data in it. To go back a
+version, restore the dump you took before the upgrade and check out the matching tag.
+
+Always take a dump before upgrading:
+
+```bash
+docker compose exec -T db pg_dump -U encore -d encore --format=custom > pre-upgrade.dump
+```
+
+---
+
+## Routine maintenance
+
+Encore does its own housekeeping — expired sessions and OAuth states are reaped by the worker, and
+statistics rollups are recomputed continuously — but PostgreSQL benefits from the usual attention on
+a large history:
+
+```sql
+-- After a very large import, refresh the planner's statistics so the top-N
+-- queries pick the right plan.
+ANALYZE listens;
+
+-- Once a year, or after deleting a user with a lot of history.
+VACUUM (ANALYZE) listens;
+
+-- Where the time is going.
+SELECT relname, pg_size_pretty(pg_total_relation_size(relid)) AS total
+FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 10;
+```
+
+Autovacuum handles the day-to-day case; an explicit `ANALYZE listens` immediately after importing a
+million records is the one manual step actually worth doing, because the table's shape changes
+dramatically in a few minutes.
+
+### Reclaiming disk
+
+Completed imports keep their uploaded files by default so a job can be re-run. Set
+`ENCORE_IMPORT_RETAIN_FILES=false` to delete each file once its job has been verified, or clean up by
+hand:
+
+```bash
+docker compose exec api sh -c 'du -sh /var/lib/encore/imports/*'
+```
+
+Deleting an import job from the UI removes its files and its bookkeeping, but **not** the listening
+records it created: those are the user's history, and `listens.import_file_id` is set to `NULL` rather
+than cascading.

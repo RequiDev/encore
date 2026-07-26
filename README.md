@@ -1,0 +1,254 @@
+# Encore
+
+Self-hosted Spotify listening history and statistics. Encore keeps a permanent, private record of
+everything you play, imports your entire history from Spotify's own data exports, and turns it into
+dashboards you actually own.
+
+> **This repository was written entirely by [Claude Code](https://claude.com/claude-code)** —
+> the design, the Go services, the React client, the SQL schema, the tests, the Docker setup and
+> this documentation. It is an independent implementation inspired by the user-facing capabilities
+> of [your_spotify](https://github.com/Yooooomi/your_spotify); no code was copied from it. See
+> [`docs/attribution.md`](docs/attribution.md).
+
+---
+
+## What it does
+
+- **Signs you in with Spotify.** No separate password to manage.
+- **Records what you play**, polling your recently-played tracks every minute.
+- **Imports your whole history** from both Spotify data exports — the one-year "Account data" export
+  and the complete "Extended streaming history" export. Upload the zip Spotify sends you and Encore
+  works out the rest.
+- **Survives interruptions.** Imports checkpoint continuously, resume after a crash or a restart, and
+  are safe to run twice: re-importing the same file adds exactly zero rows.
+- **Handles a million records** on ordinary hardware, in bounded memory, without needing a Spotify API
+  call per listen.
+- **Shows you the statistics** — top tracks, artists and albums with rank movement, listening time
+  over any date range, hour-of-day and weekday patterns, longest sessions, listening streaks, new-artist
+  discovery, year in review, and period-over-period comparison.
+- **Supports several people** on one instance, with an artist blacklist and a per-user timezone, and
+  lets an administrator close registrations once everyone has an account.
+- **Exports and deletes** your data on request.
+
+---
+
+## Quick start with Docker Compose
+
+You need Docker with Compose v2, and a Spotify application (two minutes, see below).
+
+```bash
+git clone https://github.com/requi/encore.git
+cd encore
+
+cp .env.example .env
+```
+
+Edit `.env` and set the five required values:
+
+```dotenv
+ENCORE_PUBLIC_URL=http://localhost:8080
+ENCORE_WEB_URL=http://localhost:3000
+ENCORE_SPOTIFY_CLIENT_ID=<from the Spotify dashboard>
+ENCORE_SPOTIFY_CLIENT_SECRET=<from the Spotify dashboard>
+ENCORE_ENCRYPTION_KEY=<openssl rand -base64 32>
+POSTGRES_PASSWORD=<anything long>
+```
+
+Then:
+
+```bash
+docker compose up -d --build
+```
+
+Open <http://localhost:3000> and sign in with Spotify. **The first account to sign in becomes the
+administrator**, so do this yourself before sharing the URL.
+
+Check everything came up:
+
+```bash
+docker compose ps
+curl -fsS http://localhost:8080/healthz     # liveness
+curl -fsS http://localhost:8080/readyz      # readiness: database reachable, migrations applied
+```
+
+To stop: `docker compose down`. To stop and delete all data: `docker compose down -v`.
+
+---
+
+## Configuring a Spotify application
+
+1. Go to the [Spotify developer dashboard](https://developer.spotify.com/dashboard) and sign in.
+2. **Create app**. Name and description are yours to choose; users never see them.
+3. Set the **Redirect URI** to exactly:
+
+   ```
+   http://localhost:8080/api/auth/spotify/callback
+   ```
+
+   For a real deployment, use your public API URL instead:
+   `https://encore.example.com/api/auth/spotify/callback`.
+   It must match `ENCORE_PUBLIC_URL` + `/api/auth/spotify/callback` character for character —
+   a trailing slash or `http` versus `https` will fail with `INVALID_CLIENT: Invalid redirect URI`.
+4. Under **Which API/SDKs are you planning to use?** tick **Web API**.
+5. Save, then copy the **Client ID** and **Client secret** into `.env`.
+
+Your app starts in *development mode*, which allows up to 25 listeners that you add explicitly under
+**Settings → User Management**. That is normally plenty for a self-hosted instance. Encore requests
+only read scopes (`user-read-recently-played`, `user-read-private`, `user-read-email`) and never
+modifies your Spotify account, library or playlists.
+
+---
+
+## Importing your history
+
+Spotify offers two exports, from
+[Privacy Settings](https://www.spotify.com/account/privacy/). Request both — they complement
+each other and Encore de-duplicates the overlap automatically.
+
+| Export | Covers | Arrives in | Files |
+|---|---|---|---|
+| **Account data** | Last 12 months | up to 5 days | `StreamingHistory*.json` |
+| **Extended streaming history** | Everything since you joined | up to 30 days | `Streaming_History_Audio_*.json` |
+
+Then, in Encore: **Settings → Import**, and upload the zip Spotify emailed you, exactly as it arrived.
+Encore looks inside the archive, finds the streaming-history files, ignores everything else
+(playlists, search queries, the read-me PDF), and starts importing.
+
+The Imports page shows live progress per file, with imported, duplicate, skipped, rejected and pending
+counts. You can cancel a running import and resume it later; you can retry a failed one and it
+continues from where it stopped, not from the beginning.
+
+Track names and artwork fill in over the following minutes: listening records are stored first and
+Spotify metadata is fetched separately in the background, so a rate limit or an outage can never lose
+a listen. Full detail in [`docs/import.md`](docs/import.md).
+
+---
+
+## Running locally without Docker
+
+Requires Go 1.26, Node 22 and a PostgreSQL 17 you can reach.
+
+```bash
+# 1. A throwaway database
+docker run -d --name encore-dev-db \
+  -e POSTGRES_USER=encore -e POSTGRES_PASSWORD=encore -e POSTGRES_DB=encore -e PGTZ=UTC \
+  -p 5432:5432 postgres:17-alpine
+
+export ENCORE_DATABASE_URL='postgres://encore:encore@localhost:5432/encore?sslmode=disable'
+export ENCORE_PUBLIC_URL='http://localhost:8080'
+export ENCORE_WEB_URL='http://localhost:5173'
+export ENCORE_SPOTIFY_CLIENT_ID='...'
+export ENCORE_SPOTIFY_CLIENT_SECRET='...'
+export ENCORE_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+export ENCORE_ENV=development
+
+# 2. Schema
+go run ./cmd/encore-migrate up
+
+# 3. Three terminals
+go run ./cmd/encore-api
+go run ./cmd/encore-worker
+cd web && npm install && npm run dev
+```
+
+The Vite dev server runs on <http://localhost:5173> and proxies `/api` to the Go API, so the browser
+still sees a single origin and no CORS configuration is needed. Register
+`http://localhost:8080/api/auth/spotify/callback` as your redirect URI.
+
+On Windows PowerShell, use `$env:ENCORE_DATABASE_URL = '...'` in place of `export`.
+
+---
+
+## Commands
+
+`make help` lists everything. The commands behind it:
+
+| Task | Command |
+|---|---|
+| Apply migrations | `go run ./cmd/encore-migrate up` |
+| Migration status | `go run ./cmd/encore-migrate status` |
+| Run the API | `go run ./cmd/encore-api` |
+| Run the worker | `go run ./cmd/encore-worker` |
+| Run the web client | `cd web && npm run dev` |
+| Unit tests | `go test -race ./...` |
+| Integration tests | `ENCORE_TEST_DATABASE_URL=... go test -tags=integration -timeout=20m ./test/...` |
+| Full suite | `make test-all` |
+| Coverage report | `make cover` |
+| Format | `gofmt -w .` and `cd web && npm run format` |
+| Lint | `go vet ./...`, `staticcheck ./...`, `cd web && npm run lint` |
+| Import benchmark | `make bench` (one million records) |
+| Build binaries | `go build -o ./bin/ ./cmd/...` |
+| Whole stack | `docker compose up -d --build` |
+
+Integration tests need a PostgreSQL. Point `ENCORE_TEST_DATABASE_URL` at one, or leave it unset and
+they will start a disposable container through Testcontainers if Docker is available; otherwise they
+skip with a clear message rather than failing.
+
+---
+
+## Benchmark
+
+`cmd/encore-bench` generates a synthetic Spotify export, imports it through the real pipeline —
+the same code path as a genuine upload — and reports throughput, peak memory and the row counts read
+back from the database.
+
+```bash
+make bench                                    # 1,000,000 extended-format records
+go run ./cmd/encore-bench run --records 250000 --format account_data --report bench.json
+```
+
+Measured results, and the hardware they were measured on, are in
+[`docs/benchmarks.md`](docs/benchmarks.md).
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Processes, package layout, dependency rules, request path, scaling |
+| [`docs/import.md`](docs/import.md) | Import pipeline, checkpoints, the duplicate strategy, failure recovery |
+| [`docs/configuration.md`](docs/configuration.md) | Every environment variable |
+| [`docs/operations.md`](docs/operations.md) | Backup, restore, upgrade, routine maintenance |
+| [`docs/security.md`](docs/security.md) | Threat model, what is stored and how it is protected |
+| [`docs/feature-parity.md`](docs/feature-parity.md) | Item-by-item status against the reference project |
+| [`docs/benchmarks.md`](docs/benchmarks.md) | Import benchmark results |
+| [`docs/api.md`](docs/api.md) | HTTP endpoint reference |
+| [`docs/attribution.md`](docs/attribution.md) | Relationship to your_spotify, licences |
+| [`docs/design/`](docs/design/) | The original implementation plan |
+
+---
+
+## Known limitations
+
+- **Spotify's recently-played endpoint returns at most the last 50 plays and reaches back no further.**
+  If Encore is offline for a heavy listening day, that day is gone unless you later import a data
+  export covering it. This is a Spotify constraint, not an Encore one.
+- **Account-data imports need alias resolution to merge with extended imports.** That export contains
+  no track URIs, so Encore resolves each artist/title pair through Spotify's search API in the
+  background. Until a pair resolves, its listens are counted under a names-only identity and may
+  briefly appear alongside the URI-based ones. See layer 3 in [`docs/import.md`](docs/import.md).
+- **Playlist creation from statistics is not implemented.** It would need write scopes, and Encore
+  deliberately asks only for read access. Intentionally deferred; see the parity checklist.
+- **`listens` is a single unpartitioned table.** It handles tens of millions of rows comfortably with
+  the indexes provided. Beyond that, range partitioning by year would be the next step; it is not
+  implemented because no self-hosted instance is close to needing it.
+- **Statistics for very wide ranges depend on the daily rollup.** Immediately after a large import the
+  rollup is stale and those queries read the fact table instead — correct, but slower for a few
+  minutes until the rollup catches up.
+- **Encore serves plain HTTP** and expects TLS from a reverse proxy. The bundled nginx does not
+  terminate TLS for you.
+- **Development-mode Spotify apps are limited to 25 listeners.** Lifting that needs a quota extension
+  request to Spotify, which is out of Encore's hands.
+
+---
+
+## Contributing
+
+`make lint && make test` before opening a pull request. CI runs static analysis, unit tests,
+integration tests against a real PostgreSQL, a migration up/down/up cycle, the web build, and both
+container image builds.
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE). Not affiliated with Spotify AB.
