@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Encore - your self-hosted Spotify listening history" />
+    <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Encore</title>
+    <script>
+      // Applied before first paint so a dark-mode user never sees a white flash.
+      // Mirrors the logic in src/lib/theme.ts; keep the storage key in step.
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('encore.theme')
+          var dark =
+            stored === 'dark' ||
+            (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.classList.toggle('dark', dark)
+        } catch (e) {
+          /* private browsing with storage disabled: fall back to the media query */
+        }
+      })()
+    </script>
+  </head>
+  <body class="h-full">
+    <div id="root" class="h-full"></div>
+    <noscript>Encore needs JavaScript enabled to display your listening statistics.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

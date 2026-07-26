@@ -1,0 +1,31 @@
+{
+  "name": "Encore",
+  "short_name": "Encore",
+  "description": "Your self-hosted Spotify listening history.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#12100e",
+  "theme_color": "#12100e",
+  "categories": ["music", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Listening history", "url": "/history" },
+    { "name": "Imports", "url": "/imports" }
+  ]
+}
