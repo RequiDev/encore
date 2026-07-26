@@ -42,18 +42,27 @@ func main() {
 }
 
 func run() error {
-	confirm := flag.Bool("yes", false, "confirm a destructive reset")
-	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	flag.Parse()
-
-	command := flag.Arg(0)
-	if command == "" {
-		flag.Usage()
+	// The subcommand is read before the flags are parsed, deliberately. Go's
+	// flag package stops at the first non-flag argument, so a single global
+	// FlagSet would silently ignore `encore-migrate reset --yes` — the flag would
+	// be treated as a positional argument and the reset would refuse itself with
+	// a message telling you to pass the flag you just passed.
+	args := os.Args[1:]
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, usage)
 		return errors.New("a command is required")
 	}
+	command := args[0]
 	if command == "version" {
 		fmt.Println(version)
 		return nil
+	}
+
+	fs := flag.NewFlagSet("encore-migrate "+command, flag.ContinueOnError)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
+	confirm := fs.Bool("yes", false, "confirm a destructive reset")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
 	}
 
 	// Only the database URL is needed, so this binary deliberately does not load
@@ -99,7 +108,7 @@ func run() error {
 		return postgres.Reset(ctx, dsn)
 
 	default:
-		flag.Usage()
+		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", command)
 	}
 }

@@ -60,9 +60,9 @@ func Migrate(ctx context.Context, dsn string, lg *slog.Logger) error {
 	}
 	if lg != nil {
 		if before == after {
-			lg.Info("database schema already current", "version", after)
+			lg.Info("database schema already current", "schema_version", after)
 		} else {
-			lg.Info("database schema migrated", "from", before, "to", after)
+			lg.Info("database schema migrated", "schema_from", before, "schema_to", after)
 		}
 	}
 	return nil
