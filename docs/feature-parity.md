@@ -5,7 +5,8 @@ Encore's target is practical parity with the user-facing capabilities of
 
 | Status | Meaning |
 |---|---|
-| **Implemented** | Present and working, verified by a test or by manual use. |
+| **Implemented** | Present and working, verified by a test or by exercising it against the running stack. |
+| **Partially implemented** | Some of it is there. What is missing, and why, is stated. |
 | **Changed** | Deliberately done differently. The reason is stated. |
 | **Deferred** | Not built. The reason is stated. |
 
@@ -104,8 +105,8 @@ Encore's target is practical parity with the user-facing capabilities of
 | Discovery metrics | **Implemented** | First-ever listens per bucket, not first-in-range. |
 | Period comparison | **Implemented** | |
 | Privacy controls and account deletion | **Implemented** | Hard delete by foreign-key cascade; not a soft delete. |
-| Dark mode | **Implemented** | Light, dark and system, with no flash of the wrong theme on load. |
-| Progressive Web App | **Implemented** | Installable with an offline shell. |
+| Dark mode | **Implemented** | Light, dark and system, with no flash of the wrong theme on load: the choice is applied by an inline script before first paint. |
+| Progressive Web App | **Partially implemented** | Installable — there is a web app manifest, an icon and theme colours, so browsers offer "add to home screen". There is **no service worker and no offline caching**. A listening dashboard has nothing useful to show without its data, and a cache-first service worker is the most common way to strand users on a stale bundle after an upgrade. Adding one would be a deliberate decision with an update strategy, not a checkbox. |
 
 ## 6. Operations
 
@@ -144,7 +145,14 @@ Encore's target is practical parity with the user-facing capabilities of
 
 ## Known gaps
 
-The deferred items above — public sharing links, playlist creation from statistics, and playback
-control — are the three places where Encore does less than the reference. Each is a scope decision
-recorded here rather than an oversight, and the first two are additive: neither would require
-changing the schema or the import design.
+Where Encore does less than the reference, or less than it could:
+
+- **Public sharing links**, **playlist creation from statistics** and **playback control** are
+  deferred. The last two both need Spotify write scopes, and Encore deliberately asks only for read
+  access; sharing needs a considered permission model rather than a flag. All three are additive —
+  none would require changing the schema or the import design.
+- **PWA support stops at installable.** There is no service worker, for the reason given above.
+- **Live sync cannot record how long a track was played**, because the recently-played endpoint does
+  not report it; a synced listen counts as the track's full duration. Importing an export over the
+  same period corrects it in place, and the `source` column records which rows came from where. See
+  the note in the README's limitations.
