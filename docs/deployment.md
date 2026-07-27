@@ -148,6 +148,36 @@ came from this repository and not from someone else:
 gh attestation verify oci://ghcr.io/requidev/encore:latest --owner RequiDev
 ```
 
+### From Portainer
+
+Portainer's stack editor accepts one Compose file, so a flattened copy of the
+three lives at [`docker-compose.portainer.yml`](../docker-compose.portainer.yml).
+CI regenerates it and fails if it has drifted, so it is always current.
+
+1. **Stacks → Add stack → Web editor**, and paste the contents of that file.
+2. Under **Environment variables**, add:
+
+   | Name | Value |
+   |---|---|
+   | `ENCORE_PUBLIC_URL` | `https://encore.example.com` |
+   | `ENCORE_WEB_URL` | `https://encore.example.com` |
+   | `ENCORE_SPOTIFY_CLIENT_ID` | from the Spotify dashboard |
+   | `ENCORE_SPOTIFY_CLIENT_SECRET` | from the Spotify dashboard |
+   | `ENCORE_ENCRYPTION_KEY` | `openssl rand -base64 32` |
+   | `POSTGRES_PASSWORD` | anything long |
+   | `ENCORE_BIND_ADDR` | `127.0.0.1` behind a reverse proxy |
+   | `ENCORE_COOKIE_SECURE` | `true` behind HTTPS |
+
+3. **Deploy the stack.** Nothing is built: the images come from ghcr.io.
+
+Portainer names the volumes after the stack, so calling the stack `encore` gives
+`encore_encore-db` and `encore_encore-imports` — the same names the Compose CLI
+uses, which means an existing CLI deployment can be adopted by naming the stack
+`encore`. Conversely, deploying a *second* Encore stack under a different name
+gets its own empty database rather than quietly sharing the first one's.
+
+To upgrade later, hit **Pull and redeploy**.
+
 ### Building from source
 
 Still supported, and what you want if you have local changes:

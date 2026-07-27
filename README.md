@@ -255,7 +255,7 @@ Measured results, and the hardware they were measured on, are in
 
 | Document | Contents |
 |---|---|
-| [`docs/deployment.md`](docs/deployment.md) | Deploying on your own server behind a reverse proxy, with TLS, and running from the published images |
+| [`docs/deployment.md`](docs/deployment.md) | Deploying on your own server: reverse proxy, TLS, published images, Portainer |
 | [`docs/architecture.md`](docs/architecture.md) | Processes, package layout, dependency rules, request path, scaling |
 | [`docs/import.md`](docs/import.md) | Import pipeline, checkpoints, the duplicate strategy, failure recovery |
 | [`docs/configuration.md`](docs/configuration.md) | Every environment variable |
