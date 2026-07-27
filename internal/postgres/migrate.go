@@ -39,15 +39,49 @@ func newGoose(dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-// Migrate applies every pending migration. It is safe to run concurrently from
-// several processes: goose takes a session-level advisory lock, so a Compose
-// stack that starts two replicas at once still applies each migration once.
+// migrationLockID identifies the advisory lock that serialises migration runs.
+//
+// Any constant works as long as every Encore process agrees on it; this one is
+// an arbitrary value chosen to be unlikely to collide with another application
+// sharing the database.
+const migrationLockID int64 = 0x454E434F5245_01
+
+// Migrate applies every pending migration.
+//
+// It is safe to run concurrently from several processes. goose's own migration
+// runner does not lock, so two processes reaching UpContext at the same moment
+// both try to create the same table and one dies with a duplicate-key error
+// against a system catalogue — an error that reads like corruption and is not
+// obviously a race. A session-level advisory lock is taken first so the second
+// process waits and then finds nothing left to do.
+//
+// This matters wherever more than one process can start at once: a Compose stack
+// with several replicas, or any deployment using
+// ENCORE_DATABASE_MIGRATE_ON_START. The lock is released when the connection
+// closes, so a process killed mid-migration does not leave it held.
 func Migrate(ctx context.Context, dsn string, lg *slog.Logger) error {
 	db, err := newGoose(dsn)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+
+	// A dedicated connection, because an advisory lock belongs to the session
+	// that took it and the pool must not hand this one to anybody else.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", redactErr(err))
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); err != nil {
+		return fmt.Errorf("take migration lock: %w", redactErr(err))
+	}
+	defer func() {
+		// Best effort: closing the connection releases it regardless.
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx),
+			"SELECT pg_advisory_unlock($1)", migrationLockID)
+	}()
 
 	goose.SetLogger(gooseLogger{lg: lg})
 	before, _ := goose.GetDBVersionContext(ctx, db)

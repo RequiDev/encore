@@ -85,7 +85,7 @@ test: ## Run unit tests
 
 .PHONY: test-integration
 test-integration: ## Run integration and import tests against a real database
-	ENCORE_TEST_DATABASE_URL="$(TEST_DB_URL)" go test -tags=integration -race -count=1 -timeout=20m ./test/...
+	ENCORE_TEST_DATABASE_URL="$(TEST_DB_URL)" go test -tags=integration -race -count=1 -p 1 -timeout=20m ./test/...
 
 .PHONY: test-all
 test-all: test test-integration ## Run the full test suite

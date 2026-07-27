@@ -126,7 +126,10 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: Integration tests
-        run: go test -tags=integration -race -count=1 -timeout=20m ./test/...
+        # -p 1 runs the test packages one at a time. They share one database and
+        # truncate it between tests, so two packages running at once would wipe
+        # each other's fixtures mid-assertion.
+        run: go test -tags=integration -race -count=1 -p 1 -timeout=20m ./test/...
 
   benchmark:
     name: Large synthetic import benchmark

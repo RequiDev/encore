@@ -204,7 +204,7 @@ The Docker Compose path is unaffected: the web image builds inside a Linux conta
 | Run the worker | `go run ./cmd/encore-worker` |
 | Run the web client | `cd web && npm run dev` |
 | Unit tests | `go test -race ./...` |
-| Integration tests | `ENCORE_TEST_DATABASE_URL=... go test -tags=integration -timeout=20m ./test/...` |
+| Integration tests | `ENCORE_TEST_DATABASE_URL=... go test -tags=integration -p 1 -timeout=20m ./test/...` |
 | Full suite | `make test-all` |
 | Coverage report | `make cover` |
 | Format | `gofmt -w .` and `cd web && npm run format` |

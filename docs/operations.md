@@ -122,8 +122,10 @@ The compose stack already encodes this ordering: `api` and `worker` declare
 
 ### Zero-downtime notes
 
-- Migrations take an advisory lock, so starting several replicas at once applies each migration
-  exactly once.
+- Migrations take a PostgreSQL session-level advisory lock, so starting several replicas at once
+  applies each migration exactly once. Without it two processes issue the same `CREATE TABLE` and one
+  fails with a duplicate-key error against a system catalogue, which reads like corruption rather than
+  a race. `TestConcurrentMigrateIsSerialised` guards it.
 - `/readyz` fails while migrations are pending, which is what you want a load balancer to see.
 - Stopping a worker mid-import is safe at any moment: the lease expires and another worker resumes
   from the checkpoint. There is no drain step, and no import state lives in process memory.

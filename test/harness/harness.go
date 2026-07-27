@@ -104,8 +104,13 @@ type Env struct {
 //
 // Tests share one database and truncate between runs rather than creating a
 // database each time: truncation is milliseconds where creation is seconds, and
-// the schema is identical either way. That means these tests must not run in
-// parallel with each other, which is why the suites do not call t.Parallel.
+// the schema is identical either way.
+//
+// The cost is that nothing may run concurrently against it. Within a package
+// that is handled by not calling t.Parallel. Across packages it is not: `go test
+// ./test/...` runs each package in its own process, in parallel, and two of them
+// truncating between each other's assertions produces failures that look like
+// application bugs. Run the suite with -p 1; the Makefile and CI both do.
 func New(t *testing.T) *Env {
 	t.Helper()
 	pool := Pool(t)
