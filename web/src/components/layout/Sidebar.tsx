@@ -114,8 +114,15 @@ export function Sidebar({ version }: SidebarProps): ReactElement {
       </div>
       {version ? (
         <div className="border-t border-seam px-4 py-2.5">
-          <p className="eyebrow">
-            Version <span className="tabular">{version}</span>
+          {/*
+            The published tag is `main-<full sha>`, far wider than a 15rem rail.
+            Truncated rather than wrapped — three lines of hexadecimal at the
+            foot of the navigation is worse than an ellipsis — with the whole
+            value on the title so it can still be read and copied.
+          */}
+          <p className="eyebrow flex min-w-0 items-baseline gap-1.5" title={version}>
+            <span className="shrink-0">Version</span>
+            <span className="tabular min-w-0 truncate">{version}</span>
           </p>
         </div>
       ) : null}
@@ -228,8 +235,9 @@ export function NavDrawer({ open, onClose, version }: NavDrawerProps): ReactElem
         </div>
         {version ? (
           <div className="border-t border-seam px-4 py-2.5">
-            <p className="eyebrow">
-              Version <span className="tabular">{version}</span>
+            <p className="eyebrow flex min-w-0 items-baseline gap-1.5" title={version}>
+              <span className="shrink-0">Version</span>
+              <span className="tabular min-w-0 truncate">{version}</span>
             </p>
           </div>
         ) : null}

@@ -175,36 +175,44 @@ export default function Search(): ReactElement {
             // There is nothing to submit: results arrive as the field settles.
             event.preventDefault()
           }}
-          className="flex flex-col gap-3 sm:flex-row sm:items-end"
         >
-          <div ref={field} className="min-w-0 flex-1">
+          {/*
+            The button belongs to the input, so it lives inside the field beside
+            it. Sitting outside as a flex sibling, it aligned to the bottom of
+            the whole field — which includes the hint printed under the input —
+            and so hung visibly below the box it clears.
+          */}
+          <div ref={field} className="min-w-0">
             <Field
               label="Search your catalogue"
               hint={`At least ${MIN_QUERY} characters. Press the down arrow to step into the results.`}
             >
-              <Input
-                type="search"
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                onKeyDown={onFieldKeyDown}
-                placeholder="Artist, album or track"
-                autoComplete="off"
-                spellCheck={false}
-                enterKeyHint="search"
-              />
+              <div className="flex min-w-0 items-center gap-3">
+                <Input
+                  type="search"
+                  value={text}
+                  onChange={(event) => setText(event.target.value)}
+                  onKeyDown={onFieldKeyDown}
+                  placeholder="Artist, album or track"
+                  autoComplete="off"
+                  spellCheck={false}
+                  enterKeyHint="search"
+                  className="min-w-0 flex-1"
+                />
+                <Button
+                  onClick={() => {
+                    setText('')
+                    field.current?.querySelector('input')?.focus()
+                  }}
+                  disabled={text === ''}
+                  className="shrink-0"
+                >
+                  <Icon name="close" />
+                  Clear
+                </Button>
+              </div>
             </Field>
           </div>
-          <Button
-            onClick={() => {
-              setText('')
-              field.current?.querySelector('input')?.focus()
-            }}
-            disabled={text === ''}
-            className="shrink-0"
-          >
-            <Icon name="close" />
-            Clear
-          </Button>
         </form>
       </Panel>
 
