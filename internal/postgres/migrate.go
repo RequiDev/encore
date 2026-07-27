@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -24,6 +25,18 @@ type MigrationStatus struct {
 // depends on this: an API process talking to a database with pending migrations
 // would fail in confusing ways, so it reports itself not-ready instead.
 func (s MigrationStatus) UpToDate() bool { return s.Pending == 0 && s.Current == s.Latest }
+
+// gooseMu serialises everything that touches goose within this process.
+//
+// goose keeps its filesystem, dialect and logger in package-level variables, so
+// two goroutines configuring it at once is a data race — one the detector finds
+// immediately and which would otherwise let a migration run against a
+// half-applied configuration. The advisory lock in Migrate solves the
+// cross-process half of the same problem; this solves the in-process half.
+//
+// Serialising here costs nothing: every caller is either a one-shot command or a
+// single startup step.
+var gooseMu sync.Mutex
 
 func newGoose(dsn string) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
@@ -60,6 +73,9 @@ const migrationLockID int64 = 0x454E434F5245_01
 // ENCORE_DATABASE_MIGRATE_ON_START. The lock is released when the connection
 // closes, so a process killed mid-migration does not leave it held.
 func Migrate(ctx context.Context, dsn string, lg *slog.Logger) error {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+
 	db, err := newGoose(dsn)
 	if err != nil {
 		return err
@@ -105,6 +121,9 @@ func Migrate(ctx context.Context, dsn string, lg *slog.Logger) error {
 // Status reports the applied and available migration versions without changing
 // anything.
 func Status(ctx context.Context, dsn string) (MigrationStatus, error) {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+
 	db, err := newGoose(dsn)
 	if err != nil {
 		return MigrationStatus{}, err
@@ -134,6 +153,9 @@ func Status(ctx context.Context, dsn string) (MigrationStatus, error) {
 // Reset rolls the schema all the way down. It exists for integration tests and
 // is never wired into a command that a production deployment can reach.
 func Reset(ctx context.Context, dsn string) error {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+
 	db, err := newGoose(dsn)
 	if err != nil {
 		return err

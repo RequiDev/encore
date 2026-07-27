@@ -173,6 +173,22 @@ still sees a single origin and no CORS configuration is needed. Register
 On Windows PowerShell, use `$env:ENCORE_DATABASE_URL = '...'` in place of `export`.
 
 <details>
+<summary>Running the race detector on Windows</summary>
+
+`-race` needs cgo, and cgo needs a C toolchain that a Windows Go install does not
+have by default, so `go test -race` fails with `-race requires cgo`. CI runs the
+suite with it, so a data race can pass locally and fail there. Reproduce CI
+exactly by running the tests in a Linux container:
+
+```powershell
+docker run --rm -v "${PWD}:/src" -w /src --network host `
+  -e ENCORE_TEST_DATABASE_URL='postgres://encore:encore@localhost:5432/encore?sslmode=disable' `
+  golang:1.26 go test -tags=integration -race -count=1 -p 1 ./test/...
+```
+
+</details>
+
+<details>
 <summary>If <code>npm run build</code> fails with "Cannot find module @rollup/rollup-…"</summary>
 
 Vite's bundler ships as a set of per-platform binaries installed through npm's optional dependencies,
