@@ -52,12 +52,24 @@ export interface InstanceInfo {
   version: string
 }
 
+/**
+ * The span of history a user holds. Both null before they import or sync
+ * anything. The client uses `firstListenAt` so that an "all time" range starts
+ * where the history does, rather than at a fixed floor that would draw years of
+ * empty buckets.
+ */
+export interface ListeningBounds {
+  firstListenAt: Timestamp | null
+  lastListenAt: Timestamp | null
+}
+
 /** Response of `GET /api/me`, the client's bootstrap call. */
 export interface MeResponse {
   user: User
   spotify: SpotifyConnection
   csrfToken: string
   instance: InstanceInfo
+  listening: ListeningBounds
 }
 
 /** A user other than the caller, for the comparison page. Deliberately minimal. */

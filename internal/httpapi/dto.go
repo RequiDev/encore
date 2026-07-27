@@ -105,6 +105,17 @@ type MeResponse struct {
 	Spotify   SpotifyConnection `json:"spotify"`
 	CSRFToken string            `json:"csrfToken"`
 	Instance  InstanceInfo      `json:"instance"`
+	Listening ListeningBounds   `json:"listening"`
+}
+
+// ListeningBounds is the span of history a user actually holds.
+//
+// The client needs it so that the "all time" range can start at the first thing
+// they listened to rather than at a fixed floor, which would otherwise draw a
+// chart whose left half is years of empty buckets.
+type ListeningBounds struct {
+	FirstListenAt *time.Time `json:"firstListenAt"`
+	LastListenAt  *time.Time `json:"lastListenAt"`
 }
 
 // AdminUser is a user as the administration page sees them, with the two facts

@@ -75,6 +75,14 @@ type sessionStore interface {
 	Delete(ctx context.Context, q store.Querier, sessionID uuid.UUID) error
 }
 
+// listenStore is the part of listens.Repo the HTTP layer uses. Like the identity
+// interfaces below it exists so the middleware and the /api/me handler can be
+// exercised by httptest with a fake, rather than needing a live database.
+type listenStore interface {
+	Bounds(ctx context.Context, q store.Querier, userID uuid.UUID) (first, last *time.Time, err error)
+	CountListensForUser(ctx context.Context, q store.Querier, userID uuid.UUID) (int64, error)
+}
+
 // userStore is the part of accounts.Users the HTTP layer uses.
 type userStore interface {
 	GetByID(ctx context.Context, q store.Querier, id uuid.UUID) (domain.User, error)
@@ -129,7 +137,7 @@ type Server struct {
 	settings    settingsStore
 
 	catalog *catalog.Repo
-	listens *listens.Repo
+	listens listenStore
 	imports *imports.Repo
 	stats   *stats.Service
 	intake  *importer.Intake

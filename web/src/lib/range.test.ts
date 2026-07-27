@@ -95,6 +95,23 @@ describe('presetRange', () => {
     expect(presetRange('all', 'UTC', NOW).from).toBe(ALL_TIME_START)
   })
 
+  it('starts "all time" at the first listen when one is known', () => {
+    const first = '2019-03-04T12:00:00.000Z'
+    expect(presetRange('all', 'UTC', NOW, first).from).toBe(first)
+  })
+
+  it('falls back to the floor when the first listen is not known yet', () => {
+    // A user with no history at all, or a session that has not loaded. Drawing
+    // from the floor is harmless here because there is nothing to plot.
+    expect(presetRange('all', 'UTC', NOW, '').from).toBe(ALL_TIME_START)
+  })
+
+  it('still recognises an all-time range built from a first listen', () => {
+    const first = '2019-03-04T12:00:00.000Z'
+    const range = presetRange('all', 'UTC', NOW, first)
+    expect(matchPreset(range, 'UTC', NOW, first)).toBe('all')
+  })
+
   it('aligns boundaries to the user’s timezone, not the browser’s', () => {
     expect(presetRange('7d', 'Asia/Tokyo', NOW).to).toBe('2026-07-26T15:00:00.000Z')
   })

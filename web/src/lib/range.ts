@@ -15,7 +15,7 @@
 
 import { useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useTimeZone } from './session'
+import { useListeningBounds, useTimeZone } from './session'
 
 /** A half-open range `[from, to)`, as RFC 3339 instants. */
 export interface DateRange {
@@ -44,9 +44,14 @@ export const RANGE_PRESETS: readonly RangePreset[] = [
 export const DEFAULT_PRESET: RangePresetId = '30d'
 
 /**
- * Where "all time" starts. Spotify launched in 2008 and its exports contain
- * nothing older, so this is early enough to include every listen anyone can
- * have while still being a real bound the server can index against.
+ * The floor for "all time" when the caller does not know when the user's history
+ * actually begins. Spotify launched in 2008 and its exports contain nothing
+ * older, so this includes every listen anyone can have.
+ *
+ * It is a fallback, not the usual answer. Given a real first-listen instant,
+ * prefer that: a chart drawn from this floor spends most of its width on years
+ * the user did not exist on Spotify, and hovering there reports 2006 rather than
+ * anything meaningful.
  */
 export const ALL_TIME_START = '2006-01-01T00:00:00.000Z'
 
@@ -188,6 +193,8 @@ export function presetRange(
   id: RangePresetId,
   timeZone: string,
   now: Date = new Date(),
+  /** When the user's history begins. Only "all" uses it. */
+  allTimeStart: string = ALL_TIME_START,
 ): DateRange {
   const zone = normaliseZone(timeZone)
   const today = calendarDayIn(now, zone)
@@ -202,7 +209,7 @@ export function presetRange(
     case 'ytd':
       return { from: startOfDayIn({ year: today.year, month: 1, day: 1 }, zone).toISOString(), to }
     case 'all':
-      return { from: ALL_TIME_START, to }
+      return { from: allTimeStart || ALL_TIME_START, to }
     case '30d':
     default:
       return { from: startOfDayIn(addDays(today, -29), zone).toISOString(), to }
@@ -218,9 +225,10 @@ export function matchPreset(
   range: DateRange,
   timeZone: string,
   now: Date = new Date(),
+  allTimeStart: string = ALL_TIME_START,
 ): RangePresetId | 'custom' {
   for (const preset of RANGE_PRESETS) {
-    const candidate = presetRange(preset.id, timeZone, now)
+    const candidate = presetRange(preset.id, timeZone, now, allTimeStart)
     if (candidate.from === range.from && candidate.to === range.to) return preset.id
   }
   return 'custom'
@@ -292,6 +300,8 @@ export interface RangeControls {
 export function useRange(): RangeControls {
   const [params, setParams] = useSearchParams()
   const timeZone = useTimeZone()
+  const bounds = useListeningBounds()
+  const allTimeStart = bounds?.firstListenAt ?? ALL_TIME_START
 
   const from = params.get('from')
   const to = params.get('to')
@@ -326,9 +336,9 @@ export function useRange(): RangeControls {
 
   const setPreset = useCallback(
     (id: RangePresetId) => {
-      write(presetRange(id, timeZone))
+      write(presetRange(id, timeZone, new Date(), allTimeStart))
     },
-    [timeZone, write],
+    [allTimeStart, timeZone, write],
   )
 
   const setCustomDays = useCallback(

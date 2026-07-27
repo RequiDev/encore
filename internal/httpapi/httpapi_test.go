@@ -77,6 +77,22 @@ func (f *fakeSessions) Delete(_ context.Context, _ store.Querier, id uuid.UUID) 
 }
 
 // fakeUsers stands in for accounts.Users, answering only from a map.
+// fakeListens answers the one question /api/me asks of the listening history:
+// how far back it goes. Returning nothing is the honest shape for a user who has
+// not imported anything, which is what these tests set up.
+type fakeListens struct {
+	first, last *time.Time
+	count       int64
+}
+
+func (f *fakeListens) Bounds(context.Context, store.Querier, uuid.UUID) (*time.Time, *time.Time, error) {
+	return f.first, f.last, nil
+}
+
+func (f *fakeListens) CountListensForUser(context.Context, store.Querier, uuid.UUID) (int64, error) {
+	return f.count, nil
+}
+
 type fakeUsers struct {
 	byID   map[uuid.UUID]domain.User
 	admins int64
@@ -196,6 +212,7 @@ type testServer struct {
 	users       *fakeUsers
 	credentials *fakeCredentials
 	settings    *fakeSettings
+	listens     *fakeListens
 	clock       time.Time
 }
 
@@ -226,6 +243,7 @@ func newTestServer(t *testing.T) *testServer {
 		users:       newFakeUsers(user),
 		credentials: &fakeCredentials{err: domain.ErrNotFound},
 		settings:    &fakeSettings{registrations: true},
+		listens:     &fakeListens{},
 		clock:       time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC),
 	}
 	s := &Server{
@@ -237,6 +255,7 @@ func newTestServer(t *testing.T) *testServer {
 		sessions:    ts.sessions,
 		credentials: ts.credentials,
 		settings:    ts.settings,
+		listens:     ts.listens,
 		syncing:     newInFlight(),
 		touched:     newTouchTracker(),
 		ready:       &readyCache{},

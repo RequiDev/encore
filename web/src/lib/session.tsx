@@ -14,12 +14,20 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { ApiError, api } from './api'
 import { onUnauthenticated, qk } from './query'
-import type { InstanceInfo, MeResponse, SpotifyConnection, User } from './types'
+import type {
+  InstanceInfo,
+  ListeningBounds,
+  MeResponse,
+  SpotifyConnection,
+  User,
+} from './types'
 
 export interface SessionValue {
   user: User | null
   spotify: SpotifyConnection | null
   instance: InstanceInfo | null
+  /** The span of history the user holds; both nulls before they import anything. */
+  listening: ListeningBounds | null
   /** True until the bootstrap call has settled, once, on first load. */
   isLoading: boolean
   isAuthenticated: boolean
@@ -93,6 +101,7 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactEle
       user: me?.user ?? null,
       spotify: me?.spotify ?? null,
       instance: me?.instance ?? null,
+      listening: me?.listening ?? null,
       isLoading: query.isPending,
       isAuthenticated: me !== null,
       isAdmin: me?.user.role === 'admin' && me.user.isActive,
@@ -119,6 +128,20 @@ export function useSession(): SessionValue {
  * the statistics in. Before the session loads — and on the login screen, which
  * has none — the browser's own zone is a better guess than UTC.
  */
+/**
+ * The span of history the signed-in user holds, or null when it is not known
+ * yet. Returns the raw bounds and applies no fallback: what a missing bound
+ * should mean is the caller's decision, and lib/range owns that.
+ *
+ * This deliberately does not import lib/range. That module already imports this
+ * one for the user's timezone, and closing the loop would make the two mutually
+ * dependent for a single constant.
+ */
+export function useListeningBounds(): ListeningBounds | null {
+  const session = use(SessionContext)
+  return session?.listening ?? null
+}
+
 export function useTimeZone(): string {
   const session = use(SessionContext)
   const configured = session?.user?.timezone

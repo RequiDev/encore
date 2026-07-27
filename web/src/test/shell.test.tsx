@@ -41,6 +41,7 @@ const ME: MeResponse = {
     scopes: ['user-read-recently-played'],
   },
   csrfToken: 'not-a-real-token',
+  listening: { firstListenAt: '2019-03-04T12:00:00.000Z', lastListenAt: '2026-07-26T09:00:00.000Z' },
   instance: { registrationsEnabled: false, version: '1.0.0' },
 }
 

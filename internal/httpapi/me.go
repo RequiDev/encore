@@ -32,12 +32,18 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	first, last, err := s.listens.Bounds(ctx, s.querier, auth.user.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
 
 	writeJSON(w, r, http.StatusOK, MeResponse{
 		User:      toUser(auth.user),
 		Spotify:   connection,
 		CSRFToken: auth.session.CSRFToken,
 		Instance:  InstanceInfo{RegistrationsEnabled: registrations, Version: s.version},
+		Listening: ListeningBounds{FirstListenAt: first, LastListenAt: last},
 	})
 }
 

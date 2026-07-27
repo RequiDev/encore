@@ -57,8 +57,8 @@ func Stage(l domain.Listen, importFileID *uuid.UUID) StagedListen {
 		PlayedAt:     l.PlayedAt.UTC(),
 		Precision:    l.Precision,
 		TrackID:      l.Identity.TrackID,
-		AliasArtist:  l.Identity.Artist,
-		AliasTitle:   l.Identity.Title,
+		AliasArtist:  displayName(l.ArtistName, l.Identity.Artist),
+		AliasTitle:   displayName(l.TrackName, l.Identity.Title),
 		IdentityKey:  l.IdentityKey(),
 		DedupeKey:    l.DedupeKey(),
 		MsPlayed:     l.MsPlayed,
@@ -73,6 +73,32 @@ func Stage(l domain.Listen, importFileID *uuid.UUID) StagedListen {
 		Offline:      l.Offline,
 		Incognito:    l.Incognito,
 	}
+}
+
+// displayName prefers the name the source actually printed over the normalised
+// form used for identity.
+//
+// The alias columns are display-only — identity and duplicate detection read
+// identity_key, never these — so storing "Weird Fishes / Arpeggi" rather than
+// "weird fishes arpeggi" costs nothing and is what the history and session views
+// fall back to while catalogue metadata is still being fetched.
+func displayName(reported, normalised string) string {
+	if reported != "" {
+		return reported
+	}
+	return normalised
+}
+
+// TrackSeed is a track id together with whatever the ingesting source knew it
+// was called.
+//
+// Both Spotify export formats print the track title beside the URI, so an import
+// already knows the name of nearly every track it references. Recording it when
+// the row is created means a freshly imported history is readable straight away
+// instead of only once the catalogue queue has drained.
+type TrackSeed struct {
+	ID   string
+	Name string
 }
 
 // insertListensSQL implements the whole duplicate policy in one round trip.
@@ -264,20 +290,50 @@ func (r *Repo) InsertListens(ctx context.Context, q store.Querier, batch []Stage
 	return inserted, nil
 }
 
-// EnsureTracks records track ids the importer has seen but knows nothing about.
+// EnsureTracks records the tracks the importer has seen but knows nothing about.
 //
 // This is the seam that keeps ingestion independent of Spotify: the row is
-// created in the 'pending' state and the enrichment workers fill it in later, so
-// an API outage or a rate limit cannot delay or lose a listening record.
-func (r *Repo) EnsureTracks(ctx context.Context, q store.Querier, trackIDs []string) error {
-	if len(trackIDs) == 0 {
+// created in the 'pending' state and the enrichment workers fill in the album,
+// artists, duration and popularity later, so an API outage or a rate limit
+// cannot delay or lose a listening record.
+//
+// The name is written when the source supplied one and never overwrites a name
+// already present, because enrichment is the authority on what a track is
+// called and a seed must not be able to undo it.
+func (r *Repo) EnsureTracks(ctx context.Context, q store.Querier, seeds []TrackSeed) error {
+	if len(seeds) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(seeds))
+	names := make([]string, 0, len(seeds))
+	norms := make([]string, 0, len(seeds))
+	for _, t := range seeds {
+		if t.ID == "" {
+			continue
+		}
+		ids = append(ids, t.ID)
+		names = append(names, t.Name)
+		if t.Name == "" {
+			norms = append(norms, "")
+		} else {
+			norms = append(norms, domain.NormalizeTitle(t.Name))
+		}
+	}
+	if len(ids) == 0 {
 		return nil
 	}
 	const sql = `
-        INSERT INTO tracks (id, metadata_state)
-        SELECT DISTINCT id, 'pending' FROM unnest($1::text[]) AS t(id)
-        ON CONFLICT (id) DO NOTHING`
-	if _, err := q.Exec(ctx, sql, trackIDs); err != nil {
+        WITH input AS (
+            SELECT DISTINCT ON (id) id, name, name_norm
+            FROM unnest($1::text[], $2::text[], $3::text[]) AS t(id, name, name_norm)
+            ORDER BY id, name DESC
+        )
+        INSERT INTO tracks (id, name, name_norm, metadata_state)
+        SELECT id, name, name_norm, 'pending' FROM input
+        ON CONFLICT (id) DO UPDATE
+        SET name      = CASE WHEN tracks.name = '' THEN excluded.name      ELSE tracks.name      END,
+            name_norm = CASE WHEN tracks.name = '' THEN excluded.name_norm ELSE tracks.name_norm END`
+	if _, err := q.Exec(ctx, sql, ids, names, norms); err != nil {
 		return postgres.Classify("ensure tracks", err)
 	}
 	return nil
@@ -397,6 +453,23 @@ func (r *Repo) LatestListenAt(ctx context.Context, q store.Querier, userID uuid.
 		return nil, postgres.Classify("latest listen", err)
 	}
 	return t, nil
+}
+
+// Bounds returns the first and last listen a user holds, or nils when they hold
+// none.
+//
+// It exists so that "all time" can mean all of *their* time. A fixed floor such
+// as the year Spotify launched makes an all-time chart mostly empty buckets, and
+// the axis then invites the reader to hover over years in which nothing could
+// have happened. Both values come straight off the (user_id, played_at) index.
+func (r *Repo) Bounds(ctx context.Context, q store.Querier, userID uuid.UUID) (first, last *time.Time, err error) {
+	err = q.QueryRow(ctx,
+		`SELECT min(played_at), max(played_at) FROM listens WHERE user_id = $1`,
+		userID.String()).Scan(&first, &last)
+	if err != nil {
+		return nil, nil, postgres.Classify("listen bounds", err)
+	}
+	return first, last, nil
 }
 
 // UnresolvedListen is one row awaiting relink to a catalogue track.
