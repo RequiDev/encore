@@ -370,10 +370,59 @@ regenerates.
 
 ---
 
-## 10. Enrichment, kept separate on purpose
+## 10. What the export already tells us
 
-Ingestion writes `tracks`, `albums` and `artists` rows in the `pending` state and nothing more. Four
-background workers then fill them in:
+An import is not a stream of ids. Both formats print the names beside them, and Encore keeps all
+three:
+
+| Field | Extended | Account data | Becomes |
+|---|---|---|---|
+| Track title | `master_metadata_track_name` | `trackName` | `tracks.name` |
+| Artist | `master_metadata_album_artist_name` | `artistName` | a **local** `artists` row |
+| Album | `master_metadata_album_album_name` | — | a **local** `albums` row |
+
+Neither format identifies an artist or an album. There is a `spotify_track_uri` and nothing else, so
+those two cannot be keyed the way the catalogue keys everything else. Encore mints an id from the
+**normalised name** instead:
+
+```
+local:artist:<16 hex of sha256(name_norm)>
+local:album:<16 hex of sha256(artist_norm ‖ NUL ‖ album_norm)>
+```
+
+Deriving the id from the name is what makes the row stable: the same artist in another year's file,
+in a second export, or in a re-import lands on the same row and the same statistics. Albums are keyed
+on the artist as well as the title because album titles collide badly — a history of any size holds
+several unrelated *Greatest Hits*.
+
+A colon cannot occur in a base-62 Spotify id, so the two kinds are unmistakable in the database, in a
+URL and in a log — and the client's id filter rejects local ids on sight, so one can never be sent to
+an endpoint that would only answer 400 for it.
+
+These rows are marked `metadata_state = 'local'`, which the enrichment queues do not claim. They are
+a **floor, never a ceiling**:
+
+- a track that already has credits keeps them; enrichment's answer is authoritative
+- a track that already has an album keeps it
+- a name is only ever written into an empty one
+
+When enrichment later resolves a Spotify artist whose normalised name matches a local row, the local
+row's credits — including which users had hidden it — move to the Spotify row and the local row is
+deleted, in the same transaction. Without that fold the same name would appear twice in every chart
+with the plays split between them. Local albums need no fold: a resolved track takes its real
+`album_id` from the upsert and leaves the local row orphaned.
+
+The effect on a real 144,000-record export: **3,482 named artists and 8,899 named albums, with every
+listen credited, before a single Spotify request is made.** Previously that catalogue was empty until
+enrichment drained — which on a development-mode application whose daily quota is exhausted meant
+indefinitely.
+
+What is still missing without Spotify: artwork, genres, popularity, release dates and durations.
+
+## 11. Enrichment, kept separate on purpose
+
+Ingestion writes `tracks` rows in the `pending` state, plus the local rows above. Four background
+workers then fill them in:
 
 | Worker | Source | Batch | Token |
 |---|---|---|---|

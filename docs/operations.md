@@ -238,10 +238,14 @@ Listening data is never affected; only the names, artwork and genres are. What t
    docker compose run --rm worker /usr/local/bin/encore-worker backfill-names
    ```
 
-   Both export formats print the track title beside the URI, so this fills in every track a retained
-   import references. It touches nothing but empty names — no listens, no job state, no counters —
-   and is safe to run twice. Artist names and artwork still need Spotify, and arrive on their own
-   once the quota resets.
+   Both export formats print the track title, the artist and the album beside the URI, so this fills
+   in every track a retained import references **and builds the artist and album catalogue** from
+   those names — see §10 of [import.md](import.md). It touches nothing but empty names and
+   uncredited tracks — no listens, no job state, no counters — and is safe to run twice.
+
+   Run it after upgrading to a version that keeps these names: a history imported earlier has no
+   artists at all, and this is what recovers them without re-importing. Artwork, genres and release
+   dates still need Spotify and arrive on their own once the quota resets.
 3. If you have many users, apply for
    [extended quota mode](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
 

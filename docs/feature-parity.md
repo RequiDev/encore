@@ -100,6 +100,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Import throughput and queue metrics | **Implemented** | Records by outcome, batch duration, records per second, queue depth, bytes read. |
 | Background metadata repair job | **Implemented** | Revisits permanently failed catalogue rows every `ENCORE_ENRICH_REPAIR_INTERVAL`. |
 | Data export | **Implemented** | JSON and CSV, streamed. |
+| Catalogue from the export alone | **Implemented** | Not in the reference project. Both export formats name the artist and album of every play and identify neither; Encore mints local catalogue rows keyed by normalised name, so artists, albums and every chart work immediately after an import with no Spotify call. Folded into the Spotify rows when enrichment identifies them. See §10 of [import.md](import.md). |
 | Optional metadata fallback | **Implemented** | Not in the reference project. A second Spotify-shaped endpoint, consulted while Spotify is rate limiting the instance and for ids Spotify will not serve at all — the only way the terminal `unavailable` state can ever be filled. Off unless configured; Encore ships the interface and no source. See [metadata-fallback.md](metadata-fallback.md). |
 | Year in review | **Implemented** | |
 | Listening streaks | **Implemented** | Gaps-and-islands over local days. |

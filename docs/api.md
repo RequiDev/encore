@@ -228,12 +228,12 @@ holds nobody's listening data.
 ```json
 {
   "catalogue": {
-    "tracks":  { "total": 16505, "resolved": 50, "pending": 16455,
-                 "failed": 0, "unavailable": 0, "named": 16505 },
-    "artists": { "total": 29, "resolved": 0, "pending": 29,
-                 "failed": 0, "unavailable": 0, "named": 0 },
-    "albums":  { "total": 40, "resolved": 40, "pending": 0,
-                 "failed": 0, "unavailable": 0, "named": 40 },
+    "tracks":  { "total": 16503, "resolved": 50, "pending": 16453,
+                 "failed": 0, "unavailable": 0, "named": 16503, "local": 0 },
+    "artists": { "total": 3482, "resolved": 0, "pending": 0,
+                 "failed": 0, "unavailable": 0, "named": 3482, "local": 3482 },
+    "albums":  { "total": 8899, "resolved": 0, "pending": 0,
+                 "failed": 0, "unavailable": 0, "named": 8899, "local": 8899 },
     "aliasesTotal": 0, "aliasesPending": 0
   },
   "metadata": {
@@ -249,6 +249,12 @@ An imported export carries track and artist names, so most of the catalogue is
 readable long before Spotify has supplied albums, artwork and genres. A client
 that measured progress by `resolved` alone would report a screen full of legible
 music as empty.
+
+`local` counts rows an import named but could not identify — see §10 of
+[import.md](import.md). They are readable but carry no artwork, genres or release dates, and no queue
+can fetch them: an artist gains those only when a track of theirs resolves and the merge folds the
+two rows together. A client that treated `local` rows as outstanding work would report a permanent
+backlog that nothing can drain.
 
 `paused` is the state this endpoint exists for. Spotify answers an exhausted
 daily quota with a `Retry-After` of most of a day; Encore records the instant and
