@@ -159,7 +159,7 @@ describe('the metadata panel', () => {
     // The two facts that stop someone acting on a problem that is not theirs.
     expect(within(section).getByText(/resumes by itself/i)).toBeInTheDocument()
     expect(within(section).getByText(/listening data is unaffected/i)).toBeInTheDocument()
-    expect(within(section).getByText(/Restarting\s+Encore would not help/i)).toBeInTheDocument()
+    expect(within(section).getByText(/Restarting\s+does\s+not\s+help/i)).toBeInTheDocument()
   })
 
   it('says enrichment continues when a fallback source is configured', async () => {

@@ -415,8 +415,7 @@ export default function Settings(): ReactElement {
             <div className="mt-4 border-t border-seam pt-4">
               <p className="max-w-prose text-sm text-ink">
                 The link to Spotify has expired, so new plays are no longer arriving. Reconnecting
-                takes one round trip through Spotify and loses no history — everything already
-                imported stays exactly as it is.
+                loses no history.
               </p>
               <a
                 // A full navigation, not a fetch: the server answers with a
@@ -491,9 +490,8 @@ export default function Settings(): ReactElement {
             </Field>
 
             <p className="mt-3 max-w-prose text-sm text-ink-muted">
-              Every figure in Encore is bucketed in this zone: which day a listen falls on, which
-              hour it appears in, where a streak breaks. Changing it re-buckets what is already
-              imported automatically — nothing is lost and nothing needs importing again.
+              Every figure is bucketed in this zone. Changing it re-buckets your history
+              automatically — nothing is lost.
             </p>
 
             <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -548,9 +546,8 @@ export default function Settings(): ReactElement {
         {/* --- export ------------------------------------------------------- */}
         <Panel title="Your data" description="Everything Encore holds about your listening.">
           <p className="max-w-prose text-sm text-ink-muted">
-            The export streams your full history — every play, with its track, artists, album and
-            the time it happened. JSON keeps the structure; CSV opens in a spreadsheet. Artists you
-            have hidden are left out, as they are everywhere else in Encore.
+            Every play, with its track, artists, album and the time it happened. JSON keeps the
+            structure; CSV opens in a spreadsheet.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <a className={buttonClass()} href="/api/me/export?format=json">
@@ -664,9 +661,8 @@ export default function Settings(): ReactElement {
 
           {!canWritePlaylists ? (
             <p className="mt-2 max-w-prose text-sm text-ink-muted">
-              Previewing needs no permission — it only reads your own listening. Creating the
-              playlist does: one trip through Spotify, nothing else changes, and you can revoke it
-              from your Spotify account whenever you like.
+              Previewing reads only your own listening. Creating the playlist needs permission — one
+              trip through Spotify, revocable from your account at any time.
             </p>
           ) : null}
 
@@ -771,9 +767,8 @@ export default function Settings(): ReactElement {
         description="Read-only links to your statistics, for people without an account here."
       >
         <p className="max-w-prose text-sm text-ink-muted">
-          A link shows totals and rankings — top tracks, artists and albums, listening time, the
-          charts. It never shows individual plays or when they happened, and it grants nothing else
-          on this instance. Anyone holding the link can open it, so treat it as the password it is.
+          Totals and rankings only — never individual plays or when they happened. Anyone with the
+          link can open it, so treat it as a password.
         </p>
 
         <form
@@ -908,7 +903,8 @@ export default function Settings(): ReactElement {
           <EmptyState
             icon="artist"
             title="No artists are hidden"
-            description="Open an artist and hide them to leave them out of every statistic. Nothing is deleted: the listens stay, and showing the artist again restores every figure."
+            description="Open an artist and hide them to leave them out of every statistic. Nothing is deleted
+            — showing them again restores every figure."
             action={<ButtonLink to="/artists">Browse your artists</ButtonLink>}
           />
         ) : (
@@ -951,10 +947,9 @@ export default function Settings(): ReactElement {
       {/* --- deletion ------------------------------------------------------- */}
       <Panel title="Delete your account" description="Irreversible. Read this first.">
         <p className="max-w-prose text-sm text-ink-muted">
-          Deleting removes your account, every listen Encore holds for you, your import jobs and the
-          export files you uploaded, and your Spotify link. The shared music catalogue stays,
-          because it holds nothing about you. There is no undo and no backup on this instance —
-          download your data first if you want to keep it.
+          Deleting removes your account, every listen, your import jobs, the files you uploaded and
+          your Spotify link. There is no undo and no backup — download your data first if you want
+          to keep it.
         </p>
 
         {deleting ? (
@@ -1099,22 +1094,19 @@ function MetadataPanel({
                   : 'Fetching resumes by itself then — there is nothing to do and nothing to restart.'}
               </p>
               <p className="mt-2 max-w-prose text-sm text-ink-muted">
-                Your listening data is unaffected: every play is already counted, and every
-                statistic, chart and export is complete. Only the names and artwork wait. Restarting
-                Encore would not help and can extend the wait, because the quota does not reset when
-                the process does.
+                Your listening data is unaffected — only names and artwork wait. Restarting does not
+                help; the quota does not reset when the process does.
               </p>
             </div>
           ) : complete ? (
             <p className="mt-4 border-t border-seam pt-4 text-sm text-ink-muted">
-              Everything Spotify was willing to describe has been fetched. Anything still unnamed is
-              music Spotify no longer carries; it stays in your history and keeps counting.
+              Everything Spotify describes has been fetched. Anything still unnamed is music it no
+              longer carries.
             </p>
           ) : (
             <p className="mt-4 border-t border-seam pt-4 text-sm text-ink-muted">
-              {formatPlural(status.metadata.outstanding, 'record')} still to fetch. Encore works
-              through them steadily, deliberately slowly enough to stay inside Spotify's rate limit.
-              Statistics do not wait for this — the listens are already counted.
+              {formatPlural(status.metadata.outstanding, 'record')} still to fetch, slowly enough to
+              stay inside Spotify's rate limit. Statistics do not wait for it.
             </p>
           )}
         </>

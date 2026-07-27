@@ -255,7 +255,8 @@ export default function Admin(): ReactElement {
           <>
             <Checkbox
               label="Let new people sign in"
-              hint="Open, anyone who signs in with Spotify gets an account on this instance. Closed, an unknown Spotify identity is refused at sign-in — everybody who already has an account carries on as normal."
+              hint="Open: anyone who signs in with Spotify gets an account. Closed: new identities are
+              refused; existing accounts are unaffected."
               checked={registrationsEnabled}
               disabled={saveSettings.isPending}
               onChange={(event) => saveSettings.mutate(event.target.checked)}

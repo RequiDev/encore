@@ -36,32 +36,12 @@ type Batch[T any] struct {
 // With no fallback configured it is a thin pass-through, so the enrichment
 // worker has one code path rather than two.
 //
-// By default the primary goes first and the fallback is consulted in two
-// situations, which are different:
+// Which source is asked first is a setting; who is believed is not. Only the
+// primary's refusal marks an id unavailable, because that state is terminal and
+// a fallback is not authoritative about what exists.
 //
-//   - The primary is rate limited. Spotify answers an exhausted daily quota with
-//     a Retry-After of most of a day, and its limiter blocks rather than erroring
-//     for the duration — so the pause is checked before the call, not discovered
-//     from it. The whole batch goes to the fallback and nothing is concluded
-//     about availability.
-//
-//   - The primary answered but had nothing for some ids. Those would otherwise
-//     be marked unavailable for good, which is right when Spotify is the only
-//     source and wrong as soon as there is another. The fallback is asked for
-//     exactly those ids, and only what neither source has is declined.
-//
-// With WithPreferredFallback the order reverses: the fallback answers what it
-// can and the primary is asked only for the remainder. The quota is then spent
-// on what the mirror lacks rather than on what it already holds, which is what
-// keeps a rate limit from arising in the first place.
-//
-// Either way the rule that matters is unchanged. Only the *primary's* refusal
-// marks an id unavailable, because unavailable is terminal and the fallback is
-// not authoritative about what exists.
-//
-// A fallback failure is never fatal: it is logged and the primary's answer
-// stands, because an instance whose metadata mirror is down should behave like
-// an instance that never had one.
+// A fallback failure is never fatal — an instance whose mirror is down behaves
+// like one that never had it. docs/metadata-fallback.md has the full table.
 type Chain struct {
 	primary  Source
 	fallback Source

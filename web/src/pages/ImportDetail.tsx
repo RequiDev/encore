@@ -400,7 +400,8 @@ export default function ImportDetail(): ReactElement {
         {pending === 'cancel' ? (
           <Confirm
             title="Stop this import?"
-            detail="It stops at the next batch boundary, so nothing is left half-written. Everything imported up to that point is kept, and you can resume the job afterwards from where it stopped."
+            detail="It stops at the next batch boundary. Everything imported so far is kept, and you can
+            resume from there."
             confirmLabel="Stop import"
             busy={cancel.isPending}
             onConfirm={() => cancel.mutate()}
@@ -411,7 +412,8 @@ export default function ImportDetail(): ReactElement {
         {pending === 'retry' ? (
           <Confirm
             title="Resume this import?"
-            detail="It picks up from its checkpoint rather than starting again: files that finished are not read a second time, and a part-read file continues at the record it had reached."
+            detail="It picks up from its checkpoint: finished files are not read again, and a part-read
+            file continues where it stopped."
             confirmLabel="Resume import"
             busy={retry.isPending}
             onConfirm={() => retry.mutate()}
@@ -422,7 +424,8 @@ export default function ImportDetail(): ReactElement {
         {pending === 'delete' ? (
           <Confirm
             title="Delete this job record?"
-            detail="The job and the files you uploaded are removed. Your listening records stay exactly as they are — only the bookkeeping about how they arrived goes. This cannot be undone."
+            detail="The job and the files you uploaded are removed. Your listening records stay. This
+            cannot be undone."
             confirmLabel="Delete job"
             destructive
             busy={remove.isPending}
