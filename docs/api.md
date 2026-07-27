@@ -238,7 +238,8 @@ holds nobody's listening data.
   },
   "metadata": {
     "outstanding": 16484, "complete": false,
-    "paused": true, "pausedUntil": "2026-07-28T04:00:00Z"
+    "paused": true, "pausedUntil": "2026-07-28T04:00:00Z",
+    "fallbackConfigured": false
   }
 }
 ```
@@ -254,6 +255,11 @@ daily quota with a `Retry-After` of most of a day; Encore records the instant an
 waits it out across restarts. `pausedUntil` is absent unless `paused` is true,
 and an elapsed window is never reported as a pause. Listening data is unaffected
 throughout — every play is already counted.
+
+`fallbackConfigured` reports that a [metadata fallback](metadata-fallback.md) is set up, which
+changes what a pause means: enrichment keeps going through a second source rather than stopping. It
+is read from the API process's own environment, so it says the deployment is configured for one, not
+that the worker has reached it.
 
 Backs the metadata panel on the Settings page. The command-line equivalent,
 which additionally reports listens, users, per-user sync state and import job

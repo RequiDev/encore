@@ -96,6 +96,8 @@ internal/
     imports/          jobs, files, rejects, leases, checkpoints, verification data
   stats/              every analytic query, plus rollup maintenance
   spotify/            API client, OAuth, rate limiter, retry, circuit behaviour
+  metadata/           catalogue metadata sources: the Source interface, the optional
+                      fallback client, and the chain that decides which answers
   importer/           job runner, batching, checkpointing, verification
     formats/          streaming readers, both export formats, detection, archives
   enrich/             catalogue and alias enrichment workers, repair job

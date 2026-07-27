@@ -265,6 +265,7 @@ Measured results, and the hardware they were measured on, are in
 | [`docs/feature-parity.md`](docs/feature-parity.md) | Item-by-item status against the reference project |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Import benchmark results |
 | [`docs/api.md`](docs/api.md) | HTTP endpoint reference |
+| [`docs/metadata-fallback.md`](docs/metadata-fallback.md) | Optional second metadata source: when it is used, and the contract for writing one |
 | [`docs/attribution.md`](docs/attribution.md) | Relationship to your_spotify, licences |
 | [`docs/design/`](docs/design/) | The original implementation plan |
 

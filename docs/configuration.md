@@ -110,6 +110,24 @@ accept a plain number or a suffix (`512kb`, `64mb`, `4gb`). Booleans accept `tru
 | `ENCORE_ENRICH_REPAIR_INTERVAL` | `6h` | How often permanently failed catalogue rows are revisited. |
 | `ENCORE_ROLLUP_INTERVAL` | `30s` | How often dirty statistics rollup days are recomputed. |
 
+## Metadata fallback
+
+Optional. A second source of catalogue metadata, consulted while Spotify is rate limiting the
+instance and for ids Spotify will not serve at all. Off unless the URL is set. The full contract —
+three Spotify-shaped endpoints — is in [metadata-fallback.md](metadata-fallback.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENCORE_METADATA_FALLBACK_URL` | *(unset)* | Base URL of a Spotify-shaped API, the part before `/v1/tracks`. Setting it turns the feature on; an unusable value is a startup error. |
+| `ENCORE_METADATA_FALLBACK_TOKEN` | *(unset)* | Sent as `Authorization: Bearer …`. Setting it without a URL is a startup error. |
+| `ENCORE_METADATA_FALLBACK_TIMEOUT` | `10s` | Per-request HTTP timeout. |
+| `ENCORE_METADATA_FALLBACK_BATCH_SIZE` | `50` | Ids per request, capped at Spotify's own limit. |
+| `ENCORE_METADATA_FALLBACK_RATE_LIMIT` | *(unlimited)* | Requests per second against the fallback. |
+| `ENCORE_METADATA_FALLBACK_RATE_BURST` | `1` | Burst allowance, only meaningful with a rate limit. |
+
+Encore ships no fallback and endorses none; it ships the interface. What an operator serves from
+their own endpoint is their affair.
+
 ## Metrics
 
 | Variable | Default | Description |
