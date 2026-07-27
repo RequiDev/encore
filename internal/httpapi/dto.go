@@ -725,3 +725,69 @@ type MetadataStatus struct {
 	// successfully reached one.
 	FallbackConfigured bool `json:"fallbackConfigured"`
 }
+
+// --- sharing ---------------------------------------------------------------
+
+// CreateShareRequest is the body of POST /api/shares.
+//
+// Either a fixed range (from and to) or a rolling window (days), never both.
+// Omitting all three shares everything.
+type CreateShareRequest struct {
+	Label     string     `json:"label"`
+	From      *time.Time `json:"from"`
+	To        *time.Time `json:"to"`
+	Days      int        `json:"days"`
+	ExpiresAt *time.Time `json:"expiresAt"`
+}
+
+// ShareResponse describes one link to its owner.
+//
+// Token and URL are populated only by the response that creates it. Afterwards
+// only the hash exists, so a listing that carried a URL would be offering a link
+// that cannot be reconstructed.
+type ShareResponse struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Token and URL: present exactly once, when the link is created.
+	Token string `json:"token,omitempty"`
+	URL   string `json:"url,omitempty"`
+
+	Rolling   bool       `json:"rolling"`
+	RangeDays int        `json:"rangeDays"`
+	From      *time.Time `json:"from"`
+	To        *time.Time `json:"to"`
+
+	ExpiresAt    *time.Time `json:"expiresAt"`
+	LastViewedAt *time.Time `json:"lastViewedAt"`
+	ViewCount    int64      `json:"viewCount"`
+	Active       bool       `json:"active"`
+	CreatedAt    time.Time  `json:"createdAt"`
+}
+
+// SharedStatsResponse is everything a shared page shows.
+//
+// The shape is the privacy boundary. There is no listening history here and no
+// way to ask for one: a share exposes what somebody listens to, never when they
+// were awake.
+type SharedStatsResponse struct {
+	Label       string `json:"label"`
+	DisplayName string `json:"displayName"`
+	AvatarURL   string `json:"avatarUrl"`
+	Timezone    string `json:"timezone"`
+
+	Rolling   bool      `json:"rolling"`
+	RangeDays int       `json:"rangeDays"`
+	From      time.Time `json:"from"`
+	To        time.Time `json:"to"`
+	Interval  string    `json:"interval"`
+
+	// The same shapes the ordinary statistics endpoints return, so the shared
+	// page renders with the components and types that already exist.
+	Summary  Summary                   `json:"summary"`
+	Tracks   Page[TopEntry[TrackRef]]  `json:"tracks"`
+	Artists  Page[TopEntry[ArtistRef]] `json:"artists"`
+	Albums   Page[TopEntry[AlbumRef]]  `json:"albums"`
+	Timeline []TimelineBucket          `json:"timeline"`
+	Hours    []RepartitionBucket       `json:"hours"`
+	Weekdays []RepartitionBucket       `json:"weekdays"`
+}

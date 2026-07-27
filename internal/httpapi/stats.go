@@ -192,11 +192,7 @@ func (s *Server) handleWeekdayRepartition(w http.ResponseWriter, r *http.Request
 		writeError(w, r, err)
 		return
 	}
-	out := make([]RepartitionBucket, 0, len(buckets))
-	for _, b := range buckets {
-		out = append(out, RepartitionBucket{Key: b.Weekday, Plays: b.Plays, MsPlayed: b.MsPlayed})
-	}
-	writeJSON(w, r, http.StatusOK, out)
+	writeJSON(w, r, http.StatusOK, toWeekdayBuckets(buckets))
 }
 
 // handleHeatmap answers GET /api/stats/repartition/heatmap.
@@ -216,6 +212,15 @@ func (s *Server) handleHeatmap(w http.ResponseWriter, r *http.Request) {
 		out = append(out, HeatmapCell{Weekday: c.Weekday, Hour: c.Hour, Plays: c.Plays, MsPlayed: c.MsPlayed})
 	}
 	writeJSON(w, r, http.StatusOK, out)
+}
+
+// toWeekdayBuckets renders the seven days of the local week.
+func toWeekdayBuckets(buckets []stats.WeekdayBucket) []RepartitionBucket {
+	out := make([]RepartitionBucket, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, RepartitionBucket{Key: b.Weekday, Plays: b.Plays, MsPlayed: b.MsPlayed})
+	}
+	return out
 }
 
 // toHourBuckets renders the 24 hours of the local day.

@@ -108,6 +108,15 @@ type oauthStateStore interface {
 }
 
 // settingsStore is the part of accounts.Settings the HTTP layer uses.
+// shareStore is the sharing repository as this package needs it.
+type shareStore interface {
+	Create(ctx context.Context, q store.Querier, userID uuid.UUID, tokenHash []byte, link domain.ShareLink) (domain.ShareLink, error)
+	ListForUser(ctx context.Context, q store.Querier, userID uuid.UUID) ([]domain.ShareLink, error)
+	Revoke(ctx context.Context, q store.Querier, userID, id uuid.UUID) error
+	Resolve(ctx context.Context, q store.Querier, tokenHash []byte, now time.Time) (domain.ShareLink, domain.User, error)
+	Touch(ctx context.Context, q store.Querier, id uuid.UUID) error
+}
+
 type settingsStore interface {
 	RegistrationsEnabled(ctx context.Context, q store.Querier) (bool, error)
 	SetRegistrationsEnabled(ctx context.Context, q store.Querier, enabled bool) error
@@ -138,6 +147,7 @@ type Server struct {
 	settings    settingsStore
 
 	catalog *catalog.Repo
+	shares  shareStore
 	listens listenStore
 	imports *imports.Repo
 	stats   *stats.Service
@@ -215,6 +225,7 @@ func New(deps Deps) (*Server, error) {
 		oauthStates: deps.Accounts.OAuthStates,
 		settings:    deps.Accounts.Settings,
 		catalog:     deps.Catalog,
+		shares:      deps.Accounts.Shares,
 		listens:     deps.Listens,
 		imports:     deps.Imports,
 		stats:       deps.Stats,

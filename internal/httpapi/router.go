@@ -98,6 +98,14 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	s.route(mux, "GET /api/search", s.handleSearch)
 	s.route(mux, "GET /api/status", s.handleStatus)
 
+	// Sharing. The first three belong to the owner; the last is the only path in
+	// Encore that answers with somebody's data and no session, which is why it
+	// composes its own fixed payload rather than reusing a statistics handler.
+	s.route(mux, "GET /api/shares", s.handleListShares)
+	s.route(mux, "POST /api/shares", s.handleCreateShare)
+	s.route(mux, "DELETE /api/shares/{id}", s.handleRevokeShare)
+	s.route(mux, "GET /api/share/{token}", s.handleSharedStats)
+
 	// Listening history.
 	s.route(mux, "GET /api/history", s.handleHistory)
 
