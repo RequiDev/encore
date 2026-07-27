@@ -308,3 +308,18 @@ func notAfter(t, now time.Time) time.Time {
 	}
 	return t
 }
+
+// AccessToken returns a usable access token for one account, refreshing it when
+// the stored one has expired.
+//
+// Exported because the API needs it too. Creating a playlist acts on the
+// listener's own account and so must use the listener's own token, and the
+// refresh dance — including marking an account needs_reauth when Spotify has
+// revoked the grant — belongs here rather than duplicated in a handler.
+func (p *Poller) AccessToken(ctx context.Context, userID uuid.UUID) (string, error) {
+	creds, err := p.dep.Accounts.Credentials.Get(ctx, p.dep.Store.DB(), userID)
+	if err != nil {
+		return "", err
+	}
+	return p.accessToken(ctx, userID, creds, false)
+}

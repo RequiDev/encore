@@ -66,13 +66,30 @@ type tokenResponse struct {
 // and braces rather than a requirement, and that is exactly why it is used: it
 // closes the code interception window even if the redirect is mishandled.
 func (c *Client) AuthorizeURL(state, codeChallenge string) string {
+	return c.AuthorizeURLWithScopes(state, codeChallenge, nil)
+}
+
+// AuthorizeURLWithScopes is AuthorizeURL with extra scopes appended to the
+// configured ones.
+//
+// It exists so a write permission can be asked for at the moment somebody uses
+// the feature that needs it, rather than being demanded of every listener on
+// every instance at sign-in. Spotify issues a token carrying the union of what
+// was granted, so the read access already in place is unaffected.
+func (c *Client) AuthorizeURLWithScopes(state, codeChallenge string, extra []string) string {
 	q := url.Values{}
 	q.Set("client_id", c.cfg.ClientID)
 	q.Set("response_type", "code")
 	q.Set("redirect_uri", c.cfg.RedirectURL)
 	q.Set("state", state)
-	if len(c.cfg.Scopes) > 0 {
-		q.Set("scope", strings.Join(c.cfg.Scopes, " "))
+	scopes := c.cfg.Scopes
+	for _, want := range extra {
+		if want != "" && !HasScope(scopes, want) {
+			scopes = append(append([]string(nil), scopes...), want)
+		}
+	}
+	if len(scopes) > 0 {
+		q.Set("scope", strings.Join(scopes, " "))
 	}
 	if codeChallenge != "" {
 		q.Set("code_challenge_method", "S256")

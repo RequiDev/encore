@@ -17,6 +17,7 @@
 package spotify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -230,7 +231,11 @@ type request struct {
 	bearer string
 	basic  bool
 	form   url.Values
-	out    any
+	// json is a body marshalled as application/json. The Web API takes form
+	// bodies only at the accounts service; everything under /v1 that writes takes
+	// JSON.
+	json any
+	out  any
 	// interactive marks a request a person is waiting on. Those draw on the
 	// sign-in budget rather than the application's catalogue quota, and they
 	// refuse to queue indefinitely.
@@ -305,16 +310,26 @@ func (c *Client) attempt(ctx context.Context, r request) error {
 	}
 
 	var body io.Reader
-	if r.form != nil {
+	switch {
+	case r.form != nil:
 		body = strings.NewReader(r.form.Encode())
+	case r.json != nil:
+		raw, err := json.Marshal(r.json)
+		if err != nil {
+			return retry.Stop(fmt.Errorf("%s: encode body: %w", r.label, err))
+		}
+		body = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, r.method, r.url, body)
 	if err != nil {
 		return retry.Stop(fmt.Errorf("%s: build request: %w", r.label, err))
 	}
 	req.Header.Set("Accept", "application/json")
-	if r.form != nil {
+	switch {
+	case r.form != nil:
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	case r.json != nil:
+		req.Header.Set("Content-Type", "application/json")
 	}
 	switch {
 	case r.bearer != "":
