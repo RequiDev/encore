@@ -450,11 +450,22 @@ type AffinityResponse struct {
 }
 
 // EntityStats is what every detail page shows about one track, artist or album.
+//
+// The two pairs of timestamps answer different questions and both are sent.
+// firstListenAt and lastListenAt are the first and last play *in the selected
+// range*; discoveredAt and lastPlayedAt ignore the range entirely.
+//
+// A page that labels a figure "first listen" wants the second pair. Reading it
+// from a window the viewer chose makes a track they have loved for a decade
+// claim to have been discovered last month, which is what this API used to
+// invite by sending only the range-scoped values.
 type EntityStats struct {
 	Plays         int64            `json:"plays"`
 	MsPlayed      int64            `json:"msPlayed"`
 	FirstListenAt *string          `json:"firstListenAt"`
 	LastListenAt  *string          `json:"lastListenAt"`
+	DiscoveredAt  *string          `json:"discoveredAt"`
+	LastPlayedAt  *string          `json:"lastPlayedAt"`
 	Timeline      []TimelineBucket `json:"timeline"`
 }
 
@@ -464,6 +475,8 @@ func toEntityStats(e stats.EntityStats) EntityStats {
 		MsPlayed:      e.MsPlayed,
 		FirstListenAt: tsPtr(e.FirstListenAt),
 		LastListenAt:  tsPtr(e.LastListenAt),
+		DiscoveredAt:  tsPtr(e.DiscoveredAt),
+		LastPlayedAt:  tsPtr(e.LastPlayedAt),
 		Timeline:      toTimeline(e.Daily),
 	}
 }

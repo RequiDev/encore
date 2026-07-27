@@ -407,11 +407,27 @@ export interface AffinityResponse {
   tracks: AffinityEntry<TrackRef>[]
 }
 
+/**
+ * One track, artist or album on its detail page.
+ *
+ * `plays` and `msPlayed` are scoped to the selected range. The timestamps come
+ * in two pairs and mean different things:
+ *
+ * - `firstListenAt` / `lastListenAt` — the first and last play **inside the
+ *   range**.
+ * - `discoveredAt` / `lastPlayedAt` — the first and last play **ever**,
+ *   ignoring the range entirely.
+ *
+ * Anything labelled "first listen" wants the second pair. The first pair
+ * describes the window, not the music.
+ */
 export interface EntityStats {
   plays: number
   msPlayed: number
   firstListenAt: Timestamp | null
   lastListenAt: Timestamp | null
+  discoveredAt: Timestamp | null
+  lastPlayedAt: Timestamp | null
   timeline: TimelineBucket[]
 }
 

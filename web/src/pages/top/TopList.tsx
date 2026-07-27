@@ -303,19 +303,22 @@ export function EntityFigures({
       <StatGrid columns={4}>
         <Stat label="Plays" value={formatCount(stats.plays)} lamp />
         <Stat label="Listening time" value={formatDuration(stats.msPlayed)} />
+        {/*
+          These two ignore the selected range on purpose. "First listen" is a
+          fact about the music, not about the window somebody happened to pick —
+          reading it from the range made a track loved for a decade claim to have
+          been discovered last month. The plays and listening time beside them
+          are still the range's, which is the useful split.
+        */}
         <Stat
           label="First listen"
-          value={stats.firstListenAt ? formatDate(stats.firstListenAt, timeZone) : EMPTY}
-          hint={
-            stats.firstListenAt ? formatRelative(stats.firstListenAt) : 'Not played in this range'
-          }
+          value={stats.discoveredAt ? formatDate(stats.discoveredAt, timeZone) : EMPTY}
+          hint={stats.discoveredAt ? `${formatRelative(stats.discoveredAt)} · all time` : 'Never'}
         />
         <Stat
           label="Last listen"
-          value={stats.lastListenAt ? formatDate(stats.lastListenAt, timeZone) : EMPTY}
-          hint={
-            stats.lastListenAt ? formatRelative(stats.lastListenAt) : 'Not played in this range'
-          }
+          value={stats.lastPlayedAt ? formatDate(stats.lastPlayedAt, timeZone) : EMPTY}
+          hint={stats.lastPlayedAt ? `${formatRelative(stats.lastPlayedAt)} · all time` : 'Never'}
         />
       </StatGrid>
 

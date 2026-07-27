@@ -270,6 +270,20 @@ history, except for `forgotten`, which has nothing to be absent from without one
 
 The blacklist applies: a hidden artist's tracks never reach a playlist.
 
+### Entity statistics
+
+Track, artist and album detail responses carry two pairs of timestamps, and they
+answer different questions:
+
+| Field | Meaning |
+|---|---|
+| `firstListenAt`, `lastListenAt` | First and last play **inside the selected range**. |
+| `discoveredAt`, `lastPlayedAt` | First and last play **ever**, ignoring the range. |
+
+A figure labelled "first listen" wants the second pair. Reading it from a window
+the viewer happened to select makes a track someone has loved for a decade claim
+to have been discovered last month.
+
 ## Instance status
 
 ### `GET /api/status`

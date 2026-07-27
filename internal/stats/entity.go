@@ -26,9 +26,16 @@ type EntryCount struct {
 
 // EntityStats is what every detail page shows about one track, artist or album.
 //
-// Everything is scoped to the requested range except DiscoveredAt, which answers
-// "when did I first hear this at all" and would be meaningless if it were
-// re-derived from a window the caller happened to ask for.
+// Plays, MsPlayed and the shares are scoped to the requested range. The four
+// timestamps are two different questions and are kept apart deliberately:
+//
+//   - DiscoveredAt and LastPlayedAt answer "when did I first and last hear this
+//     at all". They ignore the range, because "first listen" re-derived from a
+//     window the viewer happened to pick is not a fact about the music — set the
+//     range to last month and a track you have loved for a decade claims to have
+//     been discovered three weeks ago.
+//   - FirstListenAt and LastListenAt are the first and last play inside the
+//     range, which is what a per-period figure needs.
 type EntityStats struct {
 	ID            string
 	Plays         int64
@@ -36,6 +43,7 @@ type EntityStats struct {
 	FirstListenAt *time.Time
 	LastListenAt  *time.Time
 	DiscoveredAt  *time.Time
+	LastPlayedAt  *time.Time
 	PlayShare     float64
 	MsShare       float64
 	Daily         []TimelinePoint
@@ -96,7 +104,8 @@ func entityFilter(kind entityKind, idArg string) string {
 
 // entityStatsSQL answers the entity's own totals, the user's totals for the same
 // range (so the share can be computed without a second round trip) and the
-// all-time first listen, in one statement whose result is always one row.
+// all-time first and last listen, in one statement whose result is always one
+// row.
 func entityStatsSQL(kind entityKind) string {
 	return fmt.Sprintf(`
 WITH base AS (
@@ -108,7 +117,7 @@ tot AS (
     SELECT l.ms_played FROM listens l WHERE %[1]s
 ),
 ever AS (
-    SELECT min(l.played_at) AS first_at
+    SELECT min(l.played_at) AS first_at, max(l.played_at) AS last_at
     FROM listens l
     WHERE l.user_id = $1 AND %[3]s AND %[2]s
 )
@@ -119,7 +128,8 @@ SELECT
     (SELECT max(played_at) FROM base),
     (SELECT count(*) FROM tot)::bigint,
     (SELECT coalesce(sum(ms_played), 0) FROM tot)::bigint,
-    (SELECT first_at FROM ever)`,
+    (SELECT first_at FROM ever),
+    (SELECT last_at FROM ever)`,
 		rangeFilter("l", "$1", "$2", "$3"), entityFilter(kind, "$4"), blacklistFilter("l"))
 }
 
@@ -226,13 +236,14 @@ func (s *Service) entityStats(ctx context.Context, q store.Querier, kind entityK
 	err = q.QueryRow(ctx, statsSQL,
 		store.UUIDArg(userID), r.From.UTC(), r.To.UTC(), id,
 	).Scan(&out.Plays, &out.MsPlayed, &out.FirstListenAt, &out.LastListenAt,
-		&totalPlays, &totalMs, &out.DiscoveredAt)
+		&totalPlays, &totalMs, &out.DiscoveredAt, &out.LastPlayedAt)
 	if err != nil {
 		return EntityStats{}, postgres.Classify(kind.String(), err)
 	}
 	out.FirstListenAt = toLocation(out.FirstListenAt, loc)
 	out.LastListenAt = toLocation(out.LastListenAt, loc)
 	out.DiscoveredAt = toLocation(out.DiscoveredAt, loc)
+	out.LastPlayedAt = toLocation(out.LastPlayedAt, loc)
 	out.PlayShare = share(out.Plays, totalPlays)
 	out.MsShare = share(out.MsPlayed, totalMs)
 
