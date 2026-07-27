@@ -21,6 +21,13 @@ Dockerfile  text eol=lf
 *.example   text eol=lf
 
 # Fixtures are compared byte for byte; leave them exactly as committed.
+# Images are binary. `text=auto` already detects that, but saying so means a
+# misconfigured client cannot corrupt a screenshot by converting line endings.
+*.png  binary
+*.jpg  binary
+*.webp binary
+*.ico  binary
+
 test/**/testdata/**  -text
 internal/**/testdata/** -text
 

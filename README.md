@@ -12,6 +12,31 @@ dashboards you actually own.
 
 ---
 
+## What it looks like
+
+![The Encore dashboard](docs/screenshots/dashboard-dark.png)
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/artists.png" alt="Top artists, ranked with movement against the previous period"></td>
+<td width="50%"><img src="docs/screenshots/artist-detail.png" alt="An artist page in the light theme"></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/sessions.png" alt="Longest listening sessions"></td>
+<td><img src="docs/screenshots/discovery.png" alt="Discovery over time"></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/settings.png" alt="Settings, showing metadata progress"></td>
+<td><img src="docs/screenshots/dashboard-light.png" alt="The dashboard in the light theme"></td>
+</tr>
+</table>
+
+*Captured from a throwaway instance seeded with an invented catalogue — not
+anybody's real listening. Artwork is blank because that demo never talked to
+Spotify.*
+
+---
+
 ## What it does
 
 - **Signs you in with Spotify.** No separate password to manage.
@@ -26,6 +51,21 @@ dashboards you actually own.
 - **Shows you the statistics** — top tracks, artists and albums with rank movement, listening time
   over any date range, hour-of-day and weekday patterns, longest sessions, listening streaks, new-artist
   discovery, year in review, and period-over-period comparison.
+- **Names your music from the export itself.** Both formats print the artist and album of every play
+  and identify neither, so Encore mints catalogue rows from the names. A freshly imported history has
+  working artist and album pages immediately, with no Spotify call at all — a 144,000-record export
+  produces about 3,500 named artists before a single request is made.
+- **Builds Spotify playlists** from what you actually played: most played, everything over a play
+  count, first-heard-in-a-period, or forgotten favourites — over any range, ranked by plays or by
+  listening time. Every definition can be previewed first, and the write permission is asked for only
+  when you create one, so an account that never makes a playlist keeps a read-only grant.
+- **Shares a read-only link** to your statistics with somebody who has no account here. Aggregates
+  only: totals, charts and rankings, never individual plays or when they happened. Revocable, and
+  optionally a rolling window that stays current.
+- **Keeps working when Spotify stops answering.** A development-mode Spotify application exhausts its
+  daily quota during a large import; Encore records the pause, waits it out across restarts, says so
+  in the interface, and never lets it interfere with signing in. You can also point it at your own
+  metadata source, which it will prefer — see [`docs/metadata-fallback.md`](docs/metadata-fallback.md).
 - **Supports several people** on one instance, with an artist blacklist and a per-user timezone, and
   lets an administrator close registrations once everyone has an account.
 - **Exports and deletes** your data on request.
@@ -226,6 +266,7 @@ The Docker Compose path is unaffected: the web image builds inside a Linux conta
 | Format | `gofmt -w .` and `cd web && npm run format` |
 | Lint | `go vet ./...`, `staticcheck ./...`, `cd web && npm run lint` |
 | Instance status | `docker compose run --rm worker /usr/local/bin/encore-worker status` |
+| Recover names from retained exports | `docker compose run --rm worker /usr/local/bin/encore-worker backfill-names` |
 | Import benchmark | `make bench` (one million records) |
 | Build binaries | `go build -o ./bin/ ./cmd/...` |
 | Whole stack | `docker compose up -d --build` |
@@ -287,8 +328,12 @@ Measured results, and the hardware they were measured on, are in
   no track URIs, so Encore resolves each artist/title pair through Spotify's search API in the
   background. Until a pair resolves, its listens are counted under a names-only identity and may
   briefly appear alongside the URI-based ones. See layer 3 in [`docs/import.md`](docs/import.md).
-- **Playlist creation from statistics is not implemented.** It would need write scopes, and Encore
-  deliberately asks only for read access. Intentionally deferred; see the parity checklist.
+- **Artwork and genres still need Spotify.** Names come from your export, but cover art, artist
+  images, genres and release dates do not — those arrive through enrichment, or through a metadata
+  source of your own. Until then the pages are readable but plain.
+- **Playback control is not implemented.** It would need `user-modify-playback-state` and an active
+  device, and it is the one write scope with no read-only equivalent. Intentionally deferred; see the
+  parity checklist.
 - **`listens` is a single unpartitioned table.** It handles tens of millions of rows comfortably with
   the indexes provided. Beyond that, range partitioning by year would be the next step; it is not
   implemented because no self-hosted instance is close to needing it.
