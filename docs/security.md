@@ -146,6 +146,26 @@ statistics it points at, with no account on the instance.
   crawler has published it.
 - Links are capped at 25 per account, so the list stays short enough to audit.
 
+## Playlist permission
+
+Creating a playlist is the only thing Encore can do **to** a Spotify account
+rather than read from it, so the permission is handled deliberately.
+
+- Sign-in asks for read scopes only: `user-read-recently-played`,
+  `user-read-private`, `user-read-email`. That is what every account has unless
+  its owner chose otherwise.
+- `playlist-modify-private` is requested at the moment somebody uses the feature,
+  through a normal OAuth journey they can decline. Spotify issues a token with
+  the union of what was granted, so nothing already in place changes.
+- Only the *private* modify scope. Encore never asks to publish to a listener's
+  followers or to modify playback.
+- Permission is checked before Spotify is called, so an account without it gets
+  an explanation rather than a 403 from Spotify it cannot act on.
+- Revoking it in Spotify's account settings is enough; Encore reports the refusal
+  and points at how to grant it again.
+- Encore never deletes a playlist. "Stop managing" removes its own record and
+  leaves the listener's library untouched.
+
 ## Secrets
 
 No secret is committed to this repository. `.env` is git-ignored; `.env.example` contains only

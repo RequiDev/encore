@@ -242,6 +242,34 @@ The range comes from the link, never the query string. Revoked, expired,
 belonging to a deactivated user, and never-existed all answer `404` alike.
 Responses carry `X-Robots-Tag: noindex, nofollow, noarchive`.
 
+## Playlists
+
+Builds a Spotify playlist from the caller's own listening. Requires the
+`playlist-modify-private` scope, which Encore asks for **only when somebody uses
+this feature** — the sign-in grant stays read-only for everyone else.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/auth/spotify/playlists` | Starts an OAuth journey asking for one extra scope. A browser redirect, like relink. |
+| `GET` | `/api/playlists` | The caller's managed playlists. |
+| `POST` | `/api/playlists` | `{ "name", "mode", "sort", "limit", "minPlays", "from", "to" }`. Creates it on Spotify and fills it in one request. `403` when the scope has not been granted, with a message naming the fix; `400` when the definition matches nothing. |
+| `POST` | `/api/playlists/{id}/rebuild` | Re-runs the stored definition and replaces the contents in place, keeping the same Spotify playlist. |
+| `DELETE` | `/api/playlists/{id}` | Encore stops managing it. **The playlist stays in the listener's Spotify library.** |
+
+`mode` is one of:
+
+| Mode | Selects |
+|---|---|
+| `top` | The `limit` most-played tracks in the range. |
+| `min_plays` | Every track played at least `minPlays` times in the range — not a top-N. |
+| `discoveries` | Tracks whose **first ever** listen falls in the range. |
+| `forgotten` | Tracks played heavily *before* the range and not during it. Requires a range. |
+
+`sort` is `plays` (default) or `time`. Omitting `from`/`to` means the whole
+history, except for `forgotten`, which has nothing to be absent from without one.
+
+The blacklist applies: a hidden artist's tracks never reach a playlist.
+
 ## Instance status
 
 ### `GET /api/status`

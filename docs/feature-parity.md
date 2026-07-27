@@ -89,7 +89,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Artist blacklist | **Implemented** | Excluded from every statistic through one shared SQL fragment. |
 | Affinity / comparison between two users | **Implemented** | Shared artists, albums and tracks plus a cosine similarity score. |
 | Catalogue search | **Implemented** | Artists, albums and tracks. |
-| Playlist creation from statistics | **Deferred** | Would require `playlist-modify-*` write scopes. Encore deliberately requests read-only access, so this is a considered trade-off rather than an omission. |
+| Playlist creation from statistics | **Implemented** | Four modes: most played, a minimum play count, first-heard-in-period, and forgotten favourites — each over any range, ranked by plays or by listening time. Broader than the reference. The write scope is requested only when somebody uses the feature, so an account that never makes a playlist keeps a read-only grant. |
 | Play button / Spotify remote control | **Deferred** | Needs `user-modify-playback-state` and an active device; same read-only reasoning. |
 
 ## 5. Optional enhancements (built after the required scope)
@@ -141,8 +141,9 @@ Encore's target is practical parity with the user-facing capabilities of
 4. **No Spotify call during ingestion, at all.** The requirement that an API outage cannot lose a
    listening record is only satisfiable this way.
 5. **Whole-archive upload.** Removes the most common import support burden.
-6. **Read-only Spotify scopes.** Costs the playlist features; buys an application that cannot alter
-   a listener's account even if it is compromised.
+6. **Read-only Spotify scopes by default.** The one write scope, `playlist-modify-private`, is asked
+   for only when somebody creates a playlist, so an account that never does keeps a grant that
+   cannot alter anything even if the instance is compromised. Playback control is still declined.
 7. **Own visual design.** Not required to match, and accessibility and dark mode are first-class.
 
 ## Known gaps
