@@ -244,6 +244,16 @@ func (e *Env) ScalarInt(query string, args ...any) int64 {
 	return n
 }
 
+// Exec runs a statement for its effect. Tests use it to put the database into a
+// state the application would take real time to reach — expiring a claim lease,
+// say — without sleeping through it.
+func (e *Env) Exec(query string, args ...any) {
+	e.T.Helper()
+	if _, err := e.Pool.Exec(e.Ctx(), query, args...); err != nil {
+		e.T.Fatalf("exec %q: %v", query, err)
+	}
+}
+
 // Logger returns a logger that writes into the test's output, so a failing test
 // carries the worker's own account of what it did.
 func Logger(t *testing.T) *slog.Logger {
