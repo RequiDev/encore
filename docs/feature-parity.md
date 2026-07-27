@@ -89,7 +89,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Artist blacklist | **Implemented** | Excluded from every statistic through one shared SQL fragment. |
 | Affinity / comparison between two users | **Implemented** | Shared artists, albums and tracks plus a cosine similarity score. |
 | Catalogue search | **Implemented** | Artists, albums and tracks. |
-| Playlist creation from statistics | **Implemented** | Four modes: most played, a minimum play count, first-heard-in-period, and forgotten favourites — each over any range, ranked by plays or by listening time. Broader than the reference. The write scope is requested only when somebody uses the feature, so an account that never makes a playlist keeps a read-only grant. |
+| Playlist creation from statistics | **Implemented** | Four modes: most played, a minimum play count, first-heard-in-period, and forgotten favourites — each over any range, ranked by plays or by listening time. Broader than the reference. Every definition can be previewed first — the exact tracks, ranked, without touching Spotify and without the write scope, which is what lets somebody decide whether to grant it. The scope is requested only when a playlist is actually created, so an account that never makes one keeps a read-only grant. |
 | Play button / Spotify remote control | **Deferred** | Needs `user-modify-playback-state` and an active device; same read-only reasoning. |
 
 ## 5. Optional enhancements (built after the required scope)

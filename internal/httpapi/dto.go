@@ -850,6 +850,26 @@ func (b CreatePlaylistRequest) definition() (domain.PlaylistDefinition, error) {
 	return def, nil
 }
 
+// PlaylistTrack is one track a definition selected, and why.
+type PlaylistTrack struct {
+	Rank     int      `json:"rank"`
+	Track    TrackRef `json:"track"`
+	Plays    int64    `json:"plays"`
+	MsPlayed int64    `json:"msPlayed"`
+}
+
+// PlaylistPreview is what a definition would produce, without producing it.
+type PlaylistPreview struct {
+	// Tracks in the order they would be added.
+	Tracks []PlaylistTrack `json:"tracks"`
+	// Matched is how many qualified before the limit; Limit is what was asked
+	// for. Together they are the difference between "100 tracks" and "100 of the
+	// 412 that qualified", which is the figure that tells somebody whether their
+	// limit is the right one.
+	Matched int64 `json:"matched"`
+	Limit   int   `json:"limit"`
+}
+
 // Playlist is one managed playlist as its owner sees it.
 type Playlist struct {
 	ID         string     `json:"id"`

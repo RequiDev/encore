@@ -253,6 +253,7 @@ this feature** — the sign-in grant stays read-only for everyone else.
 | `GET` | `/api/auth/spotify/playlists` | Starts an OAuth journey asking for one extra scope. A browser redirect, like relink. |
 | `GET` | `/api/playlists` | The caller's managed playlists. |
 | `POST` | `/api/playlists` | `{ "name", "mode", "sort", "limit", "minPlays", "from", "to" }`. Creates it on Spotify and fills it in one request. `403` when the scope has not been granted, with a message naming the fix; `400` when the definition matches nothing. |
+| `POST` | `/api/playlists/preview` | The same body. Returns the tracks a definition **would** select — ranked, named, with the plays that qualified each — plus `matched` and `limit`. Touches Spotify not at all and **does not require the write scope**: seeing the selection is how somebody decides whether to grant it. |
 | `POST` | `/api/playlists/{id}/rebuild` | Re-runs the stored definition and replaces the contents in place, keeping the same Spotify playlist. |
 | `DELETE` | `/api/playlists/{id}` | Encore stops managing it. **The playlist stays in the listener's Spotify library.** |
 

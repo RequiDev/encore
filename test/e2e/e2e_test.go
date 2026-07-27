@@ -1301,3 +1301,107 @@ func TestOneUserCannotRebuildAnotherUsersPlaylist(t *testing.T) {
 		}
 	}
 }
+
+// TestPlaylistPreviewTouchesNothingAndNeedsNoPermission is the point of the
+// preview: it answers "what would this make" before anything is made, and before
+// Encore has any way to make it.
+//
+// Not behind the write scope on purpose. Seeing the selection is how somebody
+// decides whether to grant write access at all, so requiring the grant first
+// would put the decision after the thing it decides.
+func TestPlaylistPreviewTouchesNothingAndNeedsNoPermission(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b) // read-only scopes, as everybody starts
+
+	seedPlays(t, inst, b, map[string]int{
+		"pv000000000000000001a": 5,
+		"pv000000000000000002b": 3,
+		"pv000000000000000003c": 1,
+	})
+
+	preview := decode[map[string]any](t, b.postJSON("/api/playlists/preview", map[string]any{
+		"name": "ignored for a preview", "mode": "min_plays", "minPlays": 3, "limit": 50,
+	}), http.StatusOK)
+
+	tracks, _ := preview["tracks"].([]any)
+	if len(tracks) != 2 {
+		t.Fatalf("preview holds %d tracks, want the 2 that cleared the bar", len(tracks))
+	}
+	if n, _ := preview["matched"].(float64); int(n) != 2 {
+		t.Fatalf("matched = %v, want 2", preview["matched"])
+	}
+
+	// Ranked, named, and carrying why each one qualified.
+	first, _ := tracks[0].(map[string]any)
+	if r, _ := first["rank"].(float64); int(r) != 1 {
+		t.Fatalf("first entry has rank %v, want 1", first["rank"])
+	}
+	if p, _ := first["plays"].(float64); int(p) != 5 {
+		t.Fatalf("first entry reports %v plays, want the most-played track first", first["plays"])
+	}
+	track, _ := first["track"].(map[string]any)
+	if track == nil || track["name"] == "" {
+		t.Fatalf("preview entry carries no track: %v", first)
+	}
+
+	// Nothing was created, and creating still needs permission.
+	if inst.stub.playlistCalls != 0 {
+		t.Fatal("a preview created something on Spotify")
+	}
+	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
+	if len(list) != 0 {
+		t.Fatalf("%d playlists exist after a preview, want none", len(list))
+	}
+	refused := b.postJSON("/api/playlists", map[string]any{
+		"name": "Real", "mode": "min_plays", "minPlays": 3, "limit": 50,
+	})
+	refused.Body.Close()
+	if refused.StatusCode != http.StatusForbidden {
+		t.Fatalf("creating without the scope returned %d, want 403", refused.StatusCode)
+	}
+}
+
+// TestPlaylistPreviewMatchesWhatIsCreated: a preview nobody can rely on is
+// worse than none, so the two paths must resolve the same definition to the
+// same tracks in the same order.
+func TestPlaylistPreviewMatchesWhatIsCreated(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(), "playlist-modify-private")
+	b := inst.browser()
+	inst.signIn(b)
+
+	seedPlays(t, inst, b, map[string]int{
+		"pv000000000000000004d": 7,
+		"pv000000000000000005e": 4,
+		"pv000000000000000006f": 2,
+	})
+
+	body := map[string]any{"name": "Top three", "mode": "top", "limit": 2}
+
+	preview := decode[map[string]any](t, b.postJSON("/api/playlists/preview", body), http.StatusOK)
+	previewed := make([]string, 0, 2)
+	for _, raw := range preview["tracks"].([]any) {
+		entry := raw.(map[string]any)
+		previewed = append(previewed, entry["track"].(map[string]any)["id"].(string))
+	}
+	// The limit cut the list, and the preview says what it cut.
+	if len(previewed) != 2 {
+		t.Fatalf("preview holds %d tracks, want the limit of 2", len(previewed))
+	}
+	if n, _ := preview["matched"].(float64); int(n) != 3 {
+		t.Fatalf("matched = %v, want the 3 that qualified before the limit", preview["matched"])
+	}
+
+	created := decode[map[string]any](t, b.postJSON("/api/playlists", body), http.StatusCreated)
+	sent := inst.stub.playlistItems[created["spotifyId"].(string)]
+
+	if len(sent) != len(previewed) {
+		t.Fatalf("preview showed %d tracks and %d were sent", len(previewed), len(sent))
+	}
+	for i, id := range previewed {
+		if want := "spotify:track:" + id; sent[i] != want {
+			t.Fatalf("position %d: preview said %s, Spotify got %s", i, want, sent[i])
+		}
+	}
+}

@@ -11,13 +11,30 @@ import (
 	"github.com/RequiDev/encore/internal/store"
 )
 
+// PlaylistEntry is one selected track and why it was selected.
+type PlaylistEntry struct {
+	TrackID  string
+	Plays    int64
+	MsPlayed int64
+}
+
 // PlaylistSelection is the ordered set of tracks a definition resolves to.
 type PlaylistSelection struct {
-	// TrackIDs are Spotify ids, best first, ready to send.
-	TrackIDs []string
+	// Tracks are best first, ready to send.
+	Tracks []PlaylistEntry
 	// Matched is how many distinct tracks met the criteria before the limit was
 	// applied, so the interface can say "100 of 412" rather than only "100".
 	Matched int64
+}
+
+// IDs are the Spotify ids in selection order, which is what a playlist write
+// takes.
+func (s PlaylistSelection) IDs() []string {
+	out := make([]string, 0, len(s.Tracks))
+	for _, t := range s.Tracks {
+		out = append(out, t.TrackID)
+	}
+	return out
 }
 
 // localIDExclusion keeps Encore's own catalogue ids out of a playlist.
@@ -59,14 +76,14 @@ func (s *Service) SelectPlaylistTracks(
 	}
 	defer rows.Close()
 
-	out := PlaylistSelection{TrackIDs: make([]string, 0, def.Limit)}
+	out := PlaylistSelection{Tracks: make([]PlaylistEntry, 0, def.Limit)}
 	for rows.Next() {
-		var id string
+		var e PlaylistEntry
 		var matched int64
-		if err := rows.Scan(&id, &matched); err != nil {
+		if err := rows.Scan(&e.TrackID, &e.Plays, &e.MsPlayed, &matched); err != nil {
 			return PlaylistSelection{}, postgres.Classify("scan playlist track", err)
 		}
-		out.TrackIDs = append(out.TrackIDs, id)
+		out.Tracks = append(out.Tracks, e)
 		out.Matched = matched
 	}
 	if err := rows.Err(); err != nil {
@@ -77,9 +94,9 @@ func (s *Service) SelectPlaylistTracks(
 
 // playlistQuery builds the statement for one mode.
 //
-// Every branch selects the same two columns: the track id, and the number of
-// tracks that matched before the limit — a window count, so the caller learns
-// how much was left on the table without a second round trip.
+// Every branch selects the same four columns: the track, why it qualified, and
+// the number of tracks that matched before the limit — a window count, so the
+// caller learns how much was left on the table without a second round trip.
 func playlistQuery(userID uuid.UUID, def domain.PlaylistDefinition, r domain.TimeRange) (string, []any) {
 	order := def.OrderColumn()
 	args := []any{store.UUIDArg(userID), r.From.UTC(), r.To.UTC(), def.Limit}
@@ -95,7 +112,7 @@ func playlistQuery(userID uuid.UUID, def domain.PlaylistDefinition, r domain.Tim
                 GROUP BY l.track_id
                 HAVING count(*) >= $5
             )
-            SELECT track_id, count(*) OVER () AS matched
+            SELECT track_id, plays, ms, count(*) OVER () AS matched
             FROM matched ORDER BY %s DESC, track_id LIMIT $4`,
 			rangeFilter("l", "$1", "$2", "$3"), localIDExclusion, order), args
 
@@ -113,7 +130,7 @@ func playlistQuery(userID uuid.UUID, def domain.PlaylistDefinition, r domain.Tim
                       AND pre.played_at < $2::timestamptz)
                 GROUP BY l.track_id
             )
-            SELECT track_id, count(*) OVER () AS matched
+            SELECT track_id, plays, ms, count(*) OVER () AS matched
             FROM matched ORDER BY %s DESC, track_id LIMIT $4`,
 			rangeFilter("l", "$1", "$2", "$3"), localIDExclusion, order), args
 
@@ -135,7 +152,7 @@ func playlistQuery(userID uuid.UUID, def domain.PlaylistDefinition, r domain.Tim
                       AND recent.played_at < $3::timestamptz)
                 GROUP BY l.track_id
             )
-            SELECT track_id, count(*) OVER () AS matched
+            SELECT track_id, plays, ms, count(*) OVER () AS matched
             FROM matched ORDER BY %s DESC, track_id LIMIT $4`,
 			blacklistFilter("l"), localIDExclusion, order), args
 
@@ -147,7 +164,7 @@ func playlistQuery(userID uuid.UUID, def domain.PlaylistDefinition, r domain.Tim
                 WHERE %s AND %s
                 GROUP BY l.track_id
             )
-            SELECT track_id, count(*) OVER () AS matched
+            SELECT track_id, plays, ms, count(*) OVER () AS matched
             FROM matched ORDER BY %s DESC, track_id LIMIT $4`,
 			rangeFilter("l", "$1", "$2", "$3"), localIDExclusion, order), args
 	}

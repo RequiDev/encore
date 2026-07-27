@@ -112,12 +112,12 @@ func TestPlaylistModeTopRanksWithinTheRange(t *testing.T) {
 	// Only what was played inside the window, best first. The track played
 	// heavily before it does not appear at all.
 	want := []string{trackSteady, trackFresh, trackRare}
-	if len(sel.TrackIDs) != len(want) {
-		t.Fatalf("selected %v, want %v", sel.TrackIDs, want)
+	if len(sel.IDs()) != len(want) {
+		t.Fatalf("selected %v, want %v", sel.IDs(), want)
 	}
 	for i := range want {
-		if sel.TrackIDs[i] != want[i] {
-			t.Fatalf("selected %v, want %v", sel.TrackIDs, want)
+		if sel.IDs()[i] != want[i] {
+			t.Fatalf("selected %v, want %v", sel.IDs(), want)
 		}
 	}
 	if sel.Matched != 3 {
@@ -135,8 +135,8 @@ func TestPlaylistModeTopReportsWhatItLeftOut(t *testing.T) {
 		Mode: domain.PlaylistModeTop, Sort: domain.SortByPlays, Limit: 1,
 	}, rng)
 
-	if len(sel.TrackIDs) != 1 {
-		t.Fatalf("selected %d tracks, want the limit of 1", len(sel.TrackIDs))
+	if len(sel.IDs()) != 1 {
+		t.Fatalf("selected %d tracks, want the limit of 1", len(sel.IDs()))
 	}
 	if sel.Matched != 3 {
 		t.Fatalf("matched = %d, want 3 — the count must be of what qualified, "+
@@ -154,10 +154,10 @@ func TestPlaylistModeMinPlaysIsNotATopN(t *testing.T) {
 
 	// Everything that cleared the bar, and nothing that did not — the single
 	// play is out, even though a top-N would have included it.
-	if len(sel.TrackIDs) != 2 {
-		t.Fatalf("selected %v, want the two tracks played at least four times", sel.TrackIDs)
+	if len(sel.IDs()) != 2 {
+		t.Fatalf("selected %v, want the two tracks played at least four times", sel.IDs())
 	}
-	for _, id := range sel.TrackIDs {
+	for _, id := range sel.IDs() {
 		if id == trackRare {
 			t.Fatal("a track played once cleared a minimum of four")
 		}
@@ -176,11 +176,11 @@ func TestPlaylistModeDiscoveriesMeansFirstEver(t *testing.T) {
 	}, rng)
 
 	got := map[string]bool{}
-	for _, id := range sel.TrackIDs {
+	for _, id := range sel.IDs() {
 		got[id] = true
 	}
 	if !got[trackFresh] || !got[trackRare] {
-		t.Fatalf("selected %v, want both tracks first heard inside the window", sel.TrackIDs)
+		t.Fatalf("selected %v, want both tracks first heard inside the window", sel.IDs())
 	}
 	if got[trackSteady] {
 		t.Fatal("a track already heard before the window counted as a discovery")
@@ -196,8 +196,8 @@ func TestPlaylistModeForgottenLooksBackwards(t *testing.T) {
 		From: rng.From, To: rng.To,
 	}, rng)
 
-	if len(sel.TrackIDs) != 1 || sel.TrackIDs[0] != trackOld {
-		t.Fatalf("selected %v, want only the track that dropped out of rotation", sel.TrackIDs)
+	if len(sel.IDs()) != 1 || sel.IDs()[0] != trackOld {
+		t.Fatalf("selected %v, want only the track that dropped out of rotation", sel.IDs())
 	}
 }
 
@@ -220,7 +220,7 @@ func TestPlaylistsExcludeHiddenArtists(t *testing.T) {
 		sel := selectTracks(t, env, userID, domain.PlaylistDefinition{
 			Mode: mode, Sort: domain.SortByPlays, Limit: 100, MinPlays: 1,
 		}, rng)
-		for _, id := range sel.TrackIDs {
+		for _, id := range sel.IDs() {
 			if id == trackSteady {
 				t.Fatalf("mode %q selected a hidden artist's track", mode)
 			}
@@ -265,14 +265,14 @@ func TestSortByTimeRanksDifferentlyFromPlays(t *testing.T) {
 	byPlays := selectTracks(t, env, user.ID, domain.PlaylistDefinition{
 		Mode: domain.PlaylistModeTop, Sort: domain.SortByPlays, Limit: 10,
 	}, rng)
-	if byPlays.TrackIDs[0] != short {
-		t.Fatalf("ranked by plays, first is %q, want the one played more often", byPlays.TrackIDs[0])
+	if byPlays.IDs()[0] != short {
+		t.Fatalf("ranked by plays, first is %q, want the one played more often", byPlays.IDs()[0])
 	}
 
 	byTime := selectTracks(t, env, user.ID, domain.PlaylistDefinition{
 		Mode: domain.PlaylistModeTop, Sort: domain.SortByTime, Limit: 10,
 	}, rng)
-	if byTime.TrackIDs[0] != long {
-		t.Fatalf("ranked by time, first is %q, want the one listened to longer", byTime.TrackIDs[0])
+	if byTime.IDs()[0] != long {
+		t.Fatalf("ranked by time, first is %q, want the one listened to longer", byTime.IDs()[0])
 	}
 }

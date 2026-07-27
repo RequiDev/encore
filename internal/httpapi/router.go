@@ -111,6 +111,9 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	s.route(mux, "GET /api/auth/spotify/playlists", s.handleAuthorizePlaylists)
 	s.route(mux, "GET /api/playlists", s.handleListPlaylists)
 	s.route(mux, "POST /api/playlists", s.handleCreatePlaylist)
+	// Read-only, and deliberately not behind the write scope: seeing what a
+	// definition selects is how somebody decides whether to grant it.
+	s.route(mux, "POST /api/playlists/preview", s.handlePreviewPlaylist)
 	s.route(mux, "POST /api/playlists/{id}/rebuild", s.handleRebuildPlaylist)
 	s.route(mux, "DELETE /api/playlists/{id}", s.handleForgetPlaylist)
 

@@ -147,6 +147,23 @@ export interface CreatePlaylistRequest {
   to?: Timestamp
 }
 
+/** One track a definition selected, and why. */
+export interface PlaylistTrack {
+  rank: number
+  track: TrackRef
+  plays: number
+  msPlayed: number
+}
+
+/** What a definition would produce, without producing it. */
+export interface PlaylistPreview {
+  tracks: PlaylistTrack[]
+  /** How many qualified before the limit was applied. */
+  matched: number
+  /** What the limit was. */
+  limit: number
+}
+
 export interface Playlist {
   id: string
   name: string

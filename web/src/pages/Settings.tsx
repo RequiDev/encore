@@ -33,6 +33,7 @@ import type {
   EntityProgress,
   Playlist,
   PlaylistMode,
+  PlaylistPreview,
   ShareLink,
   StatusResponse,
   SyncOutcome,
@@ -197,10 +198,39 @@ export default function Settings(): ReactElement {
   const [playlistMinPlays, setPlaylistMinPlays] = useState('10')
   const [playlistYear, setPlaylistYear] = useState('')
 
+  // Held rather than cached: a preview describes the form as it was when the
+  // button was pressed, and silently refreshing it under an edited form would
+  // show somebody a list that answers a different question.
+  const [preview, setPreview] = useState<PlaylistPreview | null>(null)
+
+  // Built once so preview and create ask exactly the same question. Two copies
+  // of this would eventually differ, and the preview would stop being one.
+  const playlistBody = (): CreatePlaylistRequest => {
+    const body: CreatePlaylistRequest = {
+      name: playlistName.trim(),
+      mode: playlistMode,
+      limit: Number(playlistLimit) || 100,
+    }
+    if (playlistMode === 'min_plays') body.minPlays = Number(playlistMinPlays) || 10
+    if (playlistYear !== '') {
+      const year = Number(playlistYear)
+      body.from = new Date(Date.UTC(year, 0, 1)).toISOString()
+      body.to = new Date(Date.UTC(year + 1, 0, 1)).toISOString()
+    }
+    return body
+  }
+
+  const previewPlaylist = useMutation({
+    mutationFn: (body: CreatePlaylistRequest) =>
+      api.post<PlaylistPreview>('/playlists/preview', body),
+    onSuccess: setPreview,
+  })
+
   const createPlaylist = useMutation({
     mutationFn: (body: CreatePlaylistRequest) => api.post<Playlist>('/playlists', body),
     onSuccess: (made) => {
       setPlaylistName('')
+      setPreview(null)
       void queryClient.invalidateQueries({ queryKey: qk.playlists() })
       toast.notify({
         tone: 'success',
@@ -538,102 +568,84 @@ export default function Settings(): ReactElement {
         title="Playlists"
         description="Build a Spotify playlist from what you actually listened to."
       >
-        {!canWritePlaylists ? (
-          <>
-            <p className="max-w-prose text-sm text-ink-muted">
-              Encore signed you in with read-only access, so it cannot yet put anything in your
-              library. Granting permission takes one trip through Spotify and changes nothing else:
-              Encore still only reads your listening, and you can revoke it from your Spotify
-              account whenever you like.
-            </p>
-            <a className={`${buttonClass('primary')} mt-3`} href="/api/auth/spotify/playlists">
-              <Icon name="refresh" />
-              Allow Encore to create playlists
-            </a>
-          </>
-        ) : (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              const body: CreatePlaylistRequest = {
-                name: playlistName.trim(),
-                mode: playlistMode,
-                limit: Number(playlistLimit) || 100,
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            createPlaylist.mutate(playlistBody())
+          }}
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Name" hint="What it will be called in Spotify.">
+              <Input
+                value={playlistName}
+                maxLength={100}
+                required
+                placeholder="Heavy rotation"
+                onChange={(event) => setPlaylistName(event.target.value)}
+              />
+            </Field>
+            <Field label="Choose tracks by" hint={MODE_HINTS[playlistMode]}>
+              <Select
+                value={playlistMode}
+                onChange={(event) => setPlaylistMode(event.target.value as PlaylistMode)}
+              >
+                <option value="top">Most played</option>
+                <option value="min_plays">Played at least N times</option>
+                <option value="discoveries">First heard in the period</option>
+                <option value="forgotten">Forgotten favourites</option>
+              </Select>
+            </Field>
+            <Field
+              label="Period"
+              hint={
+                playlistMode === 'forgotten'
+                  ? 'Required: the period they dropped out of.'
+                  : 'Leave on everything for your whole history.'
               }
-              if (playlistMode === 'min_plays') body.minPlays = Number(playlistMinPlays) || 10
-              if (playlistYear !== '') {
-                const year = Number(playlistYear)
-                body.from = new Date(Date.UTC(year, 0, 1)).toISOString()
-                body.to = new Date(Date.UTC(year + 1, 0, 1)).toISOString()
-              }
-              createPlaylist.mutate(body)
-            }}
-          >
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Name" hint="What it will be called in Spotify.">
+            >
+              <Select
+                value={playlistYear}
+                onChange={(event) => setPlaylistYear(event.target.value)}
+              >
+                <option value="">Everything</option>
+                {playlistYears.map((year) => (
+                  <option key={year} value={String(year)}>
+                    {year}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {playlistMode === 'min_plays' ? (
+              <Field label="Minimum plays" hint="Every track that reached this count.">
                 <Input
-                  value={playlistName}
-                  maxLength={100}
-                  required
-                  placeholder="Heavy rotation"
-                  onChange={(event) => setPlaylistName(event.target.value)}
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={playlistMinPlays}
+                  onChange={(event) => setPlaylistMinPlays(event.target.value)}
                 />
               </Field>
-              <Field label="Choose tracks by" hint={MODE_HINTS[playlistMode]}>
-                <Select
-                  value={playlistMode}
-                  onChange={(event) => setPlaylistMode(event.target.value as PlaylistMode)}
-                >
-                  <option value="top">Most played</option>
-                  <option value="min_plays">Played at least N times</option>
-                  <option value="discoveries">First heard in the period</option>
-                  <option value="forgotten">Forgotten favourites</option>
-                </Select>
+            ) : (
+              <Field label="How many tracks" hint="At most 500.">
+                <Input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={playlistLimit}
+                  onChange={(event) => setPlaylistLimit(event.target.value)}
+                />
               </Field>
-              <Field
-                label="Period"
-                hint={
-                  playlistMode === 'forgotten'
-                    ? 'Required: the period they dropped out of.'
-                    : 'Leave on everything for your whole history.'
-                }
-              >
-                <Select
-                  value={playlistYear}
-                  onChange={(event) => setPlaylistYear(event.target.value)}
-                >
-                  <option value="">Everything</option>
-                  {playlistYears.map((year) => (
-                    <option key={year} value={String(year)}>
-                      {year}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              {playlistMode === 'min_plays' ? (
-                <Field label="Minimum plays" hint="Every track that reached this count.">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={10000}
-                    value={playlistMinPlays}
-                    onChange={(event) => setPlaylistMinPlays(event.target.value)}
-                  />
-                </Field>
-              ) : (
-                <Field label="How many tracks" hint="At most 500.">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={500}
-                    value={playlistLimit}
-                    onChange={(event) => setPlaylistLimit(event.target.value)}
-                  />
-                </Field>
-              )}
-            </div>
+            )}
+          </div>
 
-            <div className="mt-3">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              busy={previewPlaylist.isPending}
+              onClick={() => previewPlaylist.mutate(playlistBody())}
+            >
+              Preview
+            </Button>
+            {canWritePlaylists ? (
               <Button
                 type="submit"
                 variant="primary"
@@ -642,14 +654,69 @@ export default function Settings(): ReactElement {
               >
                 Create in Spotify
               </Button>
-            </div>
-            {createPlaylist.isError ? (
-              <p role="alert" className="mt-2 text-sm text-ember">
-                {errorMessage(createPlaylist.error)}
+            ) : (
+              <a className={buttonClass('primary')} href="/api/auth/spotify/playlists">
+                <Icon name="refresh" />
+                Allow Encore to create playlists
+              </a>
+            )}
+          </div>
+
+          {!canWritePlaylists ? (
+            <p className="mt-2 max-w-prose text-sm text-ink-muted">
+              Previewing needs no permission — it only reads your own listening. Creating the
+              playlist does: one trip through Spotify, nothing else changes, and you can revoke it
+              from your Spotify account whenever you like.
+            </p>
+          ) : null}
+
+          {previewPlaylist.isError ? (
+            <p role="alert" className="mt-2 text-sm text-ember">
+              {errorMessage(previewPlaylist.error)}
+            </p>
+          ) : null}
+          {createPlaylist.isError ? (
+            <p role="alert" className="mt-2 text-sm text-ember">
+              {errorMessage(createPlaylist.error)}
+            </p>
+          ) : null}
+
+          {preview ? (
+            <div className="mt-4 border-t border-seam pt-4">
+              <p className="text-sm text-ink">
+                {preview.tracks.length === 0
+                  ? 'Nothing matches that description.'
+                  : preview.matched > preview.tracks.length
+                    ? `${formatPlural(preview.tracks.length, 'track')}, of ${formatCount(
+                        preview.matched,
+                      )} that qualified. Raise the limit to take more.`
+                    : `${formatPlural(preview.tracks.length, 'track')} — everything that qualified.`}
               </p>
-            ) : null}
-          </form>
-        )}
+              {preview.tracks.length > 0 ? (
+                <ol className="mt-2 max-h-80 divide-y divide-seam overflow-y-auto">
+                  {preview.tracks.map((entry) => (
+                    <li key={entry.track.id} className="flex items-baseline gap-3 py-1.5 text-sm">
+                      <span className="tabular w-8 shrink-0 text-right text-xs text-ink-faint">
+                        {entry.rank}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="text-ink">{entry.track.name || 'Not yet named'}</span>
+                        {entry.track.artists.length > 0 ? (
+                          <span className="block text-xs text-ink-muted">
+                            {entry.track.artists.map((a) => a.name).join(', ')}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="tabular shrink-0 text-xs text-ink-faint">
+                        {formatPlural(entry.plays, 'play')}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+            </div>
+          ) : null}
+        </form>
 
         {(playlists.data?.length ?? 0) === 0 ? null : (
           <ul className="mt-4 divide-y divide-seam border-t border-seam">

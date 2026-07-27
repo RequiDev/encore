@@ -13,6 +13,7 @@ import (
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/logging"
 	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/stats"
 )
 
 // playlistDescription is what Spotify shows under the name. It says where the
@@ -67,11 +68,12 @@ func (s *Server) handleCreatePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ids, matched, err := s.selectPlaylistTracks(ctx, user, def)
+	sel, err := s.selectPlaylistTracks(ctx, user, def)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
+	ids := sel.IDs()
 	if len(ids) == 0 {
 		writeError(w, r, ErrInvalidRequest(
 			"Nothing matches that description, so there is no playlist to make. "+
@@ -108,7 +110,7 @@ func (s *Server) handleCreatePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := toPlaylist(stored)
-	out.Matched = matched
+	out.Matched = sel.Matched
 	writeJSON(w, r, http.StatusCreated, out)
 }
 
@@ -160,11 +162,12 @@ func (s *Server) handleRebuildPlaylist(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	ids, matched, err := s.selectPlaylistTracks(ctx, user, stored.Definition)
+	sel, err := s.selectPlaylistTracks(ctx, user, stored.Definition)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
+	ids := sel.IDs()
 	if err := s.spotify.ReplacePlaylistItems(ctx, token, stored.SpotifyID, ids); err != nil {
 		writeError(w, r, playlistError(err))
 		return
@@ -179,7 +182,7 @@ func (s *Server) handleRebuildPlaylist(w http.ResponseWriter, r *http.Request) {
 	stored.BuiltAt = now
 
 	out := toPlaylist(stored)
-	out.Matched = matched
+	out.Matched = sel.Matched
 	writeJSON(w, r, http.StatusOK, out)
 }
 
@@ -206,23 +209,78 @@ func (s *Server) handleForgetPlaylist(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePreviewPlaylist answers POST /api/playlists/preview.
+//
+// Runs a definition and returns what it would put in a playlist, without
+// touching Spotify at all.
+//
+// Deliberately not behind the playlist scope. It writes nothing, and being able
+// to see what a definition selects *before* deciding whether to grant Encore
+// write access to a Spotify account is the right order for that decision. It is
+// also the only way to use the modes whose size cannot be guessed: a minimum
+// play count returns however many tracks clear the bar, which is the question
+// the mode exists to ask.
+func (s *Server) handlePreviewPlaylist(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	var body CreatePlaylistRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	def, err := body.definition()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	ctx := r.Context()
+	sel, err := s.selectPlaylistTracks(ctx, user, def)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	ids := sel.IDs()
+	refs, err := s.resolveRefs(ctx, ids, nil, nil)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	out := PlaylistPreview{
+		Matched: sel.Matched,
+		Limit:   def.Limit,
+		Tracks:  make([]PlaylistTrack, 0, len(sel.Tracks)),
+	}
+	for i, entry := range sel.Tracks {
+		out.Tracks = append(out.Tracks, PlaylistTrack{
+			Rank:     i + 1,
+			Track:    refs.trackEntity(entry.TrackID),
+			Plays:    entry.Plays,
+			MsPlayed: entry.MsPlayed,
+		})
+	}
+	writeJSON(w, r, http.StatusOK, out)
+}
+
 // selectPlaylistTracks resolves a definition against the caller's history.
 func (s *Server) selectPlaylistTracks(
 	ctx context.Context, user domain.User, def domain.PlaylistDefinition,
-) ([]string, int64, error) {
+) (stats.PlaylistSelection, error) {
 	first, _, err := s.listens.Bounds(ctx, s.querier, user.ID)
 	if err != nil {
-		return nil, 0, err
+		return stats.PlaylistSelection{}, err
 	}
 	var firstListen time.Time
 	if first != nil {
 		firstListen = *first
 	}
-	sel, err := s.stats.SelectPlaylistTracks(ctx, s.querier, user.ID, def, def.Range(s.now(), firstListen))
-	if err != nil {
-		return nil, 0, err
-	}
-	return sel.TrackIDs, sel.Matched, nil
+	return s.stats.SelectPlaylistTracks(ctx, s.querier, user.ID, def, def.Range(s.now(), firstListen))
 }
 
 // playlistToken returns an access token that may write playlists, or an error
