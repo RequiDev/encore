@@ -618,8 +618,10 @@ function MetadataPanel({
                 <span className="tabular">
                   {formatDateTime(status.metadata.pausedUntil, timezone)}
                 </span>{' '}
-                ({formatRelative(status.metadata.pausedUntil)}). Fetching resumes by itself then —
-                there is nothing to do and nothing to restart.
+                ({formatRelative(status.metadata.pausedUntil)}).{' '}
+                {status.metadata.fallbackConfigured
+                  ? 'Encore is reading from the fallback source meanwhile, so names and artwork keep arriving.'
+                  : 'Fetching resumes by itself then — there is nothing to do and nothing to restart.'}
               </p>
               <p className="mt-2 max-w-prose text-sm text-ink-muted">
                 Your listening data is unaffected: every play is already counted, and every

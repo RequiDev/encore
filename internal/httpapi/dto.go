@@ -716,4 +716,12 @@ type MetadataStatus struct {
 	// PausedUntil is when it will resume, absent when not paused. Listening data
 	// is never affected by a pause; only names, artwork and genres wait.
 	PausedUntil *time.Time `json:"pausedUntil"`
+	// FallbackConfigured reports that a second metadata source is set up, which
+	// changes what a pause means: enrichment keeps going rather than stopping.
+	//
+	// It is read from this process's own configuration. The API and the worker
+	// are separate containers sharing one environment, so this says the
+	// deployment is configured for a fallback rather than that the worker has
+	// successfully reached one.
+	FallbackConfigured bool `json:"fallbackConfigured"`
 }

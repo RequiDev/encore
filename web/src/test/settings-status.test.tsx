@@ -62,7 +62,14 @@ function status(over: Partial<StatusResponse['metadata']> = {}): StatusResponse 
       aliasesTotal: 0,
       aliasesPending: 0,
     },
-    metadata: { outstanding: 16484, complete: false, paused: false, pausedUntil: null, ...over },
+    metadata: {
+      outstanding: 16484,
+      complete: false,
+      paused: false,
+      pausedUntil: null,
+      fallbackConfigured: false,
+      ...over,
+    },
   }
 }
 
@@ -146,6 +153,27 @@ describe('the metadata panel', () => {
     expect(within(section).getByText(/Restarting\s+Encore would not help/i)).toBeInTheDocument()
   })
 
+  it('says enrichment continues when a fallback source is configured', async () => {
+    stubRoutes({
+      '/api/me': ME,
+      '/api/blacklist': [],
+      '/api/status': status({
+        paused: true,
+        pausedUntil: '2026-07-28T04:00:00Z',
+        fallbackConfigured: true,
+      }),
+    })
+
+    render(mountSettings())
+    const section = await panel()
+
+    expect(await within(section).findByText(/rate limited/i)).toBeInTheDocument()
+    // With a second source the wait is not a stoppage, and saying otherwise
+    // would send someone looking for a problem that is already handled.
+    expect(within(section).getByText(/reading from the fallback source/i)).toBeInTheDocument()
+    expect(within(section).queryByText(/resumes by itself/i)).not.toBeInTheDocument()
+  })
+
   it('stops asking for attention once everything has been fetched', async () => {
     stubRoutes({
       '/api/me': ME,
@@ -158,7 +186,13 @@ describe('the metadata panel', () => {
           aliasesTotal: 0,
           aliasesPending: 0,
         },
-        metadata: { outstanding: 0, complete: true, paused: false, pausedUntil: null },
+        metadata: {
+          outstanding: 0,
+          complete: true,
+          paused: false,
+          pausedUntil: null,
+          fallbackConfigured: false,
+        },
       } satisfies StatusResponse,
     })
 

@@ -30,8 +30,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	out := StatusResponse{
 		Catalogue: progress,
 		Metadata: MetadataStatus{
-			Outstanding: progress.Outstanding(),
-			Complete:    progress.Complete(),
+			Outstanding:        progress.Outstanding(),
+			Complete:           progress.Complete(),
+			FallbackConfigured: s.cfg.MetadataFallback.Enabled(),
 		},
 	}
 

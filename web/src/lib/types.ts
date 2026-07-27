@@ -108,6 +108,12 @@ export interface MetadataStatus {
   paused: boolean
   /** When enrichment resumes. Null unless `paused`. */
   pausedUntil: Timestamp | null
+  /**
+   * A second metadata source is configured, so a pause slows enrichment down
+   * rather than stopping it. Reported from the API's own environment, which
+   * means the deployment is set up for one — not that the worker has reached it.
+   */
+  fallbackConfigured: boolean
 }
 
 export interface StatusResponse {
