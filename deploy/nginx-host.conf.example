@@ -10,6 +10,22 @@
 # serves the built client and forwards /api to the API container itself, so this
 # file needs exactly one upstream and Encore is reached through a single origin.
 # One origin is what lets the session cookie stay SameSite=Lax with no CORS.
+#
+# Do NOT add a second location that sends /api/ straight to the API on port 8080
+# with a trailing slash, like this:
+#
+#     location /api/ { proxy_pass http://127.0.0.1:8080/; }   # WRONG for Encore
+#
+# A trailing slash on proxy_pass replaces the matched prefix, so /api/me arrives
+# at the API as /me and every request comes back 404 with
+# {"code":"not_found"}. Encore's own routes include the /api prefix — unlike
+# some other self-hosted trackers, whose backend is mounted at the root and which
+# therefore need exactly that strip. One location proxying everything is correct
+# here.
+#
+# Encore also uses no websockets, so the Upgrade and Connection headers that
+# those setups need are unnecessary; setting Connection "upgrade" unconditionally
+# breaks keep-alive to the upstream for ordinary requests.
 
 server {
     listen 80;
