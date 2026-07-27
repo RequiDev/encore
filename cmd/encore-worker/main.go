@@ -79,10 +79,17 @@ func run() error {
 	// One maintenance task runs instead of the loops rather than alongside them:
 	// it reads back what was imported and exits, and running it while the worker
 	// is also enriching would only have the two writing the same rows.
-	if len(os.Args) > 1 && os.Args[1] == "backfill-names" {
+	// Two maintenance commands run instead of the loops rather than alongside
+	// them, and exit when done.
+	if len(os.Args) > 1 {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return backfillTrackNames(ctx, cfg, lg)
+		switch os.Args[1] {
+		case "backfill-names":
+			return backfillTrackNames(ctx, cfg, lg)
+		case "status":
+			return reportStatus(ctx, cfg, lg)
+		}
 	}
 
 	// The single most useful line in a self-hosted deployment's logs: what this

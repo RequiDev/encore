@@ -144,6 +144,20 @@ docker compose exec -T db pg_dump -U encore -d encore --format=custom > pre-upgr
 
 ---
 
+## What is this instance doing?
+
+One command, read-only, safe at any time:
+
+```bash
+docker compose run --rm worker /usr/local/bin/encore-worker status
+```
+
+It reports how many listens are held, how much of the catalogue has been resolved and how much is
+still queued, whether Spotify is currently rate limiting the application and until when, each user's
+sync state, and the import jobs. It is the first thing to run when something looks wrong, and it
+answers the two most common questions — "are the blank artists ever going to fill in?" and "is
+anything actually happening?" — without knowing the schema.
+
 ## Troubleshooting
 
 ### `502 Bad Gateway` from nginx on every `/api` request

@@ -225,6 +225,7 @@ The Docker Compose path is unaffected: the web image builds inside a Linux conta
 | Coverage report | `make cover` |
 | Format | `gofmt -w .` and `cd web && npm run format` |
 | Lint | `go vet ./...`, `staticcheck ./...`, `cd web && npm run lint` |
+| Instance status | `docker compose run --rm worker /usr/local/bin/encore-worker status` |
 | Import benchmark | `make bench` (one million records) |
 | Build binaries | `go build -o ./bin/ ./cmd/...` |
 | Whole stack | `docker compose up -d --build` |
