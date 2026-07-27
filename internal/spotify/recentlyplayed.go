@@ -21,9 +21,12 @@ const (
 // CurrentUser reads the profile of the listener the access token belongs to.
 // Email and Product are present only when the grant includes user-read-email
 // and user-read-private.
+//
+// Interactive: this is the second half of signing in, and the person is watching
+// a browser tab. It must not queue behind a catalogue quota it did not spend.
 func (c *Client) CurrentUser(ctx context.Context, accessToken string) (*UserProfile, error) {
 	var p UserProfile
-	if err := c.get(ctx, "/v1/me", "get current user", nil, accessToken, &p); err != nil {
+	if err := c.getClass(ctx, "/v1/me", "get current user", nil, accessToken, &p, true); err != nil {
 		return nil, fmt.Errorf("spotify: current user: %w", err)
 	}
 	if p.ID == "" {

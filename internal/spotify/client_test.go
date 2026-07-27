@@ -126,19 +126,19 @@ func TestRateLimitedRequestPausesWholeClient(t *testing.T) {
 					_, _ = io.WriteString(w, `{"error":{"status":429,"message":"API rate limit exceeded"}}`)
 					return
 				}
-				_, _ = io.WriteString(w, `{"id":"listener","display_name":"Listener"}`)
+				_, _ = io.WriteString(w, `{"items":[]}`)
 			}))
 			defer srv.Close()
 
 			clock := newFakeClock()
 			c := newTestClient(t, srv, clock)
 
-			profile, err := c.CurrentUser(context.Background(), "user-token")
-			if err != nil {
-				t.Fatalf("CurrentUser: %v", err)
-			}
-			if profile.ID != "listener" {
-				t.Fatalf("profile id = %q, want %q", profile.ID, "listener")
+			// Driven through a background call on purpose. The sign-in path has its
+			// own budget and refuses to queue, so it is the wrong instrument for
+			// measuring how long the application is held back.
+			if _, err := c.RecentlyPlayed(
+				context.Background(), "user-token", time.Time{}, 50, 1); err != nil {
+				t.Fatalf("RecentlyPlayed: %v", err)
 			}
 			if got := calls.Load(); got != 2 {
 				t.Fatalf("server calls = %d, want 2", got)
@@ -168,7 +168,7 @@ func TestRateLimitPauseHeldForLongRetryAfter(t *testing.T) {
 	c := newTestClient(t, srv, clock)
 	c.policy = c.policy.WithAttempts(1)
 
-	_, err := c.CurrentUser(context.Background(), "user-token")
+	_, err := c.RecentlyPlayed(context.Background(), "user-token", time.Time{}, 50, 1)
 	apiErr, ok := AsAPIError(err)
 	if !ok {
 		t.Fatalf("error %v is not an APIError", err)

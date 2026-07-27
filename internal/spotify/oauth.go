@@ -82,6 +82,7 @@ func (c *Client) AuthorizeURL(state, codeChallenge string) string {
 }
 
 // ExchangeCode redeems an authorization code for a token pair.
+// It is an interactive call: somebody is watching a browser tab while it runs.
 func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*Token, error) {
 	if strings.TrimSpace(code) == "" {
 		return nil, errors.New("spotify: authorization code is empty")
@@ -94,7 +95,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 	if codeVerifier != "" {
 		form.Set("code_verifier", codeVerifier)
 	}
-	return c.token(ctx, "exchange authorization code", form)
+	return c.token(ctx, "exchange authorization code", form, true)
 }
 
 // RefreshToken exchanges a refresh token for a fresh access token.
@@ -103,6 +104,10 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 // sends a new one when it rotates: the caller keeps the one it already holds.
 // A rejected grant comes back wrapped in ErrInvalidGrant so the account can be
 // marked needs_reauth instead of being polled for ever.
+//
+// Background: this runs inside the sync poller, which has all day. The one path
+// where a person waits on it — a manual sync — is refused up front by the API
+// while a pause is in force, rather than queueing here.
 func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token, error) {
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, errors.New("spotify: refresh token is empty")
@@ -111,7 +116,7 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", c.cfg.ClientID)
-	return c.token(ctx, "refresh access token", form)
+	return c.token(ctx, "refresh access token", form, false)
 }
 
 // ClientCredentialsToken obtains an application token, which carries no user
@@ -119,19 +124,25 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 func (c *Client) ClientCredentialsToken(ctx context.Context) (*Token, error) {
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
-	return c.token(ctx, "obtain application token", form)
+	return c.token(ctx, "obtain application token", form, false)
 }
 
 // token posts a grant to the accounts service and normalises the response.
-func (c *Client) token(ctx context.Context, label string, form url.Values) (*Token, error) {
+//
+// interactive says whether a person is waiting. It matters here more than
+// anywhere: this is accounts.spotify.com, a different service from the API, and
+// a catalogue quota exhausted on api.spotify.com is no reason at all to refuse
+// somebody a token.
+func (c *Client) token(ctx context.Context, label string, form url.Values, interactive bool) (*Token, error) {
 	var tr tokenResponse
 	err := c.do(ctx, request{
-		method: http.MethodPost,
-		url:    c.tokenURL(),
-		label:  label,
-		basic:  true,
-		form:   form,
-		out:    &tr,
+		method:      http.MethodPost,
+		url:         c.tokenURL(),
+		label:       label,
+		basic:       true,
+		form:        form,
+		out:         &tr,
+		interactive: interactive,
 	})
 	if err != nil {
 		if apiErr, ok := AsAPIError(err); ok && oauthErrorCode(apiErr.Body) == "invalid_grant" {

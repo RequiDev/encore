@@ -2,6 +2,7 @@ package spotify
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -121,6 +122,63 @@ func (l *Limiter) Wait(ctx context.Context) error {
 		}
 		delay = remaining
 	}
+}
+
+// PausedError reports that a request was not sent because the limiter is holding
+// everything back, and that waiting for it was not worth the caller's time.
+//
+// Only bounded waits produce it. A background worker has all day and simply
+// waits; a request someone is sitting in front of does not, and a browser
+// spinner that resolves in twenty hours is indistinguishable from a broken
+// instance.
+type PausedError struct {
+	// Until is when the pause lifts.
+	Until time.Time
+}
+
+func (e *PausedError) Error() string {
+	return fmt.Sprintf("spotify is rate limiting this application until %s",
+		e.Until.UTC().Format(time.RFC3339))
+}
+
+// RetryAfter is how much of the pause is left, measured from now.
+func (e *PausedError) RetryAfter() time.Duration {
+	return time.Until(e.Until)
+}
+
+// WaitMax is Wait with a ceiling on how long the caller will queue.
+//
+// It exists because the pause is process-wide by design — Spotify's quota
+// belongs to the application, so one goroutine backing off privately would only
+// queue up the next round of rejections for its neighbours — and that reasoning
+// holds for background work and fails for anything a person is waiting on. An
+// exhausted daily quota pauses the limiter for most of a day, and a request that
+// honoured it would block for most of a day.
+//
+// A budget of zero or less means "wait as long as it takes", which is Wait.
+//
+// The distinction between running out of budget and the caller giving up is kept
+// deliberately: the first is a PausedError the interface can explain, the second
+// is the caller's own context error and belongs to them.
+func (l *Limiter) WaitMax(ctx context.Context, max time.Duration) error {
+	if max <= 0 {
+		return l.Wait(ctx)
+	}
+	// A pause already longer than the budget is answerable now. Sitting out the
+	// budget first would only make the person wait to be told something the
+	// limiter already knew.
+	if l.pauseRemaining() > max {
+		return &PausedError{Until: l.PausedUntil()}
+	}
+	bounded, cancel := context.WithTimeout(ctx, max)
+	defer cancel()
+
+	err := l.Wait(bounded)
+	if err != nil && ctx.Err() == nil {
+		// Wait has already refunded the token it reserved.
+		return &PausedError{Until: l.PausedUntil()}
+	}
+	return err
 }
 
 // Pause holds every caller back until t. A pause is never shortened, so the

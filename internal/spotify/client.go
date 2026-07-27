@@ -47,8 +47,19 @@ const (
 	// the application's daily quota having run out.
 	quotaExhaustedAfter = 5 * time.Minute
 	defaultTimeout      = 20 * time.Second
-	defaultAPIBaseURL   = "https://api.spotify.com"
-	defaultAuthBaseURL  = "https://accounts.spotify.com"
+	// signinRate and signinBurst are the sign-in path's own budget.
+	//
+	// It is small but separate. Authenticating costs two requests and happens a
+	// handful of times a day; it is not what exhausts a quota, and it must not
+	// queue behind the thing that did.
+	signinRate  = 5
+	signinBurst = 10
+	// signinWait is how long a person's request may queue for a token before
+	// Encore gives up and says why. Long enough to absorb ordinary pacing, far
+	// short of a browser's patience.
+	signinWait         = 5 * time.Second
+	defaultAPIBaseURL  = "https://api.spotify.com"
+	defaultAuthBaseURL = "https://accounts.spotify.com"
 )
 
 // Client talks to the Spotify Web API. It is safe for concurrent use and is
@@ -58,6 +69,18 @@ type Client struct {
 	lg      *slog.Logger
 	http    *http.Client
 	limiter *Limiter
+	// signin is the rate budget for the calls a person is waiting on: the OAuth
+	// token exchange and the profile read behind it.
+	//
+	// It is deliberately not the limiter above. A 429 on a catalogue read pauses
+	// that one for as long as Spotify asks, which for an exhausted daily quota is
+	// most of a day — and sharing it meant a large import could lock everybody
+	// out of their own instance until the quota reset. Worse, the token exchange
+	// is not even the same service: it is accounts.spotify.com, which never
+	// rate limited anybody here.
+	//
+	// Nothing a background worker does may take authentication offline.
+	signin *Limiter
 	// onPause reports a newly declared pause so it can be recorded somewhere
 	// that survives a restart.
 	onPause func(until time.Time)
@@ -159,6 +182,9 @@ func NewClient(cfg config.Spotify, lg *slog.Logger, opts ...Option) *Client {
 		// with, which is what lets a test drive both without real waiting.
 		c.limiter = NewLimiterWithClock(cfg.RateLimit, cfg.RateBurst, c.clock)
 	}
+	// Never shared and never restored from a recorded pause: a quota ban recorded
+	// yesterday says nothing about whether somebody may sign in today.
+	c.signin = NewLimiterWithClock(signinRate, signinBurst, c.clock)
 	return c
 }
 
@@ -205,20 +231,45 @@ type request struct {
 	basic  bool
 	form   url.Values
 	out    any
+	// interactive marks a request a person is waiting on. Those draw on the
+	// sign-in budget rather than the application's catalogue quota, and they
+	// refuse to queue indefinitely.
+	interactive bool
 }
 
 // get issues an authenticated GET against the Web API.
 func (c *Client) get(ctx context.Context, path, label string, query url.Values, accessToken string, out any) error {
+	return c.getClass(ctx, path, label, query, accessToken, out, false)
+}
+
+// getClass is get with the request class spelled out.
+func (c *Client) getClass(
+	ctx context.Context,
+	path, label string,
+	query url.Values,
+	accessToken string,
+	out any,
+	interactive bool,
+) error {
 	if accessToken == "" {
 		return fmt.Errorf("%s: no access token", label)
 	}
 	return c.do(ctx, request{
-		method: http.MethodGet,
-		url:    c.endpoint(path, query),
-		label:  label,
-		bearer: accessToken,
-		out:    out,
+		method:      http.MethodGet,
+		url:         c.endpoint(path, query),
+		label:       label,
+		bearer:      accessToken,
+		out:         out,
+		interactive: interactive,
 	})
+}
+
+// budget picks the limiter a request draws on, and how long it may queue.
+func (c *Client) budget(r request) (*Limiter, time.Duration) {
+	if r.interactive {
+		return c.signin, signinWait
+	}
+	return c.limiter, 0
 }
 
 // do runs a request under the retry policy.
@@ -245,8 +296,11 @@ func (c *Client) do(ctx context.Context, r request) error {
 // retry loop: a permanent failure is wrapped in retry.Stop, a rate limit in
 // retry.After, and anything else is returned bare so the policy's backoff runs.
 func (c *Client) attempt(ctx context.Context, r request) error {
-	if err := c.limiter.Wait(ctx); err != nil {
-		// A finished context is the caller's decision, not a failure to retry.
+	limiter, wait := c.budget(r)
+	if err := limiter.WaitMax(ctx, wait); err != nil {
+		// A finished context is the caller's decision, not a failure to retry, and
+		// a pause that outlasts an interactive budget will not have cleared by the
+		// next attempt either.
 		return retry.Stop(err)
 	}
 
@@ -325,8 +379,13 @@ func (c *Client) classify(resp *http.Response, r request) error {
 		// a goroutine that backed off privately would only be queueing up the next
 		// round of rejections on behalf of its neighbours.
 		resumeAt := now.Add(retryAfter)
-		c.limiter.Pause(resumeAt)
-		if c.onPause != nil {
+		limiter, _ := c.budget(r)
+		limiter.Pause(resumeAt)
+		// Only a catalogue pause is recorded. What is persisted is restored into
+		// the catalogue limiter at startup and reported to users as "metadata is
+		// waiting"; a refused sign-in is neither of those things, and recording it
+		// would hold enrichment back over something that never touched its quota.
+		if c.onPause != nil && !r.interactive {
 			c.onPause(resumeAt)
 		}
 		// A short pause is ordinary pacing. A long one means the application's
@@ -343,6 +402,14 @@ func (c *Client) classify(resp *http.Response, r request) error {
 		} else {
 			c.lg.Warn("spotify rate limited",
 				"endpoint", r.label, "retry_after", retryAfter.String())
+		}
+		if r.interactive {
+			// Nobody waits half a minute to be told no. The limiter now holds the
+			// real delay, so a further attempt would fail its bounded wait anyway —
+			// and would do it after sleeping through a retry the person did not ask
+			// for. Answer immediately, with the instant the pause lifts, so the
+			// interface can say something true and specific.
+			return retry.Stop(&PausedError{Until: resumeAt})
 		}
 		// The limiter now holds the real delay, so the loop needs only a bounded
 		// nudge: the next attempt blocks in Wait until the pause has elapsed.
