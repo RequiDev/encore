@@ -9,6 +9,7 @@ package config
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -593,6 +594,9 @@ func (p *parser) timezone(key, def string) string {
 	return v
 }
 
+// KeyBytes is the length of the AES-256 key ENCORE_ENCRYPTION_KEY must supply.
+const KeyBytes = 32
+
 // key decodes a 32-byte AES key. Base64 (standard or URL, padded or not) and hex
 // are all accepted because operators reach for whichever their tooling produces.
 func (p *parser) key(name string) []byte {
@@ -606,27 +610,42 @@ func (p *parser) key(name string) []byte {
 		p.errf("%s is not a valid key: %v (generate one with `openssl rand -base64 32`)", name, err)
 		return nil
 	}
-	if len(b) != 32 {
-		p.errf("%s must decode to exactly 32 bytes, got %d", name, len(b))
+	if len(b) != KeyBytes {
+		p.errf("%s must decode to exactly %d bytes, got %d", name, KeyBytes, len(b))
 		return nil
 	}
 	return b
 }
 
 func decodeKey(v string) ([]byte, error) {
+	// Every decoding that succeeds is a candidate, and the one yielding a
+	// usable key wins.
+	//
+	// Order alone cannot decide this: a 64-character hex string is *also* valid
+	// base64, and decoding it as base64 gives 48 bytes rather than the intended
+	// 32. Trying base64 first therefore rejected every hex key with a confusing
+	// "must decode to exactly 32 bytes, got 48", even though hex was documented
+	// as supported.
+	var candidates [][]byte
+	if b, err := hex.DecodeString(strings.ToLower(strings.TrimSpace(v))); err == nil {
+		candidates = append(candidates, b)
+	}
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.RawStdEncoding,
 		base64.URLEncoding, base64.RawURLEncoding,
 	} {
 		if b, err := enc.DecodeString(v); err == nil {
+			candidates = append(candidates, b)
+		}
+	}
+	for _, b := range candidates {
+		if len(b) == KeyBytes {
 			return b, nil
 		}
 	}
-	if len(v) == 64 {
-		b := make([]byte, 32)
-		if _, err := fmt.Sscanf(strings.ToLower(v), "%x", &b); err == nil {
-			return b, nil
-		}
+	if len(candidates) > 0 {
+		// Decodable but the wrong length; hand it back so the caller can say so.
+		return candidates[0], nil
 	}
 	return nil, errors.New("expected base64 or 64 hex characters")
 }

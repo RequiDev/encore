@@ -18,7 +18,7 @@ accept a plain number or a suffix (`512kb`, `64mb`, `4gb`). Booleans accept `tru
 | `ENCORE_DATABASE_URL` | PostgreSQL connection string. Set automatically inside the compose stack. |
 | `ENCORE_SPOTIFY_CLIENT_ID` | From the Spotify developer dashboard. |
 | `ENCORE_SPOTIFY_CLIENT_SECRET` | From the Spotify developer dashboard. Never commit it. |
-| `ENCORE_ENCRYPTION_KEY` | 32 bytes, base64 or 64 hex characters. Encrypts Spotify tokens at rest. Generate with `openssl rand -base64 32`. **Back this up with your database**: losing it forces every user to reconnect. |
+| `ENCORE_ENCRYPTION_KEY` | 32 bytes, as base64 (standard or URL-safe, padded or not) or 64 hex characters. Generate with `openssl rand -base64 32`. Encrypts Spotify tokens at rest. **Back this up with your database**: losing it forces every user to reconnect. |
 
 ## Instance
 
