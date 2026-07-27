@@ -48,11 +48,23 @@ type spotifyStub struct {
 	profile map[string]any
 	// plays is what recently-played returns on the next call.
 	plays []map[string]any
+
+	// grantedScopes is what /api/token reports back. Tests widen it to stand in
+	// for a listener granting playlist access.
+	grantedScopes []string
+	// playlistItems records what was sent to each playlist, so a test can assert
+	// on the tracks rather than only on the response.
+	playlistItems map[string][]string
+	playlistCalls int
 }
 
 func newSpotifyStub(t *testing.T) *spotifyStub {
 	t.Helper()
-	s := &spotifyStub{profile: meProfile("listener-one", "Listener One")}
+	s := &spotifyStub{
+		profile:       meProfile("listener-one", "Listener One"),
+		grantedScopes: config.DefaultScopes(),
+		playlistItems: map[string][]string{},
+	}
 	mux := http.NewServeMux()
 
 	// The authorisation screen. A real one asks the human; this one bounces
@@ -78,7 +90,7 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 			"access_token":  "user-access-token",
 			"refresh_token": "user-refresh-token",
 			"token_type":    "Bearer",
-			"scope":         strings.Join(config.DefaultScopes(), " "),
+			"scope":         strings.Join(s.grantedScopes, " "),
 			"expires_in":    3600,
 		})
 	})
@@ -86,6 +98,37 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 	mux.HandleFunc("/v1/me", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.profile)
 	})
+
+	// Playlist creation. The path carries the Spotify user id, which is how a
+	// test checks Encore created it on the right account.
+	mux.HandleFunc("POST /v1/users/{id}/playlists", func(w http.ResponseWriter, r *http.Request) {
+		s.playlistCalls++
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		id := fmt.Sprintf("pl%08d", s.playlistCalls)
+		s.playlistItems[id] = nil
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, map[string]any{
+			"id": id, "name": body["name"], "uri": "spotify:playlist:" + id,
+			"external_urls": map[string]any{"spotify": "https://open.spotify.test/playlist/" + id},
+		})
+	})
+
+	// Replace and append, the two halves of a rebuild.
+	playlistTracks := func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var body struct {
+			URIs []string `json:"uris"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if r.Method == http.MethodPut {
+			s.playlistItems[id] = nil
+		}
+		s.playlistItems[id] = append(s.playlistItems[id], body.URIs...)
+		writeJSON(w, map[string]any{"snapshot_id": "snap"})
+	}
+	mux.HandleFunc("PUT /v1/playlists/{id}/tracks", playlistTracks)
+	mux.HandleFunc("POST /v1/playlists/{id}/tracks", playlistTracks)
 
 	mux.HandleFunc("/v1/me/player/recently-played", func(w http.ResponseWriter, r *http.Request) {
 		items := s.plays
@@ -188,6 +231,7 @@ func newInstance(t *testing.T) *instance {
 		Listens: env.Listens, Imports: env.Imports, Stats: stats.New(env.Store),
 		Intake: intake, Spotify: client, Metrics: metrics.New(),
 		Logger: harness.Discard(), Version: "test",
+		UserToken: poller.AccessToken,
 		SyncNow: func(ctx context.Context, userID uuid.UUID) (httpapi.SyncOutcome, error) {
 			res, err := poller.SyncUser(ctx, userID)
 			out := httpapi.SyncOutcome{
@@ -1054,5 +1098,206 @@ func TestAnUnknownShareTokenIs404(t *testing.T) {
 	}
 	if resp.Header.Get("X-Robots-Tag") != "" {
 		t.Log("note: the noindex header is only set on a served share")
+	}
+}
+
+// --- playlists ---------------------------------------------------------------
+
+// seedPlays syncs a set of tracks, each played `times` times, so a playlist has
+// something to rank.
+func seedPlays(t *testing.T, inst *instance, b *browser, tracks map[string]int) {
+	t.Helper()
+	at := time.Now().Add(-30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	offset := 0
+	items := make([]map[string]any, 0, 64)
+	for id, times := range tracks {
+		for range times {
+			items = append(items, playItem(id, at.Add(time.Duration(offset)*7*time.Minute)))
+			offset++
+		}
+	}
+	inst.stub.plays = items
+	decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+}
+
+// TestPlaylistNeedsPermissionBeforeItIsAsked is the reason the scope is
+// incremental.
+//
+// Encore signs everybody in with read-only access. Somebody who never makes a
+// playlist never grants write access at all, and the one who does is told what
+// to do rather than shown a Spotify error they cannot act on.
+func TestPlaylistNeedsPermissionBeforeItIsAsked(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	resp := b.postJSON("/api/playlists", map[string]any{
+		"name": "Top tracks", "mode": "top", "limit": 10,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("creating a playlist without the scope returned %d, want 403", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "permission") {
+		t.Fatalf("the refusal does not say permission is needed: %s", body)
+	}
+	if inst.stub.playlistCalls != 0 {
+		t.Fatal("Encore called Spotify before it had permission to")
+	}
+
+	// And the way to grant it is a normal OAuth journey that asks for exactly one
+	// more scope.
+	auth := b.get("/api/auth/spotify/playlists")
+	auth.Body.Close()
+	if auth.StatusCode != http.StatusFound {
+		t.Fatalf("the authorisation route returned %d, want a redirect", auth.StatusCode)
+	}
+	loc := auth.Header.Get("Location")
+	if !strings.Contains(loc, "playlist-modify-private") {
+		t.Fatalf("the authorisation url does not ask for the playlist scope: %s", loc)
+	}
+	if !strings.Contains(loc, "user-read-recently-played") {
+		t.Fatalf("the authorisation url dropped the read scopes: %s", loc)
+	}
+}
+
+// TestPlaylistIsCreatedAndRebuiltInPlace covers the whole loop.
+func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(), "playlist-modify-private")
+	b := inst.browser()
+	inst.signIn(b)
+
+	seedPlays(t, inst, b, map[string]int{
+		"pl000000000000000001a": 5,
+		"pl000000000000000002b": 3,
+		"pl000000000000000003c": 1,
+	})
+
+	created := decode[map[string]any](t, b.postJSON("/api/playlists", map[string]any{
+		"name": "Heavy rotation", "mode": "min_plays", "minPlays": 3, "limit": 50,
+	}), http.StatusCreated)
+
+	if n, _ := created["trackCount"].(float64); int(n) != 2 {
+		t.Fatalf("playlist holds %v tracks, want the 2 that cleared the bar", created["trackCount"])
+	}
+	spotifyID, _ := created["spotifyId"].(string)
+	if spotifyID == "" {
+		t.Fatal("no spotify id recorded for the playlist")
+	}
+	if url, _ := created["spotifyUrl"].(string); url == "" {
+		t.Fatal("no spotify url recorded; the owner has no way to open it")
+	}
+
+	got := inst.stub.playlistItems[spotifyID]
+	if len(got) != 2 {
+		t.Fatalf("Spotify was sent %d uris, want 2: %v", len(got), got)
+	}
+	for _, uri := range got {
+		if !strings.HasPrefix(uri, "spotify:track:") {
+			t.Fatalf("sent %q, want a track uri", uri)
+		}
+	}
+
+	// A rebuild replaces in place: the same playlist, not a second one.
+	id := created["id"].(string)
+	rebuilt := decode[map[string]any](t, b.postJSON("/api/playlists/"+id+"/rebuild", nil), http.StatusOK)
+	if rebuilt["spotifyId"] != spotifyID {
+		t.Fatalf("a rebuild made a new playlist (%v), want the same one", rebuilt["spotifyId"])
+	}
+	if inst.stub.playlistCalls != 1 {
+		t.Fatalf("%d playlists created, want 1: a rebuild must not make another",
+			inst.stub.playlistCalls)
+	}
+	if len(inst.stub.playlistItems[spotifyID]) != 2 {
+		t.Fatalf("after a rebuild the playlist holds %d uris, want 2 — the replace did not "+
+			"clear the previous contents", len(inst.stub.playlistItems[spotifyID]))
+	}
+
+	// Listed, and forgetting it leaves Spotify alone.
+	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
+	if len(list) != 1 {
+		t.Fatalf("%d playlists listed, want 1", len(list))
+	}
+	del := b.do(http.MethodDelete, "/api/playlists/"+id, nil, "")
+	del.Body.Close()
+	if del.StatusCode != http.StatusNoContent {
+		t.Fatalf("forgetting returned %d, want 204", del.StatusCode)
+	}
+	if _, gone := inst.stub.playlistItems[spotifyID]; !gone {
+		t.Fatal("forgetting a playlist deleted it from Spotify; it belongs to the listener")
+	}
+}
+
+// TestPlaylistRefusesWhenNothingMatches: an empty playlist in somebody's library
+// is worse than a refusal that says why.
+func TestPlaylistRefusesWhenNothingMatches(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(), "playlist-modify-private")
+	b := inst.browser()
+	inst.signIn(b)
+	seedPlays(t, inst, b, map[string]int{"pl000000000000000004d": 1})
+
+	resp := b.postJSON("/api/playlists", map[string]any{
+		"name": "Impossible", "mode": "min_plays", "minPlays": 500, "limit": 50,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a definition matching nothing returned %d, want 400", resp.StatusCode)
+	}
+	if inst.stub.playlistCalls != 0 {
+		t.Fatal("an empty playlist was created on Spotify")
+	}
+}
+
+// TestForgottenFavouritesNeedsARange: the mode is defined by what a period is
+// missing, so an all-time range has nothing to be missing from. Saying that is
+// better than silently returning nothing.
+func TestForgottenFavouritesNeedsARange(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(), "playlist-modify-private")
+	b := inst.browser()
+	inst.signIn(b)
+
+	resp := b.postJSON("/api/playlists", map[string]any{
+		"name": "Forgotten", "mode": "forgotten", "limit": 50,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("forgotten favourites over all time returned %d, want 400", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "period") {
+		t.Fatalf("the error does not explain that a period is needed: %s", body)
+	}
+}
+
+// TestOneUserCannotRebuildAnotherUsersPlaylist keeps the ownership scope honest.
+func TestOneUserCannotRebuildAnotherUsersPlaylist(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(), "playlist-modify-private")
+	owner := inst.browser()
+	inst.signIn(owner)
+	seedPlays(t, inst, owner, map[string]int{"pl000000000000000005e": 4})
+
+	created := decode[map[string]any](t, owner.postJSON("/api/playlists", map[string]any{
+		"name": "Mine", "mode": "top", "limit": 10,
+	}), http.StatusCreated)
+	id := created["id"].(string)
+
+	inst.stub.profile = meProfile("someone-else", "Someone Else")
+	other := inst.browser()
+	inst.signIn(other)
+
+	for _, resp := range []*http.Response{
+		other.postJSON("/api/playlists/"+id+"/rebuild", nil),
+		other.do(http.MethodDelete, "/api/playlists/"+id, nil, ""),
+	} {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("another user reached %s and got %d, want 404",
+				resp.Request.URL.Path, resp.StatusCode)
+		}
 	}
 }
