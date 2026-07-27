@@ -7,6 +7,7 @@ import (
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/importer"
 	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store/catalog"
 	"github.com/RequiDev/encore/internal/store/imports"
 )
 
@@ -695,4 +696,24 @@ type SyncOutcome struct {
 	Duplicates int        `json:"duplicates"`
 	Skipped    int        `json:"skipped"`
 	NewestAt   *time.Time `json:"newestAt"`
+}
+
+// StatusResponse is the instance's operational state.
+type StatusResponse struct {
+	Catalogue catalog.Progress `json:"catalogue"`
+	Metadata  MetadataStatus   `json:"metadata"`
+}
+
+// MetadataStatus summarises the catalogue queues into the two things a person
+// actually wants to know: is there work left, and is anything stopping it.
+type MetadataStatus struct {
+	// Outstanding is how many catalogue entities are still queued.
+	Outstanding int64 `json:"outstanding"`
+	// Complete is true when nothing is left to fetch.
+	Complete bool `json:"complete"`
+	// Paused is true when Spotify has rate limited the whole application.
+	Paused bool `json:"paused"`
+	// PausedUntil is when it will resume, absent when not paused. Listening data
+	// is never affected by a pause; only names, artwork and genres wait.
+	PausedUntil *time.Time `json:"pausedUntil"`
 }

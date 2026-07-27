@@ -111,6 +111,7 @@ type oauthStateStore interface {
 type settingsStore interface {
 	RegistrationsEnabled(ctx context.Context, q store.Querier) (bool, error)
 	SetRegistrationsEnabled(ctx context.Context, q store.Querier, enabled bool) error
+	SpotifyPausedUntil(ctx context.Context, q store.Querier) (time.Time, error)
 }
 
 // Server owns the routing table and the middleware chain.

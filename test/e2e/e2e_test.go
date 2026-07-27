@@ -691,3 +691,98 @@ func TestHealthAndReadiness(t *testing.T) {
 		t.Fatal("/metrics served nothing recognisably Encore's")
 	}
 }
+
+// TestStatusReportsEnrichmentProgressAndRateLimiting covers the endpoint behind
+// the Settings page's metadata panel.
+//
+// The panel exists because "the artists are blank" is the first thing a fresh
+// self-hosted instance shows, and the honest answer — Spotify has rate limited
+// this application, listening data is unaffected, it fixes itself — used to live
+// only in the worker's logs. If this endpoint under-reports the pause, the page
+// silently goes back to telling the user nothing.
+func TestStatusReportsEnrichmentProgressAndRateLimiting(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	// Signing in is required: this is instance-wide operational state.
+	anon := inst.browser()
+	if resp := anon.get("/api/status"); resp.StatusCode != http.StatusUnauthorized {
+		resp.Body.Close()
+		t.Fatalf("an anonymous request to /api/status got %d, want 401", resp.StatusCode)
+	}
+
+	type entity struct {
+		Total, Resolved, Pending, Failed, Unavailable, Named int64
+	}
+	type status struct {
+		Catalogue struct {
+			Tracks, Artists, Albums entity
+			AliasesTotal            int64 `json:"aliasesTotal"`
+			AliasesPending          int64 `json:"aliasesPending"`
+		}
+		Metadata struct {
+			Outstanding int64
+			Complete    bool
+			Paused      bool
+			PausedUntil *time.Time `json:"pausedUntil"`
+		}
+	}
+
+	// An empty instance has nothing outstanding, and must not claim to be paused.
+	empty := decode[status](t, b.get("/api/status"), http.StatusOK)
+	if !empty.Metadata.Complete || empty.Metadata.Outstanding != 0 {
+		t.Fatalf("an empty catalogue reports %d outstanding (complete=%v), want 0/true",
+			empty.Metadata.Outstanding, empty.Metadata.Complete)
+	}
+	if empty.Metadata.Paused {
+		t.Fatal("a fresh instance reports itself rate limited")
+	}
+
+	// An elapsed pause is history, not a warning: the panel must not nag about a
+	// window that has already passed. Checked before a live pause is recorded
+	// because a stored pause is never shortened.
+	if err := inst.env.Accounts.Settings.SetSpotifyPausedUntil(
+		inst.env.Ctx(), inst.env.Store.DB(), time.Now().Add(-time.Minute).UTC()); err != nil {
+		t.Fatalf("record an elapsed pause: %v", err)
+	}
+	if cleared := decode[status](t, b.get("/api/status"), http.StatusOK); cleared.Metadata.Paused {
+		t.Fatalf("a pause that ended at %v is still reported as active",
+			cleared.Metadata.PausedUntil)
+	}
+
+	// A sync fills the catalogue. The stub answers every lookup, so the entities
+	// it created are resolved rather than queued.
+	at := time.Now().Add(-30 * time.Minute).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{playItem("sta00000000000000001a", at)}
+	decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+
+	filled := decode[status](t, b.get("/api/status"), http.StatusOK)
+	if filled.Catalogue.Tracks.Total == 0 {
+		t.Fatal("after a sync the status reports an empty catalogue")
+	}
+	if filled.Catalogue.Tracks.Named == 0 {
+		t.Fatal("the status reports no named tracks, so the page would claim nothing is displayable")
+	}
+	if filled.Catalogue.Artists.Total == 0 {
+		t.Fatal("the status reports no artists at all")
+	}
+
+	// Now Spotify rate limits the whole application. This is the state the panel
+	// exists for, and it must be visible through the API.
+	resume := time.Now().Add(4 * time.Hour).UTC().Truncate(time.Second)
+	if err := inst.env.Accounts.Settings.SetSpotifyPausedUntil(
+		inst.env.Ctx(), inst.env.Store.DB(), resume); err != nil {
+		t.Fatalf("record a pause: %v", err)
+	}
+
+	paused := decode[status](t, b.get("/api/status"), http.StatusOK)
+	if !paused.Metadata.Paused {
+		t.Fatal("Spotify is rate limiting the instance but the status does not say so; " +
+			"the page would show blank artists with no explanation")
+	}
+	if paused.Metadata.PausedUntil == nil || !paused.Metadata.PausedUntil.Equal(resume) {
+		t.Fatalf("the status reports the pause ending at %v, want %s",
+			paused.Metadata.PausedUntil, resume)
+	}
+}

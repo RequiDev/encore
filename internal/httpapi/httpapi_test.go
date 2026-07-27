@@ -191,7 +191,10 @@ func (f *fakeCredentials) Upsert(_ context.Context, _ store.Querier, creds domai
 }
 
 // fakeSettings stands in for accounts.Settings.
-type fakeSettings struct{ registrations bool }
+type fakeSettings struct {
+	registrations bool
+	pausedUntil   time.Time
+}
 
 func (f *fakeSettings) RegistrationsEnabled(context.Context, store.Querier) (bool, error) {
 	return f.registrations, nil
@@ -200,6 +203,10 @@ func (f *fakeSettings) RegistrationsEnabled(context.Context, store.Querier) (boo
 func (f *fakeSettings) SetRegistrationsEnabled(_ context.Context, _ store.Querier, enabled bool) error {
 	f.registrations = enabled
 	return nil
+}
+
+func (f *fakeSettings) SpotifyPausedUntil(context.Context, store.Querier) (time.Time, error) {
+	return f.pausedUntil, nil
 }
 
 // --- server harness --------------------------------------------------------
