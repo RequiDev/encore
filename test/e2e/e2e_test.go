@@ -870,3 +870,189 @@ func TestManualSyncRefusesQuicklyWhileRateLimited(t *testing.T) {
 		t.Fatalf("the refusal does not say the listening history is safe: %s", body)
 	}
 }
+
+// --- sharing ----------------------------------------------------------------
+
+// TestSharedLinkShowsAggregatesToAnybodyHoldingIt is the happy path: a link
+// works with no session at all, which is the entire point of it.
+func TestSharedLinkShowsAggregatesToAnybodyHoldingIt(t *testing.T) {
+	inst := newInstance(t)
+	owner := inst.browser()
+	inst.signIn(owner)
+
+	at := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{
+		playItem("shr00000000000000001a", at),
+		playItem("shr00000000000000002b", at.Add(30*time.Minute)),
+	}
+	decode[map[string]any](t, owner.postJSON("/api/sync/now", nil), http.StatusOK)
+
+	created := decode[map[string]any](t, owner.postJSON("/api/shares",
+		map[string]any{"label": "My year"}), http.StatusCreated)
+
+	token, _ := created["token"].(string)
+	if token == "" {
+		t.Fatal("creating a link returned no token; it is the only time it exists")
+	}
+	if url, _ := created["url"].(string); !strings.Contains(url, "/share/"+token) {
+		t.Fatalf("share url is %q, want it to carry the token", created["url"])
+	}
+
+	// A stranger: no session, no cookies, nothing.
+	stranger := inst.browser()
+	shared := decode[map[string]any](t, stranger.get("/api/share/"+token), http.StatusOK)
+
+	if shared["label"] != "My year" {
+		t.Fatalf("label = %v, want the one the owner set", shared["label"])
+	}
+	summary, _ := shared["summary"].(map[string]any)
+	if summary == nil {
+		t.Fatalf("the shared payload carries no summary: %v", shared)
+	}
+	if n, _ := summary["listens"].(float64); int(n) != 2 {
+		t.Fatalf("shared summary reports %v listens, want 2", summary["listens"])
+	}
+	if _, ok := shared["tracks"].(map[string]any); !ok {
+		t.Fatal("the shared payload carries no top tracks")
+	}
+}
+
+// TestASharedLinkCannotReachTheListeningHistory is the privacy boundary, and the
+// reason the share endpoint composes its own payload instead of reusing the
+// statistics handlers behind a shared authentication path.
+//
+// Aggregates say what somebody listens to. The history feed says when they were
+// awake, which is a different thing to hand a stranger.
+func TestASharedLinkCannotReachTheListeningHistory(t *testing.T) {
+	inst := newInstance(t)
+	owner := inst.browser()
+	inst.signIn(owner)
+
+	at := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{playItem("shr00000000000000003c", at)}
+	decode[map[string]any](t, owner.postJSON("/api/sync/now", nil), http.StatusOK)
+
+	created := decode[map[string]any](t, owner.postJSON("/api/shares", map[string]any{}), http.StatusCreated)
+	token := created["token"].(string)
+
+	shared := decode[map[string]any](t, inst.browser().get("/api/share/"+token), http.StatusOK)
+	for _, forbidden := range []string{"history", "listens", "plays", "items"} {
+		if _, present := shared[forbidden]; present {
+			t.Fatalf("the shared payload carries a %q field; a share must expose "+
+				"aggregates and never individual plays", forbidden)
+		}
+	}
+
+	// And holding a link grants nothing else on the instance.
+	stranger := inst.browser()
+	for _, path := range []string{"/api/me", "/api/history?limit=10", "/api/imports", "/api/users"} {
+		resp := stranger.get(path)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s returned %d to a stranger holding a share link, want 401",
+				path, resp.StatusCode)
+		}
+	}
+}
+
+// TestRevokingALinkStopsItImmediately: revocation is the only recourse once a
+// link has been sent to somebody, so it has to be instant and complete.
+func TestRevokingALinkStopsItImmediately(t *testing.T) {
+	inst := newInstance(t)
+	owner := inst.browser()
+	inst.signIn(owner)
+
+	created := decode[map[string]any](t, owner.postJSON("/api/shares",
+		map[string]any{"label": "temporary"}), http.StatusCreated)
+	token := created["token"].(string)
+	id := created["id"].(string)
+
+	visitor := inst.browser()
+	resp := visitor.get("/api/share/" + token)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a fresh link returned %d", resp.StatusCode)
+	}
+
+	del := owner.do(http.MethodDelete, "/api/shares/"+id, nil, "")
+	del.Body.Close()
+	if del.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoking returned %d, want 204", del.StatusCode)
+	}
+
+	resp = visitor.get("/api/share/" + token)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("a revoked link returned %d, want 404", resp.StatusCode)
+	}
+
+	// And it is gone from the owner's list rather than lingering as clutter.
+	list := decode[[]map[string]any](t, owner.get("/api/shares"), http.StatusOK)
+	for _, l := range list {
+		if l["id"] == id {
+			t.Fatal("a revoked link is still listed")
+		}
+	}
+}
+
+// TestOneUserCannotRevokeAnotherUsersLink: the id is not a secret, so the
+// statement that acts on it has to be scoped by owner.
+func TestOneUserCannotRevokeAnotherUsersLink(t *testing.T) {
+	inst := newInstance(t)
+	owner := inst.browser()
+	inst.signIn(owner)
+	created := decode[map[string]any](t, owner.postJSON("/api/shares", map[string]any{}), http.StatusCreated)
+	id := created["id"].(string)
+	token := created["token"].(string)
+
+	// A second account on the same instance.
+	inst.stub.profile = meProfile("intruder", "Intruder")
+	other := inst.browser()
+	inst.signIn(other)
+
+	resp := other.do(http.MethodDelete, "/api/shares/"+id, nil, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("another user revoking a link got %d, want 404", resp.StatusCode)
+	}
+	// Still working for the owner.
+	live := inst.browser().get("/api/share/" + token)
+	live.Body.Close()
+	if live.StatusCode != http.StatusOK {
+		t.Fatal("the link stopped working after another user tried to revoke it")
+	}
+}
+
+// TestListingLinksNeverReturnsTheToken: only the hash is stored, so a listing
+// that appeared to carry a URL would be offering one that cannot work.
+func TestListingLinksNeverReturnsTheToken(t *testing.T) {
+	inst := newInstance(t)
+	owner := inst.browser()
+	inst.signIn(owner)
+	decode[map[string]any](t, owner.postJSON("/api/shares", map[string]any{}), http.StatusCreated)
+
+	list := decode[[]map[string]any](t, owner.get("/api/shares"), http.StatusOK)
+	if len(list) != 1 {
+		t.Fatalf("%d links listed, want 1", len(list))
+	}
+	if tok, present := list[0]["token"]; present && tok != "" {
+		t.Fatalf("the listing returned a token (%v); it exists only at creation", tok)
+	}
+	if u, present := list[0]["url"]; present && u != "" {
+		t.Fatalf("the listing returned a url (%v) it cannot reconstruct", u)
+	}
+}
+
+// TestAnUnknownShareTokenIs404: a wrong token must not be distinguishable from a
+// revoked or expired one.
+func TestAnUnknownShareTokenIs404(t *testing.T) {
+	inst := newInstance(t)
+	resp := inst.browser().get("/api/share/" + strings.Repeat("a", 43))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("an unknown token returned %d, want 404", resp.StatusCode)
+	}
+	if resp.Header.Get("X-Robots-Tag") != "" {
+		t.Log("note: the noindex header is only set on a served share")
+	}
+}
