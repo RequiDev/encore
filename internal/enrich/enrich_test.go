@@ -131,34 +131,6 @@ func TestBatchSizeRespectsSpotifyLimits(t *testing.T) {
 	}
 }
 
-func TestMissingIDs(t *testing.T) {
-	cases := []struct {
-		name      string
-		requested []string
-		got       []string
-		want      []string
-	}{
-		{"nothing requested", nil, []string{"a"}, nil},
-		{"all answered", []string{"a", "b"}, []string{"b", "a"}, nil},
-		{"none answered", []string{"a", "b"}, nil, []string{"a", "b"}},
-		{"one null in the array", []string{"a", "b", "c"}, []string{"a", "c"}, []string{"b"}},
-		{"unrequested extras ignored", []string{"a"}, []string{"a", "z"}, nil},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := missingIDs(c.requested, c.got)
-			if len(got) != len(c.want) {
-				t.Fatalf("missingIDs(%v, %v) = %v, want %v", c.requested, c.got, got, c.want)
-			}
-			for i := range got {
-				if got[i] != c.want[i] {
-					t.Fatalf("missingIDs(%v, %v) = %v, want %v", c.requested, c.got, got, c.want)
-				}
-			}
-		})
-	}
-}
-
 func TestGroupByUser(t *testing.T) {
 	a := uuid.New()
 	b := uuid.New()

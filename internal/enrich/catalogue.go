@@ -115,29 +115,35 @@ func stored(err error) error {
 	return &storeError{err: err}
 }
 
-// fetchAndStore reads one batch from Spotify and writes what came back.
+// fetchAndStore reads one batch of metadata and writes what came back.
+//
+// The batch reports its declined ids rather than leaving the caller to subtract
+// what it got from what it asked for. The difference matters once a fallback
+// exists: an id may be missing because the authoritative source has nothing for
+// it, which is permanent, or because that source was never asked, which is not.
+// Only the first may be marked unavailable, and only the batch knows which it is.
 func (w *Worker) fetchAndStore(ctx context.Context, kind catalog.Kind, ids []string) error {
 	switch kind {
 	case catalog.KindTrack:
-		tracks, err := w.dep.Spotify.GetTracks(ctx, ids)
+		batch, err := w.dep.Catalogue.Tracks(ctx, ids)
 		if err != nil {
 			return err
 		}
-		return w.storeTracks(ctx, ids, tracks)
+		return w.storeTracks(ctx, batch.Declined, batch.Items)
 
 	case catalog.KindAlbum:
-		albums, err := w.dep.Spotify.GetAlbums(ctx, ids)
+		batch, err := w.dep.Catalogue.Albums(ctx, ids)
 		if err != nil {
 			return err
 		}
-		return w.storeAlbums(ctx, ids, albums)
+		return w.storeAlbums(ctx, batch.Declined, batch.Items)
 
 	case catalog.KindArtist:
-		artists, err := w.dep.Spotify.GetArtists(ctx, ids)
+		batch, err := w.dep.Catalogue.Artists(ctx, ids)
 		if err != nil {
 			return err
 		}
-		return w.storeArtists(ctx, ids, artists)
+		return w.storeArtists(ctx, batch.Declined, batch.Items)
 	}
 	return fmt.Errorf("%w: unknown catalogue kind %q", domain.ErrValidation, kind.String())
 }
@@ -147,19 +153,15 @@ func (w *Worker) fetchAndStore(ctx context.Context, kind catalog.Kind, ids []str
 // The upsert, the credit lists and the unavailable marks commit together so a
 // track is never visible as resolved without the artists it is credited to;
 // half a batch would show up in the API as a track by nobody.
-func (w *Worker) storeTracks(ctx context.Context, requested []string, tracks []spotify.Track) error {
+func (w *Worker) storeTracks(ctx context.Context, declined []string, tracks []spotify.Track) error {
 	rows := make([]domain.Track, 0, len(tracks))
-	got := make([]string, 0, len(tracks))
 	for _, t := range tracks {
 		row := t.ToDomainTrack()
 		if row.ID == "" {
 			continue
 		}
 		rows = append(rows, row)
-		got = append(got, row.ID)
 	}
-	missing := missingIDs(requested, got)
-
 	// A track response embeds simplified artist and album objects: an id and a
 	// name and nothing else. Recording only the ids, which is what this used to
 	// do, left every artist blank in the interface until the separate artist
@@ -182,29 +184,25 @@ func (w *Worker) storeTracks(ctx context.Context, requested []string, tracks []s
 				return err
 			}
 		}
-		return w.dep.Catalog.MarkUnavailable(ctx, tx, catalog.KindTrack, missing)
+		return w.dep.Catalog.MarkUnavailable(ctx, tx, catalog.KindTrack, declined)
 	})
 	if err != nil {
 		return stored(err)
 	}
-	w.report(catalog.KindTrack, len(rows), missing)
+	w.report(catalog.KindTrack, len(rows), declined)
 	return nil
 }
 
 // storeAlbums writes a fetched batch of albums, with their credits.
-func (w *Worker) storeAlbums(ctx context.Context, requested []string, albums []spotify.Album) error {
+func (w *Worker) storeAlbums(ctx context.Context, declined []string, albums []spotify.Album) error {
 	rows := make([]domain.Album, 0, len(albums))
-	got := make([]string, 0, len(albums))
 	for _, a := range albums {
 		row := a.ToDomainAlbum()
 		if row.ID == "" {
 			continue
 		}
 		rows = append(rows, row)
-		got = append(got, row.ID)
 	}
-	missing := missingIDs(requested, got)
-
 	err := w.dep.Store.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := w.dep.Catalog.UpsertAlbums(ctx, tx, rows); err != nil {
 			return err
@@ -214,40 +212,36 @@ func (w *Worker) storeAlbums(ctx context.Context, requested []string, albums []s
 				return err
 			}
 		}
-		return w.dep.Catalog.MarkUnavailable(ctx, tx, catalog.KindAlbum, missing)
+		return w.dep.Catalog.MarkUnavailable(ctx, tx, catalog.KindAlbum, declined)
 	})
 	if err != nil {
 		return stored(err)
 	}
-	w.report(catalog.KindAlbum, len(rows), missing)
+	w.report(catalog.KindAlbum, len(rows), declined)
 	return nil
 }
 
 // storeArtists writes a fetched batch of artists. Artists have no link table of
 // their own, so this is the upsert and the unavailable marks alone.
-func (w *Worker) storeArtists(ctx context.Context, requested []string, artists []spotify.Artist) error {
+func (w *Worker) storeArtists(ctx context.Context, declined []string, artists []spotify.Artist) error {
 	rows := make([]domain.Artist, 0, len(artists))
-	got := make([]string, 0, len(artists))
 	for _, a := range artists {
 		row := a.ToDomainArtist()
 		if row.ID == "" {
 			continue
 		}
 		rows = append(rows, row)
-		got = append(got, row.ID)
 	}
-	missing := missingIDs(requested, got)
-
 	err := w.dep.Store.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := w.dep.Catalog.UpsertArtists(ctx, tx, rows); err != nil {
 			return err
 		}
-		return w.dep.Catalog.MarkUnavailable(ctx, tx, catalog.KindArtist, missing)
+		return w.dep.Catalog.MarkUnavailable(ctx, tx, catalog.KindArtist, declined)
 	})
 	if err != nil {
 		return stored(err)
 	}
-	w.report(catalog.KindArtist, len(rows), missing)
+	w.report(catalog.KindArtist, len(rows), declined)
 	return nil
 }
 

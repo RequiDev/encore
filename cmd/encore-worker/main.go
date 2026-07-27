@@ -135,6 +135,14 @@ func run() error {
 	// provoked it.
 	client := spotify.NewClient(cfg.Spotify, lg, worker.SpotifyPauseOptions(ctx, cfg.Spotify, accountsRepo.Settings, db, lg)...)
 
+	// An optional second source of catalogue metadata. The chain is built either
+	// way so enrichment has one code path; without a fallback configured it is a
+	// pass-through to the client above.
+	catalogue, err := worker.MetadataChain(cfg.MetadataFallback, client, lg)
+	if err != nil {
+		return err
+	}
+
 	sup := worker.New(lg).WithGrace(cfg.HTTP.ShutdownTimeout)
 
 	// The job gauge is shared by every runner because it describes the process;
@@ -162,14 +170,15 @@ func run() error {
 	}
 
 	enricher, err := enrich.New(cfg.Enrich, enrich.Deps{
-		Store:    db,
-		Catalog:  catalogRepo,
-		Listens:  listensRepo,
-		Accounts: accountsRepo,
-		Stats:    statsSvc,
-		Spotify:  client,
-		Logger:   lg,
-		Metrics:  enrichMetrics{reg: reg},
+		Store:     db,
+		Catalog:   catalogRepo,
+		Listens:   listensRepo,
+		Accounts:  accountsRepo,
+		Stats:     statsSvc,
+		Spotify:   client,
+		Catalogue: catalogue,
+		Logger:    lg,
+		Metrics:   enrichMetrics{reg: reg},
 	})
 	if err != nil {
 		return err

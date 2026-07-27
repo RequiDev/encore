@@ -49,6 +49,7 @@ import (
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/metadata"
 	"github.com/RequiDev/encore/internal/retry"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
@@ -120,8 +121,15 @@ type Deps struct {
 	Accounts *accounts.Repo
 	Stats    *stats.Service
 	Spotify  *spotify.Client
-	Logger   *slog.Logger
-	Metrics  Metrics
+	// Catalogue reads track, artist and album metadata. Nil means "Spotify
+	// alone", which is what an instance with no fallback configured gets.
+	//
+	// It is separate from Spotify because the two are consulted differently: the
+	// catalogue batches may be served by a second source, while alias resolution
+	// is a Spotify search and has nowhere else to go.
+	Catalogue *metadata.Chain
+	Logger    *slog.Logger
+	Metrics   Metrics
 	// Now is injectable so tests can control the backoff schedule without waiting.
 	Now func() time.Time
 	// Rand supplies jitter in [0,1). Injected by tests for determinism.
@@ -166,6 +174,10 @@ func New(cfg config.Enrich, deps Deps) (*Worker, error) {
 
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
+	}
+	if deps.Catalogue == nil {
+		deps.Catalogue = metadata.NewChain(deps.Spotify, nil,
+			metadata.WithChainLogger(deps.Logger))
 	}
 	if deps.Metrics == nil {
 		deps.Metrics = NopMetrics{}
@@ -367,30 +379,6 @@ func jitterDelay(d time.Duration, frac float64, rnd func() float64) time.Duratio
 func rateLimited(err error) bool {
 	apiErr, ok := spotify.AsAPIError(err)
 	return ok && apiErr.IsRateLimited()
-}
-
-// missingIDs returns the requested ids that are absent from got, preserving the
-// order they were requested in. Those are the ids Spotify answered for with
-// null: deleted, region-locked, or relinked to something that no longer exists.
-func missingIDs(requested, got []string) []string {
-	if len(requested) == 0 {
-		return nil
-	}
-	have := make(map[string]struct{}, len(got))
-	for _, id := range got {
-		have[id] = struct{}{}
-	}
-	out := make([]string, 0, len(requested))
-	for _, id := range requested {
-		if _, ok := have[id]; ok {
-			continue
-		}
-		out = append(out, id)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // db is the pool as a Querier, for the statements that need no transaction.

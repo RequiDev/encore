@@ -82,8 +82,6 @@ func WithHTTPClient(h *http.Client) Option {
 	}
 }
 
-// WithLimiter shares an existing limiter, so several clients (the sync poller
-// and the enrichment workers, say) draw on one rate budget.
 // WithPauseObserver is called whenever a 429 makes the client hold everything
 // back, with the instant it will resume.
 //
@@ -100,6 +98,8 @@ func WithPauseObserver(fn func(until time.Time)) Option {
 	}
 }
 
+// WithLimiter shares an existing limiter, so several clients (the sync poller
+// and the enrichment workers, say) draw on one rate budget.
 func WithLimiter(l *Limiter) Option {
 	return func(c *Client) {
 		if l != nil {
