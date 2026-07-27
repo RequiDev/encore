@@ -216,6 +216,17 @@ Users see the same thing without a shell: **Settings → Music metadata** shows 
 and the instant fetching resumes, and says in as many words that the listening figures are already
 complete. It is worth pointing people there before they go restarting containers.
 
+**Signing in keeps working throughout.** Authentication draws on a rate budget of its own, and the
+token exchange does not even use the same Spotify service — it is `accounts.spotify.com`, which never
+rate limited anything. A quota exhausted by enrichment on `api.spotify.com` has no bearing on it.
+Only these are held back by a pause:
+
+| Held back | Unaffected |
+|---|---|
+| Metadata enrichment: names, artwork, genres | Signing in and existing sessions |
+| Background recently-played polling | Imports, and every statistic, chart and export |
+| A manual **Sync now**, which is refused with an explanation rather than left to hang | Everything already in the database |
+
 Listening data is never affected; only the names, artwork and genres are. What to do:
 
 1. Keep `ENCORE_SPOTIFY_RATE_LIMIT` low. The default of 2/s is deliberate — a sixteen-thousand-track

@@ -139,6 +139,7 @@ type instance struct {
 	stub    *spotifyStub
 	cfg     *config.Config
 	rig     *harness.Rig
+	client  *spotify.Client
 	poller  *encoresync.Poller
 	baseURL string
 }
@@ -208,7 +209,7 @@ func newInstance(t *testing.T) *instance {
 	t.Cleanup(srv.Close)
 
 	return &instance{t: t, env: env, server: srv, stub: stub, cfg: cfg, rig: rig,
-		poller: poller, baseURL: srv.URL}
+		client: client, poller: poller, baseURL: srv.URL}
 }
 
 func encodeKey(raw string) string {
@@ -784,5 +785,88 @@ func TestStatusReportsEnrichmentProgressAndRateLimiting(t *testing.T) {
 	if paused.Metadata.PausedUntil == nil || !paused.Metadata.PausedUntil.Equal(resume) {
 		t.Fatalf("the status reports the pause ending at %v, want %s",
 			paused.Metadata.PausedUntil, resume)
+	}
+}
+
+// TestSignInWorksWhileSpotifyIsRateLimitingTheInstance is the regression test
+// for the failure that locked people out of their own Encore.
+//
+// A large import exhausts a development-mode application's daily quota. Spotify
+// answers with a Retry-After of most of a day, and the limiter honours it for
+// the whole process — which is right for catalogue reads and was catastrophic
+// for the two calls behind the sign-in button. Signing in blocked in the
+// limiter until the browser or the reverse proxy gave up, so an import that
+// cost a day of metadata also cost a day of being able to log in.
+//
+// The redirect to Spotify never broke, which is what made it confusing: the
+// first hop is pure string building and answers in milliseconds. Everything
+// after it hung.
+func TestSignInWorksWhileSpotifyIsRateLimitingTheInstance(t *testing.T) {
+	inst := newInstance(t)
+
+	// Exactly the state an exhausted daily quota leaves behind.
+	inst.client.Limiter().Pause(time.Now().Add(20 * time.Hour))
+
+	done := make(chan map[string]any, 1)
+	go func() {
+		defer func() {
+			// A hang shows up as a nil send rather than a deadlocked test.
+			if r := recover(); r != nil {
+				done <- nil
+			}
+		}()
+		done <- inst.signIn(inst.browser())
+	}()
+
+	select {
+	case me := <-done:
+		if me == nil {
+			t.Fatal("signing in failed while Spotify was rate limiting the instance")
+		}
+		user, _ := me["user"].(map[string]any)
+		if user == nil || user["spotifyUserId"] == "" {
+			t.Fatalf("signed in but got no user back: %v", me)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("signing in blocked behind the catalogue rate limit; a background " +
+			"import must never be able to lock somebody out of their own instance")
+	}
+
+	// And the catalogue budget is still held back, which is the whole reason the
+	// pause exists. Fixing the lockout must not have spent the protection.
+	if until := inst.client.Limiter().PausedUntil(); !until.After(time.Now()) {
+		t.Fatal("the catalogue pause was cleared by a sign-in")
+	}
+}
+
+// TestManualSyncRefusesQuicklyWhileRateLimited: the same trap, one button along.
+//
+// A manual sync runs the ordinary poller, whose calls queue on the shared
+// limiter and would wait out the whole ban. Somebody who has just pressed a
+// button gets an answer instead, and one that says the history is fine.
+func TestManualSyncRefusesQuicklyWhileRateLimited(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	if err := inst.env.Accounts.Settings.SetSpotifyPausedUntil(
+		inst.env.Ctx(), inst.env.Store.DB(), time.Now().Add(20*time.Hour)); err != nil {
+		t.Fatalf("record a pause: %v", err)
+	}
+
+	start := time.Now()
+	resp := b.postJSON("/api/sync/now", nil)
+	elapsed := time.Since(start)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("sync during a rate limit returned %d, want 409", resp.StatusCode)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("the refusal took %s; the person is watching a spinner", elapsed)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "unaffected") {
+		t.Fatalf("the refusal does not say the listening history is safe: %s", body)
 	}
 }
