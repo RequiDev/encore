@@ -2,9 +2,9 @@
 #
 # GENERATED - do not edit. Regenerate with ./scripts/gen-portainer-stack.sh
 #
-# This is docker-compose.yml + docker-compose.ghcr.yml + docker-compose.prod.yml
-# flattened, because the stack editor takes exactly one file. CI fails if this
-# copy stops matching the three it comes from.
+# This is docker-compose.yml + docker-compose.server.yml flattened, because the
+# stack editor takes exactly one file. CI fails if this copy stops matching the
+# two it comes from.
 #
 # Portainer: Stacks -> Add stack -> Web editor. Paste this in, then fill in the
 # values below under "Environment variables". Nothing is built on the server:
@@ -69,7 +69,7 @@ services:
         - -qO-
         - http://127.0.0.1:8080/healthz
       timeout: 5s
-    image: ghcr.io/requidev/encore:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_IMAGE:-ghcr.io/requidev/encore}:${ENCORE_VERSION:-latest}
     logging:
       driver: json-file
       options:
@@ -147,7 +147,7 @@ services:
       ENCORE_TRUST_PROXY_HEADERS: "true"
       ENCORE_WEB_URL: ${ENCORE_WEB_URL:?set ENCORE_WEB_URL in .env}
       TZ: ${ENCORE_DEFAULT_TIMEZONE:-UTC}
-    image: ghcr.io/requidev/encore:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_IMAGE:-ghcr.io/requidev/encore}:${ENCORE_VERSION:-latest}
     logging:
       driver: json-file
       options:
@@ -174,7 +174,7 @@ services:
         - -qO-
         - http://127.0.0.1/healthz.txt
       timeout: 5s
-    image: ghcr.io/requidev/encore-web:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_WEB_IMAGE:-ghcr.io/requidev/encore-web}:${ENCORE_VERSION:-latest}
     logging:
       driver: json-file
       options:
@@ -236,7 +236,7 @@ services:
         - -qO-
         - http://127.0.0.1:8081/healthz
       timeout: 5s
-    image: ghcr.io/requidev/encore:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_IMAGE:-ghcr.io/requidev/encore}:${ENCORE_VERSION:-latest}
     logging:
       driver: json-file
       options:

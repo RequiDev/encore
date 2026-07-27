@@ -1,0 +1,82 @@
+# Encore as you would actually run it: published images, no compiler, and the
+# settings a process that stays up for months needs.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
+#
+# Or paste docker-compose.portainer.yml, which is this merge already flattened,
+# into Portainer's stack editor.
+#
+# This was two overlays — one to select the published images, one for the
+# production settings. They were always used together, and nobody wants
+# published images *without* log rotation or hardening *without* the images, so
+# the split only ever cost an extra -f on every command.
+#
+# `build: !reset null` removes the build section the base file declares. That is
+# the one thing here an environment variable could not express, and it is the
+# reason this file exists rather than being folded into the base: without it,
+# `up` on a host whose image is not cached silently starts compiling Go and a
+# React bundle instead of pulling, which on a small server is a very confusing
+# ten minutes.
+#
+# The images are public, so no docker login is needed. Point ENCORE_IMAGE and
+# ENCORE_WEB_IMAGE elsewhere if you publish your own.
+
+x-logging: &logging
+  # Docker's default json-file driver grows without limit, which on a server that
+  # runs for months is a slow way to fill the disk. Encore writes one structured
+  # line per request, so 50 MB per service is a generous ceiling.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  db:
+    <<: *logging
+    build: !reset null
+    restart: always
+    # A rebuilt image must never silently replace the database.
+    pull_policy: missing
+
+  migrate:
+    <<: *logging
+    build: !reset null
+    image: ${ENCORE_IMAGE:-ghcr.io/requidev/encore}:${ENCORE_VERSION:-latest}
+
+  api:
+    <<: *logging
+    build: !reset null
+    image: ${ENCORE_IMAGE:-ghcr.io/requidev/encore}:${ENCORE_VERSION:-latest}
+    restart: always
+    # Uploads stream to disk rather than into memory and statistics are
+    # aggregated by PostgreSQL, so the API stays small. The limit is here to make
+    # a leak visible as a restart rather than as a dead server.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  worker:
+    <<: *logging
+    build: !reset null
+    image: ${ENCORE_IMAGE:-ghcr.io/requidev/encore}:${ENCORE_VERSION:-latest}
+    restart: always
+    # Peak import heap is single-digit megabytes at the default batch size; see
+    # docs/benchmarks.md. 512M leaves room for the Go runtime and a raised
+    # ENCORE_IMPORT_BATCH_SIZE.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  web:
+    <<: *logging
+    build: !reset null
+    image: ${ENCORE_WEB_IMAGE:-ghcr.io/requidev/encore-web}:${ENCORE_VERSION:-latest}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 128M

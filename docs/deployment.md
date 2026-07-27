@@ -121,13 +121,15 @@ Container Registry on every green build of `main`. They are public, so no
 `docker login` is needed:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml pull
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.server.yml pull
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
 ```
 
-That is worth an alias, or put it in `/opt/encore/up.sh`. Nothing is compiled on
-the server, so a 1 GB VPS or a Raspberry Pi is enough to run Encore even though
-building it needs rather more.
+`docker-compose.server.yml` selects the published images, removes the build
+sections so nothing can start compiling on the server, caps the container logs
+and sets memory limits and `restart: always`. Nothing is compiled, so a 1 GB VPS
+or a Raspberry Pi is enough to run Encore even though building it needs rather
+more.
 
 | Image | Tags |
 |---|---|
@@ -244,17 +246,15 @@ the job resumes from its last committed checkpoint. See [`docs/import.md`](impor
 
 ### Log rotation
 
-Docker's default `json-file` driver grows without limit, which on a long-running home server
-eventually fills the disk. Either set a global default in `/etc/docker/daemon.json`:
+Already handled: `docker-compose.server.yml` caps every Encore service at 10 MB per file and five
+files. Docker's default `json-file` driver otherwise grows without limit, which on a server that runs
+for months is a slow way to fill the disk.
+
+If you build from source instead, and so do not use that overlay, set a global default in
+`/etc/docker/daemon.json` to get the same protection for every container on the host:
 
 ```json
 { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "5" } }
-```
-
-or use the bundled override, which applies the same limits to Encore's services only:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
 ### Backups
@@ -281,8 +281,8 @@ From the published images:
 cd /opt/encore
 docker compose exec -T db pg_dump -U encore -d encore --format=custom > /var/backups/pre-upgrade.dump
 git pull            # for the Compose files and any new configuration
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml pull
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.server.yml pull
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
 ```
 
 Or, building locally:

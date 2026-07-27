@@ -64,8 +64,8 @@ or pull the images CI publishes, which is faster and works on a machine too smal
 to compile on:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.server.yml pull
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
 ```
 
 Open <http://127.0.0.1:3000> and sign in with Spotify. **The first account to sign in becomes the

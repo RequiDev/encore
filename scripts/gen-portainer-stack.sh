@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Regenerate docker-compose.portainer.yml from the three files it merges.
+# Regenerate docker-compose.portainer.yml from the two files it merges.
 #
-# Portainer's stack web editor accepts one Compose file, so the base file, the
-# registry overlay and the production overlay have to be flattened into a single
-# document. Doing that by hand guarantees it drifts, so it is generated here and
-# CI checks that the committed copy still matches its sources.
+# Portainer's stack web editor accepts one Compose file, so the base file and
+# the server overlay have to be flattened into a single document. Doing that
+# by hand guarantees it drifts, so it is generated here and CI checks that the
+# committed copy still matches its sources.
 #
 #   ./scripts/gen-portainer-stack.sh
 set -euo pipefail
@@ -15,8 +15,7 @@ cd "$(dirname "$0")/.."
 # would bake real secrets into a committed file.
 body=$(docker compose \
   -f docker-compose.yml \
-  -f docker-compose.ghcr.yml \
-  -f docker-compose.prod.yml \
+  -f docker-compose.server.yml \
   config --no-interpolate)
 
 # Strip the names `docker compose config` resolves on our behalf.
@@ -43,9 +42,9 @@ cat > docker-compose.portainer.yml <<'HEADER'
 #
 # GENERATED - do not edit. Regenerate with ./scripts/gen-portainer-stack.sh
 #
-# This is docker-compose.yml + docker-compose.ghcr.yml + docker-compose.prod.yml
-# flattened, because the stack editor takes exactly one file. CI fails if this
-# copy stops matching the three it comes from.
+# This is docker-compose.yml + docker-compose.server.yml flattened, because the
+# stack editor takes exactly one file. CI fails if this copy stops matching the
+# two it comes from.
 #
 # Portainer: Stacks -> Add stack -> Web editor. Paste this in, then fill in the
 # values below under "Environment variables". Nothing is built on the server:
