@@ -18,6 +18,13 @@ export interface NavItem {
   exact?: boolean
   /** Shown in the phone bottom bar, which has room for four destinations. */
   primary?: boolean
+  /**
+   * The destination reads the date range, so navigating to it should carry the
+   * one already chosen rather than dropping the viewer back to the default.
+   * False for pages that have no notion of a range — appending one there would
+   * be noise in the address bar and nothing else.
+   */
+  ranged?: boolean
 }
 
 export interface NavSection {
@@ -30,25 +37,25 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   {
     title: 'Listening',
     items: [
-      { to: '/', label: 'Dashboard', icon: 'dashboard', exact: true, primary: true },
-      { to: '/history', label: 'History', icon: 'history', primary: true },
-      { to: '/search', label: 'Search', icon: 'search' },
+      { ranged: true, to: '/', label: 'Dashboard', icon: 'dashboard', exact: true, primary: true },
+      { ranged: true, to: '/history', label: 'History', icon: 'history', primary: true },
+      { ranged: true, to: '/search', label: 'Search', icon: 'search' },
     ],
   },
   {
     title: 'Rankings',
     items: [
-      { to: '/artists', label: 'Artists', icon: 'artist', primary: true },
-      { to: '/albums', label: 'Albums', icon: 'album' },
-      { to: '/tracks', label: 'Tracks', icon: 'track' },
+      { ranged: true, to: '/artists', label: 'Artists', icon: 'artist', primary: true },
+      { ranged: true, to: '/albums', label: 'Albums', icon: 'album' },
+      { ranged: true, to: '/tracks', label: 'Tracks', icon: 'track' },
     ],
   },
   {
     title: 'Patterns',
     items: [
-      { to: '/sessions', label: 'Sessions', icon: 'session' },
-      { to: '/discovery', label: 'Discovery', icon: 'discovery' },
-      { to: '/streaks', label: 'Streaks', icon: 'streak' },
+      { ranged: true, to: '/sessions', label: 'Sessions', icon: 'session' },
+      { ranged: true, to: '/discovery', label: 'Discovery', icon: 'discovery' },
+      { ranged: true, to: '/streaks', label: 'Streaks', icon: 'streak' },
     ],
   },
   {

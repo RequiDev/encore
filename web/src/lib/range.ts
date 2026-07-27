@@ -297,6 +297,37 @@ export interface RangeControls {
  * search parameter on the page is preserved, so changing the range does not
  * reset a pagination offset the user had set deliberately.
  */
+/**
+ * Carries the selected range across a navigation.
+ *
+ * The range lives in the query string so that any view is linkable, which means
+ * an ordinary <Link> drops it: choose 2019, click an artist, and the artist page
+ * finds no `from` and falls back to the default thirty days. The figures then
+ * describe a period nobody asked for, and nothing on screen says so.
+ *
+ * Returns a function that appends the active range to a path. Paths that already
+ * carry their own `from` and `to` are left alone — an explicit range in a link
+ * is a deliberate one.
+ */
+export function useRangeHref(): (to: string) => string {
+  const [params] = useSearchParams()
+  const from = params.get('from')
+  const to = params.get('to')
+
+  return useCallback(
+    (path: string): string => {
+      if (!from || !to) return path
+      const [base, existing] = path.split('?', 2)
+      const next = new URLSearchParams(existing ?? '')
+      if (next.has('from') || next.has('to')) return path
+      next.set('from', from)
+      next.set('to', to)
+      return `${base}?${next.toString()}`
+    },
+    [from, to],
+  )
+}
+
 export function useRange(): RangeControls {
   const [params, setParams] = useSearchParams()
   const timeZone = useTimeZone()

@@ -8,7 +8,7 @@
  */
 
 import type { ReactElement, ReactNode } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, api } from '../lib/api'
 import { qk } from '../lib/query'
@@ -21,6 +21,7 @@ import {
   ErrorState,
   PageHeader,
   Panel,
+  RangeLink,
   RangePicker,
   Skeleton,
   SkeletonText,
@@ -103,9 +104,12 @@ export default function TrackDetail(): ReactElement {
                     <ul className="flex flex-wrap gap-x-2 gap-y-1">
                       {track.artists.map((artist) => (
                         <li key={artist.id}>
-                          <Link to={`/artists/${artist.id}`} className="text-ink hover:text-lamp">
+                          <RangeLink
+                            to={`/artists/${artist.id}`}
+                            className="text-ink hover:text-lamp"
+                          >
                             {artist.name}
-                          </Link>
+                          </RangeLink>
                         </li>
                       ))}
                     </ul>
@@ -113,9 +117,12 @@ export default function TrackDetail(): ReactElement {
                 </Entry>
                 <Entry label="Album">
                   {track.album ? (
-                    <Link to={`/albums/${track.album.id}`} className="text-ink hover:text-lamp">
+                    <RangeLink
+                      to={`/albums/${track.album.id}`}
+                      className="text-ink hover:text-lamp"
+                    >
                       {track.album.name}
-                    </Link>
+                    </RangeLink>
                   ) : (
                     // A listen imported from an export can name a track without
                     // ever naming its album; that is a gap in the data, not an error.

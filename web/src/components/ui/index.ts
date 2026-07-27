@@ -57,6 +57,8 @@ export { Pagination, CursorPagination } from './Pagination'
 export type { PaginationProps, CursorPaginationProps } from './Pagination'
 
 export { Panel, PanelDivider } from './Panel'
+export { RangeLink, RangeNavLink } from './RangeLink'
+export type { RangeLinkProps, RangeNavLinkProps } from './RangeLink'
 export type { PanelProps } from './Panel'
 
 export { RangePicker } from './RangePicker'

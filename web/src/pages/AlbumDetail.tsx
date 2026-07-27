@@ -8,7 +8,7 @@
  */
 
 import type { ReactElement, ReactNode } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, api } from '../lib/api'
 import { qk } from '../lib/query'
@@ -22,6 +22,7 @@ import {
   ErrorState,
   PageHeader,
   Panel,
+  RangeLink,
   RangePicker,
   Skeleton,
   SkeletonLedger,
@@ -106,9 +107,12 @@ export default function AlbumDetail(): ReactElement {
                     <ul className="flex flex-wrap gap-x-2 gap-y-1">
                       {album.artists.map((artist) => (
                         <li key={artist.id}>
-                          <Link to={`/artists/${artist.id}`} className="text-ink hover:text-lamp">
+                          <RangeLink
+                            to={`/artists/${artist.id}`}
+                            className="text-ink hover:text-lamp"
+                          >
                             {artist.name}
-                          </Link>
+                          </RangeLink>
                         </li>
                       ))}
                     </ul>

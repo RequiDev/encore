@@ -16,7 +16,7 @@
 
 import type { ReactElement } from 'react'
 import { useMemo } from 'react'
-import { Link } from 'react-router-dom'
+
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { qk } from '../lib/query'
@@ -38,6 +38,7 @@ import {
   LedgerRowHeader,
   PageHeader,
   Panel,
+  RangeLink,
   RangePicker,
   SkeletonLedger,
 } from '../components/ui'
@@ -211,12 +212,12 @@ function HistoryRow({ item, timeZone }: { item: HistoryItem; timeZone: string })
 
       <LedgerRowHeader>
         {track ? (
-          <Link
+          <RangeLink
             to={`/tracks/${track.id}`}
             className="block max-w-[14rem] truncate text-ink hover:text-lamp sm:max-w-[24rem]"
           >
             {track.name}
-          </Link>
+          </RangeLink>
         ) : (
           <>
             <span className="block max-w-[14rem] truncate text-ink sm:max-w-[24rem]">
@@ -235,9 +236,9 @@ function HistoryRow({ item, timeZone }: { item: HistoryItem; timeZone: string })
             {artists.map((artist, index) => (
               <span key={artist.id}>
                 {index > 0 ? <span className="text-ink-faint">, </span> : null}
-                <Link to={`/artists/${artist.id}`} className="text-ink-muted hover:text-lamp">
+                <RangeLink to={`/artists/${artist.id}`} className="text-ink-muted hover:text-lamp">
                   {artist.name}
-                </Link>
+                </RangeLink>
               </span>
             ))}
           </span>

@@ -7,9 +7,10 @@
  * presentations — see `nav.ts`.
  */
 
-import type { ReactElement } from 'react'
+import type { ComponentProps, ReactElement } from 'react'
 import { useEffect, useRef } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { RangeNavLink } from '../ui/RangeLink'
 import { useEscapeKey, useFocusTrap, useScrollLock } from '../../lib/hooks'
 import { Icon } from '../ui/Icon'
 import { NAV_SECTIONS, PRIMARY_NAV } from './nav'
@@ -26,10 +27,26 @@ function linkClass({ isActive }: { isActive: boolean }): string {
   ].join(' ')
 }
 
+/**
+ * One navigation destination, carrying the selected range to the pages that read
+ * one.
+ *
+ * Without this, choosing a year on the dashboard and then clicking Artists lands
+ * on the default thirty days — the range is in the query string precisely so a
+ * view is linkable, and an ordinary NavLink drops it.
+ */
+function Nav({
+  item,
+  ...rest
+}: { item: NavItem } & Omit<ComponentProps<typeof NavLink>, 'to'>): ReactElement {
+  const Component = item.ranged ? RangeNavLink : NavLink
+  return <Component to={item.to} end={item.exact} {...rest} />
+}
+
 function NavRow({ item, onNavigate }: { item: NavItem; onNavigate?: () => void }): ReactElement {
   return (
     <li>
-      <NavLink to={item.to} end={item.exact} className={linkClass} onClick={onNavigate}>
+      <Nav item={item} className={linkClass} onClick={onNavigate}>
         {({ isActive }) => (
           <>
             <span
@@ -40,7 +57,7 @@ function NavRow({ item, onNavigate }: { item: NavItem; onNavigate?: () => void }
             <span className="truncate">{item.label}</span>
           </>
         )}
-      </NavLink>
+      </Nav>
     </li>
   )
 }
@@ -146,9 +163,8 @@ export function BottomNav({ onOpenDrawer, drawerOpen }: BottomNavProps): ReactEl
       <ul className="grid grid-cols-5">
         {PRIMARY_NAV.map((item) => (
           <li key={item.to}>
-            <NavLink
-              to={item.to}
-              end={item.exact}
+            <Nav
+              item={item}
               className={({ isActive }) =>
                 [
                   'flex flex-col items-center gap-1 py-2 text-[0.625rem] font-medium',
@@ -158,7 +174,7 @@ export function BottomNav({ onOpenDrawer, drawerOpen }: BottomNavProps): ReactEl
             >
               <Icon name={item.icon} size={18} />
               <span>{item.label}</span>
-            </NavLink>
+            </Nav>
           </li>
         ))}
         <li>

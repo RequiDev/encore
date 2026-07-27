@@ -47,6 +47,7 @@ import {
   LedgerRowHeader,
   PageHeader,
   Panel,
+  RangeLink,
   Select,
   Skeleton,
   SkeletonLedger,
@@ -437,9 +438,9 @@ function LongestSession({
               <li key={`${track.id}-${index}`} className="flex items-baseline gap-3 text-sm">
                 <span className="tabular w-6 shrink-0 text-right text-ink-faint">{index + 1}</span>
                 <span className="min-w-0 flex-1">
-                  <Link to={`/tracks/${track.id}`} className="text-ink hover:text-lamp">
+                  <RangeLink to={`/tracks/${track.id}`} className="text-ink hover:text-lamp">
                     {track.name}
-                  </Link>
+                  </RangeLink>
                   <span className="block truncate text-xs text-ink-muted">
                     {track.artists.map((artist) => artist.name).join(', ') || 'Unknown artist'}
                   </span>

@@ -60,6 +60,7 @@ import {
   LedgerRowHeader,
   PageHeader,
   Panel,
+  RangeLink,
   RangePicker,
   Skeleton,
   SkeletonLedger,
@@ -878,9 +879,12 @@ function RecentTitle({
 }): ReactElement {
   if (track) {
     return (
-      <Link to={`/tracks/${track.id}`} className="block truncate text-sm text-ink hover:text-lamp">
+      <RangeLink
+        to={`/tracks/${track.id}`}
+        className="block truncate text-sm text-ink hover:text-lamp"
+      >
         {track.name}
-      </Link>
+      </RangeLink>
     )
   }
   // A listen imported from an export can be names only until the catalogue

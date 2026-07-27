@@ -52,6 +52,7 @@ import {
   PageHeader,
   Pagination,
   Panel,
+  RangeLink,
   RangePicker,
   SkeletonLedger,
   Stat,
@@ -253,12 +254,12 @@ export function EntityLedger({
               </LedgerCell>
             ) : null}
             <LedgerRowHeader className={ROW_HEADER}>
-              <Link
+              <RangeLink
                 to={row.to}
                 className="block max-w-[10rem] truncate text-ink hover:text-lamp sm:max-w-[22rem]"
               >
                 {row.name}
-              </Link>
+              </RangeLink>
               {row.meta ? (
                 <span className="block max-w-[10rem] truncate text-xs text-ink-muted sm:max-w-[22rem]">
                   {row.meta}
