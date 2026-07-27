@@ -225,16 +225,30 @@ func (w *Worker) storeAlbums(ctx context.Context, declined []string, albums []sp
 // their own, so this is the upsert and the unavailable marks alone.
 func (w *Worker) storeArtists(ctx context.Context, declined []string, artists []spotify.Artist) error {
 	rows := make([]domain.Artist, 0, len(artists))
+	resolved := make([]string, 0, len(artists))
 	for _, a := range artists {
 		row := a.ToDomainArtist()
 		if row.ID == "" {
 			continue
 		}
 		rows = append(rows, row)
+		resolved = append(resolved, row.ID)
 	}
 	err := w.dep.Store.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := w.dep.Catalog.UpsertArtists(ctx, tx, rows); err != nil {
 			return err
+		}
+		// Fold in any artist an import had only a name for. Done here rather than
+		// on a schedule so the two rows never coexist for longer than the
+		// transaction that made them the same artist: a chart must not show a name
+		// twice with the plays split between them.
+		merged, err := w.dep.Catalog.MergeLocalArtists(ctx, tx, resolved)
+		if err != nil {
+			return err
+		}
+		if merged > 0 {
+			w.log.Info("folded locally named artists into their spotify rows",
+				"count", merged)
 		}
 		return w.dep.Catalog.MarkUnavailable(ctx, tx, catalog.KindArtist, declined)
 	})
