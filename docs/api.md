@@ -71,7 +71,10 @@ The bootstrap call the client makes on load. Returns `401` when signed out.
     "scopes": ["user-read-recently-played", "user-read-private", "user-read-email"]
   },
   "csrfToken": "…",
-  "instance": { "registrationsEnabled": false, "version": "1.0.0" }
+  "instance": { "registrationsEnabled": false, "version": "1.0.0" },
+  "listening": {
+    "firstListenAt": "2019-03-04T12:00:00Z", "lastListenAt": "2026-07-26T09:00:00Z"
+  }
 }
 ```
 
@@ -213,6 +216,48 @@ importer compares its own counters against a real `count(*)` over `listens` per 
 produces `failed` with `errorCode = "verification_failed"` rather than a false success.
 
 ---
+
+## Instance status
+
+### `GET /api/status`
+
+How far metadata enrichment has got, and whether anything is stopping it. Any
+signed-in user may read it: the payload is instance-wide operational state and
+holds nobody's listening data.
+
+```json
+{
+  "catalogue": {
+    "tracks":  { "total": 16505, "resolved": 50, "pending": 16455,
+                 "failed": 0, "unavailable": 0, "named": 16505 },
+    "artists": { "total": 29, "resolved": 0, "pending": 29,
+                 "failed": 0, "unavailable": 0, "named": 0 },
+    "albums":  { "total": 40, "resolved": 40, "pending": 0,
+                 "failed": 0, "unavailable": 0, "named": 40 },
+    "aliasesTotal": 0, "aliasesPending": 0
+  },
+  "metadata": {
+    "outstanding": 16484, "complete": false,
+    "paused": true, "pausedUntil": "2026-07-28T04:00:00Z"
+  }
+}
+```
+
+`named` is reported separately from `resolved` because the two genuinely differ.
+An imported export carries track and artist names, so most of the catalogue is
+readable long before Spotify has supplied albums, artwork and genres. A client
+that measured progress by `resolved` alone would report a screen full of legible
+music as empty.
+
+`paused` is the state this endpoint exists for. Spotify answers an exhausted
+daily quota with a `Retry-After` of most of a day; Encore records the instant and
+waits it out across restarts. `pausedUntil` is absent unless `paused` is true,
+and an elapsed window is never reported as a pause. Listening data is unaffected
+throughout — every play is already counted.
+
+Backs the metadata panel on the Settings page. The command-line equivalent,
+which additionally reports listens, users, per-user sync state and import job
+counts, is `encore-worker status`.
 
 ## Operational endpoints
 

@@ -146,7 +146,14 @@ docker compose exec -T db pg_dump -U encore -d encore --format=custom > pre-upgr
 
 ## What is this instance doing?
 
-One command, read-only, safe at any time:
+Most of the answer is in the browser. **Settings → Music metadata** shows how much of the catalogue
+has a name, how much is still queued, and — when it applies — that Spotify has rate limited the
+instance and when it resumes. It refreshes itself while work is outstanding and stops once there is
+nothing left to fetch. That panel is enough for the question people actually ask, and it needs no
+shell access, so point users at it rather than at a terminal.
+
+For the fuller picture — listens held, users, per-user sync state, import jobs — one command,
+read-only, safe at any time:
 
 ```bash
 docker compose run --rm worker /usr/local/bin/encore-worker status
@@ -204,6 +211,10 @@ recorded in `app_settings` and restored at startup, so a restart simply waits ou
 ```bash
 docker compose logs worker | grep -i 'stays paused'   # after a restart, if still banned
 ```
+
+Users see the same thing without a shell: **Settings → Music metadata** shows a *Rate limited* chip
+and the instant fetching resumes, and says in as many words that the listening figures are already
+complete. It is worth pointing people there before they go restarting containers.
 
 Listening data is never affected; only the names, artwork and genres are. What to do:
 
