@@ -68,7 +68,7 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile
-    image: encore/encore:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_IMAGE:-encore/encore}:${ENCORE_VERSION:-latest}
     command: ["/usr/local/bin/encore-migrate", "up"]
     environment: *encore-env
     depends_on:
@@ -80,7 +80,7 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile
-    image: encore/encore:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_IMAGE:-encore/encore}:${ENCORE_VERSION:-latest}
     command: ["/usr/local/bin/encore-api"]
     environment: *encore-env
     depends_on:
@@ -106,7 +106,7 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile
-    image: encore/encore:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_IMAGE:-encore/encore}:${ENCORE_VERSION:-latest}
     command: ["/usr/local/bin/encore-worker"]
     environment:
       <<: *encore-env
@@ -135,7 +135,7 @@ services:
     build:
       context: .
       dockerfile: deploy/web.Dockerfile
-    image: encore/encore-web:${ENCORE_VERSION:-latest}
+    image: ${ENCORE_WEB_IMAGE:-encore/encore-web}:${ENCORE_VERSION:-latest}
     depends_on:
       api:
         condition: service_healthy

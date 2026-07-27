@@ -54,9 +54,12 @@ are the same value below. That keeps the session cookie `SameSite=Lax` with no C
 
 ```bash
 sudo mkdir -p /opt/encore && sudo chown "$USER" /opt/encore
-git clone https://github.com/requi/encore.git /opt/encore
+git clone https://github.com/RequiDev/encore.git /opt/encore
 cd /opt/encore
 ```
+
+You still need the checkout for the Compose files, the nginx template and the
+`.env`. Whether it also *builds* the images is up to you — see step 4.
 
 ## 2. Register the Spotify redirect URI
 
@@ -109,8 +112,53 @@ listening history, but every user has to reconnect their Spotify account.
 
 ## 4. Start it
 
+Two ways, and the first is the one to use on a server.
+
+### From the published images (recommended)
+
+CI builds and publishes `linux/amd64` and `linux/arm64` images to the GitHub
+Container Registry on every green build of `main`. They are public, so no
+`docker login` is needed:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml up -d
+```
+
+That is worth an alias, or put it in `/opt/encore/up.sh`. Nothing is compiled on
+the server, so a 1 GB VPS or a Raspberry Pi is enough to run Encore even though
+building it needs rather more.
+
+| Image | Tags |
+|---|---|
+| `ghcr.io/requidev/encore` | API, worker and migration binaries |
+| `ghcr.io/requidev/encore-web` | Web client behind nginx |
+
+Both carry `latest` (the head of `main`), `sha-<commit>` for an exact pin, and
+`1.2.3` / `1.2` once a version tag exists. Pin with `ENCORE_VERSION` in `.env`:
+
+```dotenv
+ENCORE_VERSION=sha-0f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c
+```
+
+Every published image carries a signed build attestation, so you can check it
+came from this repository and not from someone else:
+
+```bash
+gh attestation verify oci://ghcr.io/requidev/encore:latest --owner RequiDev
+```
+
+### Building from source
+
+Still supported, and what you want if you have local changes:
+
 ```bash
 docker compose up -d --build
+```
+
+Then, either way:
+
+```bash
 docker compose ps                       # all healthy, migrate exited 0
 curl -fsS http://127.0.0.1:8080/readyz  # {"status":"ok",...}
 ```
@@ -197,11 +245,20 @@ in [`docs/operations.md`](operations.md).
 
 ### Upgrades
 
+From the published images:
+
 ```bash
 cd /opt/encore
 docker compose exec -T db pg_dump -U encore -d encore --format=custom > /var/backups/pre-upgrade.dump
-git pull
-docker compose up -d --build
+git pull            # for the Compose files and any new configuration
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml                -f docker-compose.prod.yml up -d
+```
+
+Or, building locally:
+
+```bash
+git pull && docker compose up -d --build
 ```
 
 Migrations run as their own service that the API and worker wait on, so the ordering is handled for

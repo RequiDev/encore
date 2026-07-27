@@ -37,7 +37,7 @@ dashboards you actually own.
 You need Docker with Compose v2, and a Spotify application (two minutes, see below).
 
 ```bash
-git clone https://github.com/requi/encore.git
+git clone https://github.com/RequiDev/encore.git
 cd encore
 
 cp .env.example .env
@@ -54,10 +54,18 @@ ENCORE_ENCRYPTION_KEY=<openssl rand -base64 32>
 POSTGRES_PASSWORD=<anything long>
 ```
 
-Then:
+Then, either build it yourself:
 
 ```bash
 docker compose up -d --build
+```
+
+or pull the images CI publishes, which is faster and works on a machine too small
+to compile on:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
 ```
 
 Open <http://127.0.0.1:3000> and sign in with Spotify. **The first account to sign in becomes the
@@ -231,7 +239,7 @@ Measured results, and the hardware they were measured on, are in
 
 | Document | Contents |
 |---|---|
-| [`docs/deployment.md`](docs/deployment.md) | Deploying on your own server behind a reverse proxy, with TLS |
+| [`docs/deployment.md`](docs/deployment.md) | Deploying on your own server behind a reverse proxy, with TLS, and running from the published images |
 | [`docs/architecture.md`](docs/architecture.md) | Processes, package layout, dependency rules, request path, scaling |
 | [`docs/import.md`](docs/import.md) | Import pipeline, checkpoints, the duplicate strategy, failure recovery |
 | [`docs/configuration.md`](docs/configuration.md) | Every environment variable |

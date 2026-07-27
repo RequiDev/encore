@@ -6,7 +6,7 @@
 # identical and makes a deployment atomic: they cannot drift apart.
 
 # --- build -----------------------------------------------------------------
-FROM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 
 WORKDIR /src
 
@@ -17,16 +17,24 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 
 ARG VERSION=dev
+
+# Cross-compile rather than emulate. Buildx sets these for whichever platform it
+# is producing; the build stage itself always runs natively, so building the
+# arm64 image on an amd64 runner costs nothing beyond a second `go build`.
+# Emulating the toolchain under QEMU instead would take tens of minutes.
+ARG TARGETOS
+ARG TARGETARCH
+
 # CGO is not needed: pgx is pure Go. A static binary lets the runtime image be
-# distroless-small without a libc.
+# distroless-small without a libc, and cross-compiles without a cross toolchain.
 ENV CGO_ENABLED=0
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
         -o /out/encore-api     ./cmd/encore-api  && \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
         -o /out/encore-worker  ./cmd/encore-worker && \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
         -o /out/encore-migrate ./cmd/encore-migrate
 
 # --- runtime ---------------------------------------------------------------

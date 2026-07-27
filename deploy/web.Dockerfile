@@ -3,7 +3,10 @@
 # lets the session cookie be SameSite=Lax with no CORS configuration at all.
 
 # --- build -----------------------------------------------------------------
-FROM node:22-alpine AS build
+# The output is static files, so this stage always runs natively whatever
+# architecture the final image targets. Running npm under QEMU would be slow
+# and would produce byte-identical output.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 
 WORKDIR /app
 
