@@ -129,6 +129,42 @@ export interface SharedStats {
   weekdays: RepartitionBucket[]
 }
 
+// --- playlists -------------------------------------------------------------
+
+/** How a playlist definition chooses its tracks. */
+export type PlaylistMode = 'top' | 'min_plays' | 'discoveries' | 'forgotten'
+
+/** What a mode ranks by. */
+export type PlaylistSort = 'plays' | 'time'
+
+export interface CreatePlaylistRequest {
+  name: string
+  mode: PlaylistMode
+  sort?: PlaylistSort
+  limit?: number
+  minPlays?: number
+  from?: Timestamp
+  to?: Timestamp
+}
+
+export interface Playlist {
+  id: string
+  name: string
+  spotifyId: string
+  spotifyUrl: string
+  mode: PlaylistMode
+  sort: PlaylistSort
+  limit: number
+  minPlays: number
+  from: Timestamp | null
+  to: Timestamp | null
+  trackCount: number
+  /** How many tracks qualified before the limit. Only on a build response. */
+  matched?: number
+  builtAt: Timestamp | null
+  createdAt: Timestamp
+}
+
 // --- instance status -------------------------------------------------------
 
 /**

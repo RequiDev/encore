@@ -28,8 +28,11 @@ import {
 } from '../lib/format'
 import type {
   Artist,
+  CreatePlaylistRequest,
   CreateShareRequest,
   EntityProgress,
+  Playlist,
+  PlaylistMode,
   ShareLink,
   StatusResponse,
   SyncOutcome,
@@ -60,6 +63,22 @@ import {
  * twice.
  */
 const STATUS_POLL_MS = 30_000
+
+/** What each mode does, in the words the form uses. */
+const MODE_HINTS: Record<PlaylistMode, string> = {
+  top: 'The most played tracks of the period.',
+  min_plays: 'Everything that reached a play count, however many that is.',
+  discoveries: 'Tracks you heard for the first time ever in the period.',
+  forgotten: 'Played heavily before the period, and not during it.',
+}
+
+/** The same modes, shortened for a list row. */
+const MODE_LABELS: Record<PlaylistMode, string> = {
+  top: 'most played',
+  min_plays: 'by play count',
+  discoveries: 'discoveries',
+  forgotten: 'forgotten favourites',
+}
 
 /**
  * Every timezone this browser knows, with the configured one guaranteed to be
@@ -97,7 +116,7 @@ function syncSentence(outcome: SyncOutcome): string {
 }
 
 export default function Settings(): ReactElement {
-  const { user, spotify, isAdmin, refresh, logout } = useSession()
+  const { user, spotify, listening, isAdmin, refresh, logout } = useSession()
   const { mode, setMode } = useTheme()
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -107,6 +126,17 @@ export default function Settings(): ReactElement {
   const [syncNote, setSyncNote] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [confirmName, setConfirmName] = useState('')
+
+  const playlistYears = useMemo(() => {
+    const first = listening?.firstListenAt
+      ? new Date(listening.firstListenAt).getUTCFullYear()
+      : null
+    const last = listening?.lastListenAt ? new Date(listening.lastListenAt).getUTCFullYear() : null
+    if (first === null || last === null) return []
+    const years: number[] = []
+    for (let year = last; year >= first; year -= 1) years.push(year)
+    return years
+  }, [listening])
 
   const currentZone = user?.timezone ?? 'UTC'
   const zones = useMemo(() => supportedTimeZones(currentZone), [currentZone])
@@ -153,6 +183,57 @@ export default function Settings(): ReactElement {
       setFreshLink((current) => (current?.id === id ? null : current))
       void queryClient.invalidateQueries({ queryKey: qk.shares() })
       toast.notify({ tone: 'success', title: 'Link revoked', description: 'It stops working now.' })
+    },
+  })
+
+  const playlists = useQuery({
+    queryKey: qk.playlists(),
+    queryFn: ({ signal }) => api.get<Playlist[]>('/playlists', undefined, signal),
+  })
+
+  const [playlistName, setPlaylistName] = useState('')
+  const [playlistMode, setPlaylistMode] = useState<PlaylistMode>('top')
+  const [playlistLimit, setPlaylistLimit] = useState('100')
+  const [playlistMinPlays, setPlaylistMinPlays] = useState('10')
+  const [playlistYear, setPlaylistYear] = useState('')
+
+  const createPlaylist = useMutation({
+    mutationFn: (body: CreatePlaylistRequest) => api.post<Playlist>('/playlists', body),
+    onSuccess: (made) => {
+      setPlaylistName('')
+      void queryClient.invalidateQueries({ queryKey: qk.playlists() })
+      toast.notify({
+        tone: 'success',
+        title: `${made.name} created`,
+        description:
+          made.matched && made.matched > made.trackCount
+            ? `${formatCount(made.trackCount)} of ${formatCount(made.matched)} matching tracks.`
+            : `${formatPlural(made.trackCount, 'track')}.`,
+      })
+    },
+  })
+
+  const rebuildPlaylist = useMutation({
+    mutationFn: (id: string) => api.post<Playlist>(`/playlists/${id}/rebuild`),
+    onSuccess: (made) => {
+      void queryClient.invalidateQueries({ queryKey: qk.playlists() })
+      toast.notify({
+        tone: 'success',
+        title: `${made.name} rebuilt`,
+        description: `${formatPlural(made.trackCount, 'track')}.`,
+      })
+    },
+  })
+
+  const forgetPlaylist = useMutation({
+    mutationFn: (id: string) => api.del<void>(`/playlists/${id}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.playlists() })
+      toast.notify({
+        tone: 'success',
+        title: 'Encore stopped managing it',
+        description: 'The playlist itself is still in your Spotify library.',
+      })
     },
   })
 
@@ -242,6 +323,11 @@ export default function Settings(): ReactElement {
   const needsReauth = spotify?.syncState === 'needs_reauth'
   const syncFailed = spotify?.syncState === 'error'
   const canSync = Boolean(spotify?.connected) && !needsReauth
+  // Encore signs everybody in read-only. Write access is granted separately, by
+  // whoever actually wants a playlist made.
+  const canWritePlaylists = (spotify?.scopes ?? []).some((granted) =>
+    granted.split(' ').includes('playlist-modify-private'),
+  )
   const confirmMatches = confirmName.trim() === user.spotifyUserId
 
   return (
@@ -446,6 +532,171 @@ export default function Settings(): ReactElement {
           </div>
         </Panel>
       </div>
+
+      {/* --- playlists ------------------------------------------------------ */}
+      <Panel
+        title="Playlists"
+        description="Build a Spotify playlist from what you actually listened to."
+      >
+        {!canWritePlaylists ? (
+          <>
+            <p className="max-w-prose text-sm text-ink-muted">
+              Encore signed you in with read-only access, so it cannot yet put anything in your
+              library. Granting permission takes one trip through Spotify and changes nothing else:
+              Encore still only reads your listening, and you can revoke it from your Spotify
+              account whenever you like.
+            </p>
+            <a className={`${buttonClass('primary')} mt-3`} href="/api/auth/spotify/playlists">
+              <Icon name="refresh" />
+              Allow Encore to create playlists
+            </a>
+          </>
+        ) : (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              const body: CreatePlaylistRequest = {
+                name: playlistName.trim(),
+                mode: playlistMode,
+                limit: Number(playlistLimit) || 100,
+              }
+              if (playlistMode === 'min_plays') body.minPlays = Number(playlistMinPlays) || 10
+              if (playlistYear !== '') {
+                const year = Number(playlistYear)
+                body.from = new Date(Date.UTC(year, 0, 1)).toISOString()
+                body.to = new Date(Date.UTC(year + 1, 0, 1)).toISOString()
+              }
+              createPlaylist.mutate(body)
+            }}
+          >
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Name" hint="What it will be called in Spotify.">
+                <Input
+                  value={playlistName}
+                  maxLength={100}
+                  required
+                  placeholder="Heavy rotation"
+                  onChange={(event) => setPlaylistName(event.target.value)}
+                />
+              </Field>
+              <Field label="Choose tracks by" hint={MODE_HINTS[playlistMode]}>
+                <Select
+                  value={playlistMode}
+                  onChange={(event) => setPlaylistMode(event.target.value as PlaylistMode)}
+                >
+                  <option value="top">Most played</option>
+                  <option value="min_plays">Played at least N times</option>
+                  <option value="discoveries">First heard in the period</option>
+                  <option value="forgotten">Forgotten favourites</option>
+                </Select>
+              </Field>
+              <Field
+                label="Period"
+                hint={
+                  playlistMode === 'forgotten'
+                    ? 'Required: the period they dropped out of.'
+                    : 'Leave on everything for your whole history.'
+                }
+              >
+                <Select
+                  value={playlistYear}
+                  onChange={(event) => setPlaylistYear(event.target.value)}
+                >
+                  <option value="">Everything</option>
+                  {playlistYears.map((year) => (
+                    <option key={year} value={String(year)}>
+                      {year}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              {playlistMode === 'min_plays' ? (
+                <Field label="Minimum plays" hint="Every track that reached this count.">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={playlistMinPlays}
+                    onChange={(event) => setPlaylistMinPlays(event.target.value)}
+                  />
+                </Field>
+              ) : (
+                <Field label="How many tracks" hint="At most 500.">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={playlistLimit}
+                    onChange={(event) => setPlaylistLimit(event.target.value)}
+                  />
+                </Field>
+              )}
+            </div>
+
+            <div className="mt-3">
+              <Button
+                type="submit"
+                variant="primary"
+                busy={createPlaylist.isPending}
+                disabled={playlistName.trim() === ''}
+              >
+                Create in Spotify
+              </Button>
+            </div>
+            {createPlaylist.isError ? (
+              <p role="alert" className="mt-2 text-sm text-ember">
+                {errorMessage(createPlaylist.error)}
+              </p>
+            ) : null}
+          </form>
+        )}
+
+        {(playlists.data?.length ?? 0) === 0 ? null : (
+          <ul className="mt-4 divide-y divide-seam border-t border-seam">
+            {(playlists.data ?? []).map((playlist) => (
+              <li key={playlist.id} className="flex flex-wrap items-center gap-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <a
+                    className="text-sm text-ink hover:text-lamp"
+                    href={playlist.spotifyUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    {playlist.name}
+                  </a>
+                  <p className="text-xs text-ink-faint">
+                    <span className="tabular">{formatPlural(playlist.trackCount, 'track')}</span>
+                    {' \u00b7 '}
+                    {MODE_LABELS[playlist.mode]}
+                    {playlist.builtAt ? ` \u00b7 built ${formatRelative(playlist.builtAt)}` : ''}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  busy={rebuildPlaylist.isPending && rebuildPlaylist.variables === playlist.id}
+                  aria-label={`Rebuild ${playlist.name}`}
+                  onClick={() => rebuildPlaylist.mutate(playlist.id)}
+                >
+                  Rebuild
+                </Button>
+                <Button
+                  size="sm"
+                  busy={forgetPlaylist.isPending && forgetPlaylist.variables === playlist.id}
+                  aria-label={`Stop managing ${playlist.name}`}
+                  onClick={() => forgetPlaylist.mutate(playlist.id)}
+                >
+                  Stop managing
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {rebuildPlaylist.isError || forgetPlaylist.isError ? (
+          <p role="alert" className="mt-2 text-sm text-ember">
+            {errorMessage(rebuildPlaylist.error ?? forgetPlaylist.error)}
+          </p>
+        ) : null}
+      </Panel>
 
       {/* --- sharing -------------------------------------------------------- */}
       <Panel
