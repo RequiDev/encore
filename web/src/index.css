@@ -3,10 +3,17 @@
 /*
  * Encore's visual language: a listening instrument, not a SaaS dashboard.
  *
- * The reference points are hi-fi equipment and tape decks — a warm, brown-shifted
- * chassis rather than a blue-black one, hairline panel seams, and a single amber
- * accent that reads as a backlit dial rather than as a brand colour. Light mode is
- * the same instrument in daylight: warm paper, same amber.
+ * The reference points are hi-fi equipment and tape decks — a neutral graphite
+ * chassis, hairline panel seams, and a single warm dial-lamp accent that reads as
+ * backlighting rather than as a brand colour. Light mode is the same instrument
+ * in daylight.
+ *
+ * The chassis is deliberately neutral rather than warm-tinted. An earlier version
+ * shifted it brown to echo wood-cased equipment; across a full-screen dark
+ * interface that reads as a colour cast rather than as a material, and it muddies
+ * the data colours sitting on top of it. The warmth now lives only in the accent,
+ * where it is a highlight against a neutral ground instead of a wash over
+ * everything.
  *
  * The signature is typographic. Every number in Encore — play counts, durations,
  * ranks, record offsets — is set in a monospaced face with tabular figures, so
@@ -18,19 +25,19 @@
 
 @theme {
   /* --- chassis: dark ---------------------------------------------------- */
-  --color-chassis: #12100e;
-  --color-panel: #1b1815;
-  --color-panel-raised: #241f19;
-  --color-seam: #332d26;
-  --color-seam-strong: #4a4137;
-  --color-ink: #f2ede4;
-  --color-ink-muted: #a29685;
-  --color-ink-faint: #6f655a;
+  --color-chassis: #0f1114;
+  --color-panel: #171a1f;
+  --color-panel-raised: #1e222a;
+  --color-seam: #2a2f37;
+  --color-seam-strong: #3d4450;
+  --color-ink: #e9ecf1;
+  --color-ink-muted: #9aa4b2;
+  --color-ink-faint: #6b7482;
 
   /* --- accents ---------------------------------------------------------- */
   /* Amber is the dial lamp: the one place Encore raises its voice. */
-  --color-lamp: #f0a93b;
-  --color-lamp-dim: #a8761f;
+  --color-lamp: #f2b544;
+  --color-lamp-dim: #b07d1c;
   --color-ember: #e0603a;
   --color-signal: #3fa9a0;
   --color-violet: #8b7be8;
@@ -39,7 +46,7 @@
   /* --- data series ------------------------------------------------------ */
   /* Ordered so the first three are distinguishable under the common forms of
      colour vision deficiency, and so adjacent pairs never rely on hue alone. */
-  --color-series-1: #f0a93b;
+  --color-series-1: #f2b544;
   --color-series-2: #3fa9a0;
   --color-series-3: #8b7be8;
   --color-series-4: #e0603a;
@@ -80,22 +87,22 @@
  * become pencil rules, and the amber darkens enough to stay readable on it.
  */
 :root {
-  --color-chassis: #f7f3ec;
-  --color-panel: #fdfaf4;
+  --color-chassis: #f5f6f8;
+  --color-panel: #ffffff;
   --color-panel-raised: #ffffff;
-  --color-seam: #e2d9cb;
-  --color-seam-strong: #cabfae;
-  --color-ink: #1e1a15;
-  --color-ink-muted: #6b6055;
-  --color-ink-faint: #8d8073;
-  --color-lamp: #b8760f;
-  --color-lamp-dim: #d9a44e;
+  --color-seam: #e3e7ec;
+  --color-seam-strong: #c6ccd6;
+  --color-ink: #14181d;
+  --color-ink-muted: #5b6472;
+  --color-ink-faint: #838d9b;
+  --color-lamp: #a76b0b;
+  --color-lamp-dim: #c99433;
   --color-signal: #237d76;
   --color-violet: #5f4dc2;
   --color-sage: #4d8c3a;
   --color-ember: #c04520;
 
-  --color-series-1: #b8760f;
+  --color-series-1: #a76b0b;
   --color-series-2: #237d76;
   --color-series-3: #5f4dc2;
   --color-series-4: #c04520;
@@ -108,22 +115,22 @@
 }
 
 .dark {
-  --color-chassis: #12100e;
-  --color-panel: #1b1815;
-  --color-panel-raised: #241f19;
-  --color-seam: #332d26;
-  --color-seam-strong: #4a4137;
-  --color-ink: #f2ede4;
-  --color-ink-muted: #a29685;
-  --color-ink-faint: #6f655a;
-  --color-lamp: #f0a93b;
-  --color-lamp-dim: #a8761f;
+  --color-chassis: #0f1114;
+  --color-panel: #171a1f;
+  --color-panel-raised: #1e222a;
+  --color-seam: #2a2f37;
+  --color-seam-strong: #3d4450;
+  --color-ink: #e9ecf1;
+  --color-ink-muted: #9aa4b2;
+  --color-ink-faint: #6b7482;
+  --color-lamp: #f2b544;
+  --color-lamp-dim: #b07d1c;
   --color-signal: #3fa9a0;
   --color-violet: #8b7be8;
   --color-sage: #7fbf6a;
   --color-ember: #e0603a;
 
-  --color-series-1: #f0a93b;
+  --color-series-1: #f2b544;
   --color-series-2: #3fa9a0;
   --color-series-3: #8b7be8;
   --color-series-4: #e0603a;
@@ -271,7 +278,7 @@
   .btn-primary {
     background-color: var(--color-lamp);
     border-color: var(--color-lamp);
-    color: #12100e;
+    color: var(--color-chassis);
     font-weight: 600;
   }
 
@@ -355,7 +362,7 @@
     top: 0.5rem;
     padding: 0.5rem 0.75rem;
     background-color: var(--color-lamp);
-    color: #12100e;
+    color: var(--color-chassis);
     border-radius: var(--radius-control);
     font-weight: 600;
   }
