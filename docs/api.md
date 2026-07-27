@@ -217,6 +217,31 @@ produces `failed` with `errorCode = "verification_failed"` rather than a false s
 
 ---
 
+## Sharing
+
+Read-only links to a user's aggregate statistics.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/shares` | The caller's links. Never returns a token or a URL: only a hash is stored, so neither can be reconstructed. |
+| `POST` | `/api/shares` | `{ "label", "from", "to", "days", "expiresAt" }` — a fixed range (`from`+`to`) **or** a rolling window (`days`), never both; all omitted means everything. Answers `201` with the link **including `token` and `url`, the only time they exist**. Capped at 25 live links per account. |
+| `DELETE` | `/api/shares/{id}` | Revokes immediately. Scoped by owner, so another user's id yields `404`. |
+
+### `GET /api/share/{token}`
+
+**Unauthenticated.** The only endpoint in Encore that answers with a user's data
+and no session.
+
+It composes a fixed payload — summary, top 25 tracks/artists/albums, timeline,
+hour and weekday repartition — using the same shapes the ordinary statistics
+endpoints return. There is no listening history in it and no parameter that
+could reach one: what a share exposes is a property of the feature, not a
+per-link setting.
+
+The range comes from the link, never the query string. Revoked, expired,
+belonging to a deactivated user, and never-existed all answer `404` alike.
+Responses carry `X-Robots-Tag: noindex, nofollow, noarchive`.
+
 ## Instance status
 
 ### `GET /api/status`

@@ -87,6 +87,8 @@ export interface PageKey {
 export const qk = {
   me: () => ['me'] as const,
   status: () => ['status'] as const,
+  shares: () => ['shares'] as const,
+  sharedStats: (token: string) => ['share', token] as const,
   users: () => ['users'] as const,
 
   admin: () => ['admin'] as const,

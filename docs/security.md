@@ -127,6 +127,25 @@ refused; existing users can always sign in.
   cascade. It is not a soft delete and it is not reversible. The shared music catalogue is not
   touched, because it contains no personal data.
 
+## Shared links
+
+A share link is a bearer credential: whoever holds it can read the aggregate
+statistics it points at, with no account on the instance.
+
+- The token is 32 random bytes, URL-safe base64. Only its SHA-256 is stored, so a
+  database leak yields nothing replayable — the same treatment sessions get.
+- It is returned exactly once, by the request that creates it. Nothing can show
+  it again, including whoever runs the instance.
+- Revocation is immediate and the link is removed from the owner's list.
+- A link reaches aggregates only. There is no column, parameter or flag that
+  would let one expose the listening history: the endpoint composes a fixed
+  payload and has no path to individual plays. A privacy boundary enforced by
+  shape cannot be misconfigured.
+- Holding a link grants nothing else. Every other endpoint still answers `401`.
+- Responses are `noindex`, since an unguessable URL is worth nothing once a
+  crawler has published it.
+- Links are capped at 25 per account, so the list stays short enough to audit.
+
 ## Secrets
 
 No secret is committed to this repository. `.env` is git-ignored; `.env.example` contains only

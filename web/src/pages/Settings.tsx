@@ -26,7 +26,15 @@ import {
   formatPlural,
   formatRelative,
 } from '../lib/format'
-import type { Artist, EntityProgress, StatusResponse, SyncOutcome, User } from '../lib/types'
+import type {
+  Artist,
+  CreateShareRequest,
+  EntityProgress,
+  ShareLink,
+  StatusResponse,
+  SyncOutcome,
+  User,
+} from '../lib/types'
 import {
   Button,
   ButtonLink,
@@ -116,6 +124,36 @@ export default function Settings(): ReactElement {
   const blacklist = useQuery({
     queryKey: qk.blacklist(),
     queryFn: ({ signal }) => api.get<Artist[]>('/blacklist', undefined, signal),
+  })
+
+  const shares = useQuery({
+    queryKey: qk.shares(),
+    queryFn: ({ signal }) => api.get<ShareLink[]>('/shares', undefined, signal),
+  })
+
+  // The token comes back once, in the creating response. It is held here so the
+  // owner can copy it, and it is gone as soon as the page is left — which is
+  // also true of the server, where only its hash was ever stored.
+  const [freshLink, setFreshLink] = useState<ShareLink | null>(null)
+  const [shareLabel, setShareLabel] = useState('')
+  const [shareWindow, setShareWindow] = useState('all')
+
+  const createShare = useMutation({
+    mutationFn: (body: CreateShareRequest) => api.post<ShareLink>('/shares', body),
+    onSuccess: (link) => {
+      setFreshLink(link)
+      setShareLabel('')
+      void queryClient.invalidateQueries({ queryKey: qk.shares() })
+    },
+  })
+
+  const revokeShare = useMutation({
+    mutationFn: (id: string) => api.del<void>(`/shares/${id}`),
+    onSuccess: (_result, id) => {
+      setFreshLink((current) => (current?.id === id ? null : current))
+      void queryClient.invalidateQueries({ queryKey: qk.shares() })
+      toast.notify({ tone: 'success', title: 'Link revoked', description: 'It stops working now.' })
+    },
   })
 
   const status = useQuery({
@@ -408,6 +446,125 @@ export default function Settings(): ReactElement {
           </div>
         </Panel>
       </div>
+
+      {/* --- sharing -------------------------------------------------------- */}
+      <Panel
+        title="Shared links"
+        description="Read-only links to your statistics, for people without an account here."
+      >
+        <p className="max-w-prose text-sm text-ink-muted">
+          A link shows totals and rankings — top tracks, artists and albums, listening time, the
+          charts. It never shows individual plays or when they happened, and it grants nothing else
+          on this instance. Anyone holding the link can open it, so treat it as the password it is.
+        </p>
+
+        <form
+          className="mt-4 border-t border-seam pt-4"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const body: CreateShareRequest = { label: shareLabel.trim() }
+            if (shareWindow !== 'all') body.days = Number(shareWindow)
+            createShare.mutate(body)
+          }}
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Name" hint="Shown at the top of the shared page.">
+              <Input
+                value={shareLabel}
+                maxLength={80}
+                placeholder="My 2026"
+                onChange={(event) => setShareLabel(event.target.value)}
+              />
+            </Field>
+            <Field label="Period" hint="A rolling window keeps itself current.">
+              <Select value={shareWindow} onChange={(event) => setShareWindow(event.target.value)}>
+                <option value="all">Everything</option>
+                <option value="7">The last 7 days</option>
+                <option value="30">The last 30 days</option>
+                <option value="90">The last 90 days</option>
+                <option value="365">The last year</option>
+              </Select>
+            </Field>
+          </div>
+          <div className="mt-3">
+            <Button type="submit" variant="primary" busy={createShare.isPending}>
+              Create a link
+            </Button>
+          </div>
+          {createShare.isError ? (
+            <p role="alert" className="mt-2 text-sm text-ember">
+              {errorMessage(createShare.error)}
+            </p>
+          ) : null}
+        </form>
+
+        {freshLink?.url ? (
+          <div className="mt-4 border-t border-seam pt-4">
+            <p className="text-sm text-ink">
+              Copy this now — Encore stores only a hash of it, so it cannot be shown again.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Input
+                readOnly
+                value={freshLink.url}
+                onFocus={(event) => event.currentTarget.select()}
+                className="min-w-0 flex-1"
+              />
+              <Button
+                onClick={() => {
+                  void navigator.clipboard?.writeText(freshLink.url ?? '')
+                  toast.notify({ tone: 'success', title: 'Link copied' })
+                }}
+              >
+                Copy
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {shares.isPending ? (
+          <div className="mt-4 space-y-2" role="status" aria-busy="true" aria-live="polite">
+            <span className="sr-only">Loading your links</span>
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : (shares.data?.length ?? 0) === 0 ? null : (
+          <ul className="mt-4 divide-y divide-seam border-t border-seam">
+            {(shares.data ?? []).map((link) => (
+              <li key={link.id} className="flex flex-wrap items-center gap-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-ink">{link.label || 'Untitled link'}</p>
+                  <p className="text-xs text-ink-faint">
+                    <span className="tabular">
+                      {link.rolling
+                        ? `the last ${formatPlural(link.rangeDays, 'day')}`
+                        : 'everything'}
+                    </span>
+                    {' · '}
+                    {link.viewCount === 0
+                      ? 'never opened'
+                      : `opened ${formatPlural(link.viewCount, 'time')}`}
+                    {link.lastViewedAt ? `, last ${formatRelative(link.lastViewedAt)}` : ''}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  busy={revokeShare.isPending && revokeShare.variables === link.id}
+                  aria-label={`Revoke ${link.label || 'this link'}`}
+                  onClick={() => revokeShare.mutate(link.id)}
+                >
+                  Revoke
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {revokeShare.isError ? (
+          <p role="alert" className="mt-2 text-sm text-ember">
+            {errorMessage(revokeShare.error)}
+          </p>
+        ) : null}
+      </Panel>
 
       {/* --- blacklist ------------------------------------------------------ */}
       <Panel

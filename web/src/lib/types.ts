@@ -72,6 +72,63 @@ export interface MeResponse {
   listening: ListeningBounds
 }
 
+// --- sharing ---------------------------------------------------------------
+
+/** The body of POST /api/shares. Either a fixed range or a rolling window. */
+export interface CreateShareRequest {
+  label?: string
+  from?: Timestamp
+  to?: Timestamp
+  days?: number
+  expiresAt?: Timestamp
+}
+
+/**
+ * One link, as its owner sees it.
+ *
+ * `token` and `url` arrive only in the response that creates the link: the
+ * server stores nothing but a hash, so a listing cannot reconstruct them and
+ * does not pretend to.
+ */
+export interface ShareLink {
+  id: string
+  label: string
+  token?: string
+  url?: string
+  rolling: boolean
+  rangeDays: number
+  from: Timestamp | null
+  to: Timestamp | null
+  expiresAt: Timestamp | null
+  lastViewedAt: Timestamp | null
+  viewCount: number
+  active: boolean
+  createdAt: Timestamp
+}
+
+/**
+ * Everything a shared page shows. The shape is the privacy boundary: there is
+ * no listening history here and no way to ask for one.
+ */
+export interface SharedStats {
+  label: string
+  displayName: string
+  avatarUrl: string
+  timezone: string
+  rolling: boolean
+  rangeDays: number
+  from: Timestamp
+  to: Timestamp
+  interval: Interval
+  summary: Summary
+  tracks: Page<TopEntry<TrackRef>>
+  artists: Page<TopEntry<ArtistRef>>
+  albums: Page<TopEntry<AlbumRef>>
+  timeline: TimelineBucket[]
+  hours: RepartitionBucket[]
+  weekdays: RepartitionBucket[]
+}
+
 // --- instance status -------------------------------------------------------
 
 /**

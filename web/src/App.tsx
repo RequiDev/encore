@@ -41,6 +41,7 @@ const Imports = lazy(() => import('./pages/Imports'))
 const ImportDetail = lazy(() => import('./pages/ImportDetail'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Admin = lazy(() => import('./pages/Admin'))
+const Share = lazy(() => import('./pages/Share'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 const queryClient = createQueryClient()
@@ -70,6 +71,10 @@ export const routes: RouteObject[] = [
     element: <Root />,
     children: [
       { path: '/login', element: <Login /> },
+      // Outside RequireAuth and outside the shell on purpose: a visitor holding
+      // a link is not a user of this instance and is shown nothing that implies
+      // they are.
+      { path: '/share/:token', element: <Share /> },
       {
         element: <RequireAuth />,
         children: [

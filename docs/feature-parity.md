@@ -25,7 +25,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Admin can promote, deactivate and delete users | **Implemented** | Encore additionally refuses to demote, deactivate or delete the last administrator, so an instance cannot lock itself out. |
 | Per-user timezone for statistics | **Implemented** | Every bucketed statistic converts with `AT TIME ZONE`. Changing it marks the user's rollups dirty. |
 | Local username/password accounts | **Changed** | Not offered. Spotify is the only identity provider, matching the reference. No password database means no credential-stuffing surface and no reset flow. |
-| Public/shared statistics links | **Deferred** | The reference exposes read-only sharing. Encore keeps every listen private to its owner; the only cross-user surface is aggregate affinity. Adding sharing would need a considered scope model, which was out of budget. |
+| Public/shared statistics links | **Implemented** | Revocable, unguessable links to aggregate statistics, with an optional rolling window and expiry. Deliberately narrower than the reference: a link reaches totals and rankings and has no path to the listening history, because a stranger learning what somebody listens to is a different thing from learning when they were awake. |
 
 ## 2. Ingestion
 
@@ -149,10 +149,8 @@ Encore's target is practical parity with the user-facing capabilities of
 
 Where Encore does less than the reference, or less than it could:
 
-- **Public sharing links**, **playlist creation from statistics** and **playback control** are
-  deferred. The last two both need Spotify write scopes, and Encore deliberately asks only for read
-  access; sharing needs a considered permission model rather than a flag. All three are additive —
-  none would require changing the schema or the import design.
+- **Playback control** is deferred: it needs `user-modify-playback-state` and an active device, and
+  it is the one write scope with no read-only equivalent.
 - **PWA support stops at installable.** There is no service worker, for the reason given above.
 - **Live sync cannot record how long a track was played**, because the recently-played endpoint does
   not report it; a synced listen counts as the track's full duration. Importing an export over the
