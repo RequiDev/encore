@@ -60,6 +60,10 @@ type Deps struct {
 	// POST /api/sync/now then says so plainly rather than pretending to have
 	// started something.
 	SyncNow func(ctx context.Context, userID uuid.UUID) (SyncOutcome, error)
+	// UserToken returns a valid Spotify access token for one account, refreshing
+	// it if necessary. Optional: without it, playlist creation is refused rather
+	// than attempted with a token that may have expired.
+	UserToken func(ctx context.Context, userID uuid.UUID) (string, error)
 }
 
 // The narrow interfaces below are the only view the HTTP layer takes of the
@@ -108,6 +112,15 @@ type oauthStateStore interface {
 }
 
 // settingsStore is the part of accounts.Settings the HTTP layer uses.
+// playlistStore is the playlist repository as this package needs it.
+type playlistStore interface {
+	Create(ctx context.Context, q store.Querier, p domain.Playlist) (domain.Playlist, error)
+	ListForUser(ctx context.Context, q store.Querier, userID uuid.UUID) ([]domain.Playlist, error)
+	Get(ctx context.Context, q store.Querier, userID, id uuid.UUID) (domain.Playlist, error)
+	RecordBuild(ctx context.Context, q store.Querier, id uuid.UUID, trackCount int, at time.Time) error
+	Forget(ctx context.Context, q store.Querier, userID, id uuid.UUID) error
+}
+
 // shareStore is the sharing repository as this package needs it.
 type shareStore interface {
 	Create(ctx context.Context, q store.Querier, userID uuid.UUID, tokenHash []byte, link domain.ShareLink) (domain.ShareLink, error)
@@ -146,14 +159,19 @@ type Server struct {
 	oauthStates oauthStateStore
 	settings    settingsStore
 
-	catalog *catalog.Repo
-	shares  shareStore
-	listens listenStore
-	imports *imports.Repo
-	stats   *stats.Service
-	intake  *importer.Intake
-	spotify *spotify.Client
-	metrics *metrics.Registry
+	catalog   *catalog.Repo
+	shares    shareStore
+	playlists playlistStore
+	// userToken returns a usable Spotify access token for one account. Injected
+	// because refreshing one belongs to the sync package, and a playlist acts on
+	// the listener's own account so must use the listener's own token.
+	userToken func(ctx context.Context, userID uuid.UUID) (string, error)
+	listens   listenStore
+	imports   *imports.Repo
+	stats     *stats.Service
+	intake    *importer.Intake
+	spotify   *spotify.Client
+	metrics   *metrics.Registry
 
 	syncNow func(ctx context.Context, userID uuid.UUID) (SyncOutcome, error)
 	syncing *inFlight
@@ -226,6 +244,8 @@ func New(deps Deps) (*Server, error) {
 		settings:    deps.Accounts.Settings,
 		catalog:     deps.Catalog,
 		shares:      deps.Accounts.Shares,
+		playlists:   deps.Accounts.Playlists,
+		userToken:   deps.UserToken,
 		listens:     deps.Listens,
 		imports:     deps.Imports,
 		stats:       deps.Stats,

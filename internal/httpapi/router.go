@@ -106,6 +106,14 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	s.route(mux, "DELETE /api/shares/{id}", s.handleRevokeShare)
 	s.route(mux, "GET /api/share/{token}", s.handleSharedStats)
 
+	// Playlists. The write scope is asked for only here, and only when somebody
+	// uses the feature: Encore's default grant stays read-only.
+	s.route(mux, "GET /api/auth/spotify/playlists", s.handleAuthorizePlaylists)
+	s.route(mux, "GET /api/playlists", s.handleListPlaylists)
+	s.route(mux, "POST /api/playlists", s.handleCreatePlaylist)
+	s.route(mux, "POST /api/playlists/{id}/rebuild", s.handleRebuildPlaylist)
+	s.route(mux, "DELETE /api/playlists/{id}", s.handleForgetPlaylist)
+
 	// Listening history.
 	s.route(mux, "GET /api/history", s.handleHistory)
 

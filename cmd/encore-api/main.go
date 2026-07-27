@@ -146,6 +146,9 @@ func run() error {
 		Logger:   lg,
 		Version:  version,
 		SyncNow:  syncNow(poller),
+		// Playlists act on the listener's own account, so they need the
+		// listener's own token, and refreshing one belongs to the poller.
+		UserToken: poller.AccessToken,
 	})
 	if err != nil {
 		return err

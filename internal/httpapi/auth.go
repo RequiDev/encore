@@ -51,7 +51,7 @@ const (
 // handleLogin answers GET /api/auth/spotify/login by starting an authorisation
 // journey for whoever is asking.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	s.startOAuth(w, r, nil)
+	s.startOAuth(w, r, nil, nil)
 }
 
 // handleRelink answers GET /api/auth/spotify/relink: the same journey, but tied
@@ -64,7 +64,22 @@ func (s *Server) handleRelink(w http.ResponseWriter, r *http.Request) {
 		s.redirectWithError(w, r, oauthErrUnauthenticated)
 		return
 	}
-	s.startOAuth(w, r, &user.ID)
+	s.startOAuth(w, r, &user.ID, nil)
+}
+
+// handleAuthorizePlaylists answers GET /api/auth/spotify/playlists.
+//
+// The same journey as a relink, asking for one extra scope. Encore's default
+// grant is read-only and stays that way for anybody who never uses playlists:
+// demanding write access from every listener on every instance, for a feature
+// most will not touch, would be a poor trade for a statistics application.
+func (s *Server) handleAuthorizePlaylists(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		s.redirectWithError(w, r, oauthErrUnauthenticated)
+		return
+	}
+	s.startOAuth(w, r, &user.ID, []string{spotify.ScopePlaylistPrivate})
 }
 
 // startOAuth mints the state and PKCE verifier, records them, and sends the
@@ -73,7 +88,7 @@ func (s *Server) handleRelink(w http.ResponseWriter, r *http.Request) {
 // Only the SHA-256 of the state is stored and the verifier is sealed, so the
 // row gives away neither the value an attacker would have to forge nor the one
 // they would have to present.
-func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, linkUserID *uuid.UUID) {
+func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, linkUserID *uuid.UUID, extraScopes []string) {
 	ctx := r.Context()
 	lg := logging.FromContext(ctx)
 
@@ -101,7 +116,9 @@ func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, linkUserID *
 		return
 	}
 
-	http.Redirect(w, r, s.spotify.AuthorizeURL(state, crypto.PKCEChallenge(verifier)), http.StatusFound)
+	http.Redirect(w, r,
+		s.spotify.AuthorizeURLWithScopes(state, crypto.PKCEChallenge(verifier), extraScopes),
+		http.StatusFound)
 }
 
 // handleCallback answers GET /api/auth/spotify/callback.

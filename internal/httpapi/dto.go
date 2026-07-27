@@ -791,3 +791,97 @@ type SharedStatsResponse struct {
 	Hours    []RepartitionBucket       `json:"hours"`
 	Weekdays []RepartitionBucket       `json:"weekdays"`
 }
+
+// --- playlists --------------------------------------------------------------
+
+// CreatePlaylistRequest is the body of POST /api/playlists.
+type CreatePlaylistRequest struct {
+	Name     string     `json:"name"`
+	Mode     string     `json:"mode"`
+	Sort     string     `json:"sort"`
+	Limit    int        `json:"limit"`
+	MinPlays int        `json:"minPlays"`
+	From     *time.Time `json:"from"`
+	To       *time.Time `json:"to"`
+}
+
+// definition turns the request into a validated recipe.
+//
+// Defaults are filled here rather than rejected, so a client that only knows how
+// to ask for "my top 100" does not have to spell out the ranking as well.
+func (b CreatePlaylistRequest) definition() (domain.PlaylistDefinition, error) {
+	def := domain.PlaylistDefinition{
+		Mode:     domain.PlaylistMode(b.Mode),
+		Sort:     domain.PlaylistSort(b.Sort),
+		Limit:    b.Limit,
+		MinPlays: b.MinPlays,
+	}
+	if def.Sort == "" {
+		def.Sort = domain.SortByPlays
+	}
+	if def.Limit == 0 {
+		def.Limit = domain.PlaylistDefaultTracks
+	}
+	if def.Mode == domain.PlaylistModeMinPlays && def.MinPlays == 0 {
+		def.MinPlays = domain.PlaylistDefaultMinPlays
+	}
+	if b.From != nil {
+		def.From = b.From.UTC()
+	}
+	if b.To != nil {
+		def.To = b.To.UTC()
+	}
+	if err := def.Validate(); err != nil {
+		return domain.PlaylistDefinition{}, err
+	}
+	return def, nil
+}
+
+// Playlist is one managed playlist as its owner sees it.
+type Playlist struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	SpotifyID  string     `json:"spotifyId"`
+	SpotifyURL string     `json:"spotifyUrl"`
+	Mode       string     `json:"mode"`
+	Sort       string     `json:"sort"`
+	Limit      int        `json:"limit"`
+	MinPlays   int        `json:"minPlays"`
+	From       *time.Time `json:"from"`
+	To         *time.Time `json:"to"`
+	TrackCount int        `json:"trackCount"`
+	// Matched is how many tracks met the criteria before the limit applied.
+	// Present only on the response that built the playlist, since it is a fact
+	// about that build rather than about the definition.
+	Matched   int64      `json:"matched,omitempty"`
+	BuiltAt   *time.Time `json:"builtAt"`
+	CreatedAt time.Time  `json:"createdAt"`
+}
+
+func toPlaylist(p domain.Playlist) Playlist {
+	out := Playlist{
+		ID:         p.ID.String(),
+		Name:       p.Name,
+		SpotifyID:  p.SpotifyID,
+		SpotifyURL: p.SpotifyURL,
+		Mode:       string(p.Definition.Mode),
+		Sort:       string(p.Definition.Sort),
+		Limit:      p.Definition.Limit,
+		MinPlays:   p.Definition.MinPlays,
+		TrackCount: p.TrackCount,
+		CreatedAt:  p.CreatedAt.UTC(),
+	}
+	if !p.Definition.From.IsZero() {
+		from := p.Definition.From.UTC()
+		out.From = &from
+	}
+	if !p.Definition.To.IsZero() {
+		to := p.Definition.To.UTC()
+		out.To = &to
+	}
+	if !p.BuiltAt.IsZero() {
+		built := p.BuiltAt.UTC()
+		out.BuiltAt = &built
+	}
+	return out
+}
