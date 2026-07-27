@@ -693,6 +693,9 @@ function ProgressRow({
           : progress.total === 0
             ? 'Nothing imported yet'
             : 'Nothing queued'}
+        {progress.local > 0
+          ? ` · ${formatCount(progress.local)} named by your import, no artwork yet`
+          : ''}
         {lost > 0 ? ` · ${formatCount(lost)} Spotify could not describe` : ''}
       </p>
     </div>

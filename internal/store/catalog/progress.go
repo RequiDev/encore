@@ -21,6 +21,12 @@ type EntityProgress struct {
 	Failed      int64 `json:"failed"`
 	Unavailable int64 `json:"unavailable"`
 	Named       int64 `json:"named"`
+	// Local counts rows an import named but could not identify. The exports give
+	// an artist and an album for every play and an id for neither, so these are
+	// readable but have no artwork, genres or release dates, and no queue can
+	// fetch them: they gain those only if a track of theirs resolves and the
+	// merge folds them into a Spotify row.
+	Local int64 `json:"local"`
 }
 
 // Progress is the enrichment state of the whole catalogue.
@@ -52,7 +58,8 @@ WITH t AS (
            count(*) FILTER (WHERE metadata_state = 'pending')     AS pending,
            count(*) FILTER (WHERE metadata_state = 'failed')      AS failed,
            count(*) FILTER (WHERE metadata_state = 'unavailable') AS unavailable,
-           count(*) FILTER (WHERE name <> '')                     AS named
+           count(*) FILTER (WHERE name <> '')                     AS named,
+           0::bigint                                              AS local
     FROM tracks
 ),
 ar AS (
@@ -60,7 +67,8 @@ ar AS (
            count(*) FILTER (WHERE metadata_state = 'pending'),
            count(*) FILTER (WHERE metadata_state = 'failed'),
            count(*) FILTER (WHERE metadata_state = 'unavailable'),
-           count(*) FILTER (WHERE name <> '')
+           count(*) FILTER (WHERE name <> ''),
+           count(*) FILTER (WHERE metadata_state = 'local')
     FROM artists
 ),
 al AS (
@@ -68,7 +76,8 @@ al AS (
            count(*) FILTER (WHERE metadata_state = 'pending'),
            count(*) FILTER (WHERE metadata_state = 'failed'),
            count(*) FILTER (WHERE metadata_state = 'unavailable'),
-           count(*) FILTER (WHERE name <> '')
+           count(*) FILTER (WHERE name <> ''),
+           count(*) FILTER (WHERE metadata_state = 'local')
     FROM albums
 ),
 ali AS (
@@ -81,11 +90,11 @@ func (r *Repo) CatalogueProgress(ctx context.Context, q store.Querier) (Progress
 	var p Progress
 	err := q.QueryRow(ctx, progressSQL).Scan(
 		&p.Tracks.Total, &p.Tracks.Resolved, &p.Tracks.Pending,
-		&p.Tracks.Failed, &p.Tracks.Unavailable, &p.Tracks.Named,
+		&p.Tracks.Failed, &p.Tracks.Unavailable, &p.Tracks.Named, &p.Tracks.Local,
 		&p.Artists.Total, &p.Artists.Resolved, &p.Artists.Pending,
-		&p.Artists.Failed, &p.Artists.Unavailable, &p.Artists.Named,
+		&p.Artists.Failed, &p.Artists.Unavailable, &p.Artists.Named, &p.Artists.Local,
 		&p.Albums.Total, &p.Albums.Resolved, &p.Albums.Pending,
-		&p.Albums.Failed, &p.Albums.Unavailable, &p.Albums.Named,
+		&p.Albums.Failed, &p.Albums.Unavailable, &p.Albums.Named, &p.Albums.Local,
 		&p.AliasesTotal, &p.AliasesPending,
 	)
 	if err != nil {

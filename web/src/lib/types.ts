@@ -90,6 +90,12 @@ export interface EntityProgress {
   failed: number
   unavailable: number
   named: number
+  /**
+   * Rows an import named but could not identify. The exports give an artist and
+   * an album for every play and an id for neither, so these are readable but
+   * carry no artwork or genres, and no queue can fetch them.
+   */
+  local: number
 }
 
 export interface CatalogueProgress {

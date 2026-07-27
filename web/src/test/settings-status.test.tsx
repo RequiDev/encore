@@ -47,7 +47,16 @@ const ME: MeResponse = {
 }
 
 function entity(over: Partial<EntityProgress> = {}): EntityProgress {
-  return { total: 0, resolved: 0, pending: 0, failed: 0, unavailable: 0, named: 0, ...over }
+  return {
+    total: 0,
+    resolved: 0,
+    pending: 0,
+    failed: 0,
+    unavailable: 0,
+    named: 0,
+    local: 0,
+    ...over,
+  }
 }
 
 function status(over: Partial<StatusResponse['metadata']> = {}): StatusResponse {

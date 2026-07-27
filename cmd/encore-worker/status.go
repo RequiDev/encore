@@ -74,8 +74,10 @@ func reportStatus(ctx context.Context, cfg *config.Config, lg *slog.Logger) erro
 		failed := scalar(`SELECT count(*) FROM ` + t.table + ` WHERE metadata_state = 'failed'`)
 		unavailable := scalar(`SELECT count(*) FROM ` + t.table + ` WHERE metadata_state = 'unavailable'`)
 		named := scalar(`SELECT count(*) FROM ` + t.table + ` WHERE name <> ''`)
-		fmt.Fprintf(w, "  %s\t%d total\t%d resolved\t%d pending\t%d failed\t%d unavailable\t%d with a name\n",
-			t.label, total, resolved, pending, failed, unavailable, named)
+		local := scalar(`SELECT count(*) FROM ` + t.table + ` WHERE metadata_state = 'local'`)
+		fmt.Fprintf(w,
+			"  %s\t%d total\t%d resolved\t%d pending\t%d failed\t%d unavailable\t%d with a name\t%d named by an import\n",
+			t.label, total, resolved, pending, failed, unavailable, named, local)
 	}
 	fmt.Fprintf(w, "  aliases\t%d total\t%d resolved\t%d pending\n",
 		scalar(`SELECT count(*) FROM track_aliases`),
