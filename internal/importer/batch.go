@@ -132,7 +132,13 @@ func (r *Runner) commitBatch(
 		// them. They are created in the 'pending' state and never fetched here:
 		// keeping Spotify out of the ingest path is what stops an API outage
 		// from costing a user their history.
+		// The catalogue rows a batch's listens point at, written in the same
+		// transaction as the listens themselves. Tracks first: the credits and the
+		// album link the next call writes both reference them.
 		if err := r.dep.Listens.EnsureTracks(ctx, tx, trackSeeds); err != nil {
+			return err
+		}
+		if err := r.dep.Listens.EnsureLocalCatalogue(ctx, tx, trackSeeds); err != nil {
 			return err
 		}
 		if err := r.dep.Listens.EnsureAliases(ctx, tx, aliasKeys); err != nil {
@@ -233,7 +239,10 @@ func (r *Runner) stage(
 				staged = append(staged, s)
 				if _, dup := seenTrack[trackID]; !dup {
 					seenTrack[trackID] = struct{}{}
-					trackSeeds = append(trackSeeds, listens.TrackSeed{ID: trackID, Name: l.TrackName})
+					trackSeeds = append(trackSeeds, listens.TrackSeed{
+						ID: trackID, Name: l.TrackName,
+						ArtistName: l.ArtistName, AlbumName: l.AlbumName,
+					})
 				}
 				continue
 			}
@@ -248,7 +257,10 @@ func (r *Runner) stage(
 
 		if _, dup := seenTrack[l.Identity.TrackID]; !dup {
 			seenTrack[l.Identity.TrackID] = struct{}{}
-			trackSeeds = append(trackSeeds, listens.TrackSeed{ID: l.Identity.TrackID, Name: l.TrackName})
+			trackSeeds = append(trackSeeds, listens.TrackSeed{
+				ID: l.Identity.TrackID, Name: l.TrackName,
+				ArtistName: l.ArtistName, AlbumName: l.AlbumName,
+			})
 		}
 		staged = append(staged, listens.Stage(l, &fileID))
 	}

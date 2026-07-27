@@ -137,6 +137,7 @@ func (p *ExtendedParser) Parse(raw json.RawMessage, minMsPlayed int32) (Record, 
 
 		TrackName:  rec.TrackName.String(),
 		ArtistName: rec.ArtistName.String(),
+		AlbumName:  rec.AlbumName.String(),
 
 		Platform:    rec.Platform.String(),
 		ConnCountry: rec.ConnCountry.String(),

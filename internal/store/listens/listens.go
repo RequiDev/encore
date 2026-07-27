@@ -99,6 +99,14 @@ func displayName(reported, normalised string) string {
 type TrackSeed struct {
 	ID   string
 	Name string
+	// ArtistName and AlbumName are what the export called them. Neither format
+	// identifies an artist or an album — there is a track URI and nothing else —
+	// so these become local catalogue rows keyed by their normalised names.
+	// Without them a freshly imported history has no artists at all until
+	// enrichment drains, which on an application whose daily quota is exhausted
+	// can mean never.
+	ArtistName string
+	AlbumName  string
 }
 
 // insertListensSQL implements the whole duplicate policy in one round trip.
@@ -322,7 +330,13 @@ func (r *Repo) EnsureTracks(ctx context.Context, q store.Querier, seeds []TrackS
 	if len(ids) == 0 {
 		return nil
 	}
-	const sql = `
+	if _, err := q.Exec(ctx, ensureTracksSQL, ids, names, norms); err != nil {
+		return postgres.Classify("ensure tracks", err)
+	}
+	return nil
+}
+
+const ensureTracksSQL = `
         WITH input AS (
             SELECT DISTINCT ON (id) id, name, name_norm
             FROM unnest($1::text[], $2::text[], $3::text[]) AS t(id, name, name_norm)
@@ -333,11 +347,6 @@ func (r *Repo) EnsureTracks(ctx context.Context, q store.Querier, seeds []TrackS
         ON CONFLICT (id) DO UPDATE
         SET name      = CASE WHEN tracks.name = '' THEN excluded.name      ELSE tracks.name      END,
             name_norm = CASE WHEN tracks.name = '' THEN excluded.name_norm ELSE tracks.name_norm END`
-	if _, err := q.Exec(ctx, sql, ids, names, norms); err != nil {
-		return postgres.Classify("ensure tracks", err)
-	}
-	return nil
-}
 
 // EnsureAliases records normalised (artist, title) pairs from names-only exports
 // so the alias resolver can look them up against Spotify's search API later.
