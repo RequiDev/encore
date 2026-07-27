@@ -126,7 +126,7 @@ func run() error {
 	// One client for the whole process, so enrichment and the poller draw on a
 	// single rate budget and a 429 pauses both rather than only the loop that
 	// provoked it.
-	client := spotify.NewClient(cfg.Spotify, lg)
+	client := spotify.NewClient(cfg.Spotify, lg, worker.SpotifyPauseOptions(ctx, cfg.Spotify, accountsRepo.Settings, db, lg)...)
 
 	sup := worker.New(lg).WithGrace(cfg.HTTP.ShutdownTimeout)
 

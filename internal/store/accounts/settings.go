@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/postgres"
@@ -100,4 +101,38 @@ func decodeBool(key string, raw json.RawMessage) (bool, error) {
 		return false, fmt.Errorf("%w: setting %q is not a boolean", domain.ErrValidation, key)
 	}
 	return b, nil
+}
+
+// SpotifyPausedUntil reads the instant Spotify asked Encore to stop calling it,
+// or the zero time when there is no pause on record.
+//
+// It is persisted because the limiter holds the pause in memory only. Spotify
+// answers an exhausted daily quota with a Retry-After of most of a day, and a
+// worker that restarts in the meantime would otherwise forget and immediately
+// spend requests against a quota that has not reset — extending the ban rather
+// than waiting it out.
+func (r *Settings) SpotifyPausedUntil(ctx context.Context, q store.Querier) (time.Time, error) {
+	raw, err := r.Get(ctx, q, domain.SettingSpotifyPausedUntil)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, err
+	}
+	var at time.Time
+	if err := json.Unmarshal(raw, &at); err != nil {
+		// A malformed value must not stop the worker starting; the worst case is
+		// one wasted request that re-establishes the pause.
+		return time.Time{}, nil
+	}
+	return at, nil
+}
+
+// SetSpotifyPausedUntil records a pause, never shortening one already stored.
+func (r *Settings) SetSpotifyPausedUntil(ctx context.Context, q store.Querier, until time.Time) error {
+	current, err := r.SpotifyPausedUntil(ctx, q)
+	if err == nil && !until.After(current) {
+		return nil
+	}
+	return r.Set(ctx, q, domain.SettingSpotifyPausedUntil, until.UTC())
 }

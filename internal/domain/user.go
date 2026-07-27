@@ -138,4 +138,8 @@ func (s Session) Expired(now time.Time) bool { return !now.Before(s.ExpiresAt) }
 const (
 	// SettingRegistrationsEnabled gates account creation for unknown Spotify identities.
 	SettingRegistrationsEnabled = "registrations_enabled"
+	// SettingSpotifyPausedUntil records when Spotify will accept requests again
+	// after rate limiting the whole application, so a restart honours the pause
+	// instead of spending requests against a quota that has not reset.
+	SettingSpotifyPausedUntil = "spotify_paused_until"
 )

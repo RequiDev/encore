@@ -38,6 +38,7 @@ import (
 	"github.com/RequiDev/encore/internal/store/imports"
 	"github.com/RequiDev/encore/internal/store/listens"
 	"github.com/RequiDev/encore/internal/sync"
+	"github.com/RequiDev/encore/internal/worker"
 )
 
 // version is set at build time with -ldflags. See deploy/Dockerfile.
@@ -111,7 +112,7 @@ func run() error {
 
 	// One client per process means one rate-limit budget, which is what keeps an
 	// OAuth exchange and a manual sync from being throttled by each other.
-	client := spotify.NewClient(cfg.Spotify, lg)
+	client := spotify.NewClient(cfg.Spotify, lg, worker.SpotifyPauseOptions(ctx, cfg.Spotify, accountsRepo.Settings, db, lg)...)
 
 	intake, err := importer.NewIntake(cfg.Import, db, importsRepo, lg)
 	if err != nil {

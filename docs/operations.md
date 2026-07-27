@@ -181,6 +181,16 @@ to ask would only extend the ban.
 docker compose logs worker | grep -i 'quota exhausted'
 ```
 
+**It recovers on its own.** The worker waits out the `Retry-After` and then drains the queue; a
+sixteen-thousand-track backlog takes a few minutes once the quota resets. Nothing is lost and nothing
+needs restarting — in fact restarting used to make it worse, because the pause lived only in memory
+and a fresh process would immediately spend requests against a quota that had not reset. It is now
+recorded in `app_settings` and restored at startup, so a restart simply waits out the remainder:
+
+```bash
+docker compose logs worker | grep -i 'stays paused'   # after a restart, if still banned
+```
+
 Listening data is never affected; only the names, artwork and genres are. What to do:
 
 1. Keep `ENCORE_SPOTIFY_RATE_LIMIT` low. The default of 2/s is deliberate — a sixteen-thousand-track

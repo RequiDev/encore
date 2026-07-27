@@ -58,6 +58,9 @@ type Client struct {
 	lg      *slog.Logger
 	http    *http.Client
 	limiter *Limiter
+	// onPause reports a newly declared pause so it can be recorded somewhere
+	// that survives a restart.
+	onPause func(until time.Time)
 	clock   Clock
 	baseURL string
 	policy  retry.Policy
@@ -81,6 +84,22 @@ func WithHTTPClient(h *http.Client) Option {
 
 // WithLimiter shares an existing limiter, so several clients (the sync poller
 // and the enrichment workers, say) draw on one rate budget.
+// WithPauseObserver is called whenever a 429 makes the client hold everything
+// back, with the instant it will resume.
+//
+// The limiter's pause lives in memory, so without somewhere to record it a
+// restart forgets it entirely and the next process immediately spends requests
+// against a quota that is still exhausted — earning a fresh ban and, on a
+// development-mode application, another day without metadata. The observer is
+// how the worker persists it; internal/spotify stays free of any database.
+func WithPauseObserver(fn func(until time.Time)) Option {
+	return func(c *Client) {
+		if fn != nil {
+			c.onPause = fn
+		}
+	}
+}
+
 func WithLimiter(l *Limiter) Option {
 	return func(c *Client) {
 		if l != nil {
@@ -305,7 +324,11 @@ func (c *Client) classify(resp *http.Response, r request) error {
 		// One 429 stops the whole client. The quota belongs to the application, so
 		// a goroutine that backed off privately would only be queueing up the next
 		// round of rejections on behalf of its neighbours.
-		c.limiter.Pause(now.Add(retryAfter))
+		resumeAt := now.Add(retryAfter)
+		c.limiter.Pause(resumeAt)
+		if c.onPause != nil {
+			c.onPause(resumeAt)
+		}
 		// A short pause is ordinary pacing. A long one means the application's
 		// daily quota is gone, which is a different situation entirely: nothing
 		// will be fetched until it resets, so say so in terms an operator can act
@@ -313,7 +336,7 @@ func (c *Client) classify(resp *http.Response, r request) error {
 		if retryAfter >= quotaExhaustedAfter || strings.Contains(apiErr.Body, "QUOTA_EXCEEDED") {
 			c.lg.Error("spotify daily quota exhausted; metadata enrichment is paused",
 				"endpoint", r.label,
-				"resumes_at", now.Add(retryAfter).UTC().Format(time.RFC3339),
+				"resumes_at", resumeAt.UTC().Format(time.RFC3339),
 				"paused_for", retryAfter.Round(time.Minute).String(),
 				"hint", "a development-mode app has a small daily quota; lower ENCORE_SPOTIFY_RATE_LIMIT "+
 					"or apply for extended quota mode. Listening data is unaffected.")

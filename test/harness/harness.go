@@ -148,9 +148,9 @@ func (e *Env) Ctx() context.Context {
 	return ctx
 }
 
-// truncatedTables is every table holding test state. app_settings is excluded so
-// the seeded registrations_enabled row survives; goose's own version table must
-// obviously not be touched.
+// truncatedTables is every table holding test state. app_settings is handled
+// separately below, because it is emptied and re-seeded rather than simply
+// truncated; goose's own version table must obviously not be touched.
 var truncatedTables = []string{
 	"listens",
 	"import_rejects",
@@ -181,9 +181,15 @@ func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(ctx, sql); err != nil {
 		t.Fatalf("truncate test database: %v", err)
 	}
+	// app_settings is emptied and re-seeded rather than left alone. It holds more
+	// than the registration flag — the recorded Spotify rate-limit pause, for one
+	// — and a value left behind by an earlier test silently changes the next
+	// one's behaviour, which is a confusing failure to diagnose.
+	if _, err := pool.Exec(ctx, `DELETE FROM app_settings`); err != nil {
+		t.Fatalf("clear settings: %v", err)
+	}
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO app_settings (key, value) VALUES ('registrations_enabled', 'true'::jsonb)
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value`); err != nil {
+		`INSERT INTO app_settings (key, value) VALUES ('registrations_enabled', 'true'::jsonb)`); err != nil {
 		t.Fatalf("reset settings: %v", err)
 	}
 }
