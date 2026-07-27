@@ -42,10 +42,13 @@ const (
 	// maxRetryDelay caps how long the retry loop itself sleeps. A longer
 	// Retry-After is still honoured in full, because the limiter stays paused and
 	// the next attempt blocks in Wait until it clears.
-	maxRetryDelay      = 30 * time.Second
-	defaultTimeout     = 20 * time.Second
-	defaultAPIBaseURL  = "https://api.spotify.com"
-	defaultAuthBaseURL = "https://accounts.spotify.com"
+	maxRetryDelay = 30 * time.Second
+	// quotaExhaustedAfter is the Retry-After beyond which a 429 is not pacing but
+	// the application's daily quota having run out.
+	quotaExhaustedAfter = 5 * time.Minute
+	defaultTimeout      = 20 * time.Second
+	defaultAPIBaseURL   = "https://api.spotify.com"
+	defaultAuthBaseURL  = "https://accounts.spotify.com"
 )
 
 // Client talks to the Spotify Web API. It is safe for concurrent use and is
@@ -303,7 +306,21 @@ func (c *Client) classify(resp *http.Response, r request) error {
 		// a goroutine that backed off privately would only be queueing up the next
 		// round of rejections on behalf of its neighbours.
 		c.limiter.Pause(now.Add(retryAfter))
-		c.lg.Warn("spotify rate limited", "endpoint", r.label, "retry_after", retryAfter)
+		// A short pause is ordinary pacing. A long one means the application's
+		// daily quota is gone, which is a different situation entirely: nothing
+		// will be fetched until it resets, so say so in terms an operator can act
+		// on rather than logging a duration in nanoseconds and moving on.
+		if retryAfter >= quotaExhaustedAfter || strings.Contains(apiErr.Body, "QUOTA_EXCEEDED") {
+			c.lg.Error("spotify daily quota exhausted; metadata enrichment is paused",
+				"endpoint", r.label,
+				"resumes_at", now.Add(retryAfter).UTC().Format(time.RFC3339),
+				"paused_for", retryAfter.Round(time.Minute).String(),
+				"hint", "a development-mode app has a small daily quota; lower ENCORE_SPOTIFY_RATE_LIMIT "+
+					"or apply for extended quota mode. Listening data is unaffected.")
+		} else {
+			c.lg.Warn("spotify rate limited",
+				"endpoint", r.label, "retry_after", retryAfter.String())
+		}
 		// The limiter now holds the real delay, so the loop needs only a bounded
 		// nudge: the next attempt blocks in Wait until the pause has elapsed.
 		return retry.After(min(retryAfter, maxRetryDelay), apiErr)

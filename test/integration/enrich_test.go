@@ -239,7 +239,7 @@ func TestEnrichmentResolvesCatalogueQueuedByIngestion(t *testing.T) {
 	user := env.NewUser("enrichuser")
 
 	trackIDs := []string{"aaaaaaaaaaaaaaaaaaaaa1", "bbbbbbbbbbbbbbbbbbbbb2", deletedTrackID}
-	if err := env.Listens.EnsureTracks(env.Ctx(), env.Store.DB(), trackIDs); err != nil {
+	if err := env.Listens.EnsureTracks(env.Ctx(), env.Store.DB(), trackSeeds(trackIDs...)); err != nil {
 		t.Fatalf("ensure tracks: %v", err)
 	}
 	batch := make([]listens.StagedListen, 0, len(trackIDs))
@@ -318,7 +318,7 @@ func TestRateLimitIsHonouredAndImportsAreUnaffected(t *testing.T) {
 	user := env.NewUser("ratelimit")
 
 	ids := []string{"ccccccccccccccccccccc3", "ddddddddddddddddddddd4"}
-	if err := env.Listens.EnsureTracks(env.Ctx(), env.Store.DB(), ids); err != nil {
+	if err := env.Listens.EnsureTracks(env.Ctx(), env.Store.DB(), trackSeeds(ids...)); err != nil {
 		t.Fatalf("ensure tracks: %v", err)
 	}
 	batch := []listens.StagedListen{
@@ -391,7 +391,7 @@ func TestAliasResolutionConvergesNamesOnlyListens(t *testing.T) {
 	// A URI-based listen and, one minute-bucket away, the same play as it would
 	// arrive from an account-data export.
 	at := time.Date(2024, time.April, 1, 12, 0, 10, 0, time.UTC)
-	if err := env.Listens.EnsureTracks(env.Ctx(), env.Store.DB(), []string{searchedTrack}); err != nil {
+	if err := env.Listens.EnsureTracks(env.Ctx(), env.Store.DB(), trackSeeds(searchedTrack)); err != nil {
 		t.Fatalf("ensure tracks: %v", err)
 	}
 	uriListen := listens.Stage(domain.Listen{
@@ -443,4 +443,14 @@ func TestAliasResolutionConvergesNamesOnlyListens(t *testing.T) {
 	if fake.searchCalls.Load() == 0 {
 		t.Fatal("alias resolution never called the search endpoint")
 	}
+}
+
+// trackSeeds turns bare ids into seeds for the tests that only care that the
+// rows exist, not what they are called.
+func trackSeeds(ids ...string) []listens.TrackSeed {
+	out := make([]listens.TrackSeed, len(ids))
+	for i, id := range ids {
+		out[i] = listens.TrackSeed{ID: id}
+	}
+	return out
 }

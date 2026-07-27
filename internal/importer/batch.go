@@ -123,7 +123,7 @@ func (r *Runner) commitBatch(
 	delta := domain.Counters{Skipped: b.delta.Skipped, Rejected: b.delta.Rejected}
 
 	err := r.dep.Store.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		staged, trackIDs, aliasKeys, err := r.stage(ctx, tx, file, b.records, timezone)
+		staged, trackSeeds, aliasKeys, err := r.stage(ctx, tx, file, b.records, timezone)
 		if err != nil {
 			return err
 		}
@@ -132,7 +132,7 @@ func (r *Runner) commitBatch(
 		// them. They are created in the 'pending' state and never fetched here:
 		// keeping Spotify out of the ingest path is what stops an API outage
 		// from costing a user their history.
-		if err := r.dep.Listens.EnsureTracks(ctx, tx, trackIDs); err != nil {
+		if err := r.dep.Listens.EnsureTracks(ctx, tx, trackSeeds); err != nil {
 			return err
 		}
 		if err := r.dep.Listens.EnsureAliases(ctx, tx, aliasKeys); err != nil {
@@ -185,7 +185,7 @@ func (r *Runner) stage(
 	file domain.ImportFile,
 	records []domain.Listen,
 	_ string,
-) (staged []listens.StagedListen, trackIDs []string, aliasKeys []domain.AliasKey, err error) {
+) (staged []listens.StagedListen, trackSeeds []listens.TrackSeed, aliasKeys []domain.AliasKey, err error) {
 	if len(records) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -233,7 +233,7 @@ func (r *Runner) stage(
 				staged = append(staged, s)
 				if _, dup := seenTrack[trackID]; !dup {
 					seenTrack[trackID] = struct{}{}
-					trackIDs = append(trackIDs, trackID)
+					trackSeeds = append(trackSeeds, listens.TrackSeed{ID: trackID, Name: l.TrackName})
 				}
 				continue
 			}
@@ -248,9 +248,9 @@ func (r *Runner) stage(
 
 		if _, dup := seenTrack[l.Identity.TrackID]; !dup {
 			seenTrack[l.Identity.TrackID] = struct{}{}
-			trackIDs = append(trackIDs, l.Identity.TrackID)
+			trackSeeds = append(trackSeeds, listens.TrackSeed{ID: l.Identity.TrackID, Name: l.TrackName})
 		}
 		staged = append(staged, listens.Stage(l, &fileID))
 	}
-	return staged, trackIDs, aliasKeys, nil
+	return staged, trackSeeds, aliasKeys, nil
 }

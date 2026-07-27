@@ -33,7 +33,11 @@ func stage(userID uuid.UUID, id domain.TrackIdentity, at time.Time, ms int32, sr
 
 func ensure(t *testing.T, e *harness.Env, ids ...string) {
 	t.Helper()
-	if err := e.Listens.EnsureTracks(e.Ctx(), e.Store.DB(), ids); err != nil {
+	seeds := make([]listens.TrackSeed, len(ids))
+	for i, id := range ids {
+		seeds[i] = listens.TrackSeed{ID: id}
+	}
+	if err := e.Listens.EnsureTracks(e.Ctx(), e.Store.DB(), seeds); err != nil {
 		t.Fatalf("ensure tracks: %v", err)
 	}
 }

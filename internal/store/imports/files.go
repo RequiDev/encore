@@ -309,3 +309,47 @@ func (r *Repo) VerificationData(ctx context.Context, q store.Querier, jobID uuid
 	}
 	return out, nil
 }
+
+// StoredFile is an imported file whose uploaded bytes are still on disk.
+type StoredFile struct {
+	ID            uuid.UUID
+	Name          string
+	ContainerPath string
+	Format        domain.ImportFormat
+	StoragePath   string
+}
+
+// AllFilesWithStorage lists every import file whose upload was retained,
+// regardless of which job or user it belongs to.
+//
+// It exists for maintenance that reads back what was imported — recovering track
+// names that a previous version of the importer discarded, for instance —
+// rather than for anything a request can reach, so it is deliberately not
+// scoped to a user.
+func (r *Repo) AllFilesWithStorage(ctx context.Context, q store.Querier) ([]StoredFile, error) {
+	const sql = `
+        SELECT id, name, container_path, format, storage_path
+        FROM import_files
+        WHERE storage_path <> '' AND status IN ('completed', 'running', 'pending')
+        ORDER BY job_id, ordinal`
+	rows, err := q.Query(ctx, sql)
+	if err != nil {
+		return nil, postgres.Classify("list stored import files", err)
+	}
+	defer rows.Close()
+
+	var out []StoredFile
+	for rows.Next() {
+		var f StoredFile
+		var format string
+		if err := rows.Scan(&f.ID, &f.Name, &f.ContainerPath, &format, &f.StoragePath); err != nil {
+			return nil, postgres.Classify("scan stored import file", err)
+		}
+		f.Format = domain.ImportFormat(format)
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, postgres.Classify("list stored import files", err)
+	}
+	return out, nil
+}

@@ -21,22 +21,26 @@ func TestAccountDataParserRecords(t *testing.T) {
 	// endTime is the end of the stream and is only accurate to the minute, which
 	// is what PrecisionMinute records for the cross-source duplicate window.
 	assertListen(t, mustParse(t, p, records[0], 1000).Listen, domain.Listen{
-		PlayedAt:  time.Date(2020, time.February, 14, 21, 28, 12, 0, time.UTC),
-		Precision: domain.PrecisionMinute,
-		Identity:  domain.TrackIdentityFromNames("Nils Frahm", "Says"),
-		MsPlayed:  528000,
-		Source:    domain.SourceAccountData,
+		PlayedAt:   time.Date(2020, time.February, 14, 21, 28, 12, 0, time.UTC),
+		Precision:  domain.PrecisionMinute,
+		Identity:   domain.TrackIdentityFromNames("Nils Frahm", "Says"),
+		TrackName:  "Says",
+		ArtistName: "Nils Frahm",
+		MsPlayed:   528000,
+		Source:     domain.SourceAccountData,
 	})
 
 	assertSkipped(t, mustParse(t, p, records[1], 1000), domain.SkipBelowMinimum)
 
 	// An RFC 3339 endTime and a string msPlayed, both seen in real exports.
 	assertListen(t, mustParse(t, p, records[2], 1000).Listen, domain.Listen{
-		PlayedAt:  time.Date(2020, time.February, 15, 7, 57, 59, 0, time.UTC),
-		Precision: domain.PrecisionMinute,
-		Identity:  domain.TrackIdentityFromNames("Kiasmos", "Blurred - Remastered 2019"),
-		MsPlayed:  312000,
-		Source:    domain.SourceAccountData,
+		PlayedAt:   time.Date(2020, time.February, 15, 7, 57, 59, 0, time.UTC),
+		Precision:  domain.PrecisionMinute,
+		Identity:   domain.TrackIdentityFromNames("Kiasmos", "Blurred - Remastered 2019"),
+		TrackName:  "Blurred - Remastered 2019",
+		ArtistName: "Kiasmos",
+		MsPlayed:   312000,
+		Source:     domain.SourceAccountData,
 	})
 
 	assertRejected(t, p, records[3], 1000, domain.RejectMissingTrack)

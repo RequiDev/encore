@@ -160,8 +160,21 @@ func (w *Worker) storeTracks(ctx context.Context, requested []string, tracks []s
 	}
 	missing := missingIDs(requested, got)
 
+	// A track response embeds simplified artist and album objects: an id and a
+	// name and nothing else. Recording only the ids, which is what this used to
+	// do, left every artist blank in the interface until the separate artist
+	// queue drained — a wait measured in days on a development-mode application
+	// whose daily quota has run out. The names are free here, so keep them.
+	seedArtists, seedAlbums := simplifiedFrom(tracks)
+
 	err := w.dep.Store.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := w.dep.Catalog.UpsertTracks(ctx, tx, rows); err != nil {
+			return err
+		}
+		if err := w.dep.Catalog.SeedArtists(ctx, tx, seedArtists); err != nil {
+			return err
+		}
+		if err := w.dep.Catalog.SeedAlbums(ctx, tx, seedAlbums); err != nil {
 			return err
 		}
 		for _, row := range rows {
@@ -341,4 +354,56 @@ func (w *Worker) catalogueRows(ctx context.Context, kind catalog.Kind, ids []str
 		return nil, fmt.Errorf("%w: unknown catalogue kind %q", domain.ErrValidation, kind.String())
 	}
 	return out, nil
+}
+
+// simplifiedFrom pulls the artist and album names out of a batch of track
+// responses.
+//
+// These are Spotify's "simplified" objects: an id and a name, without the
+// genres, images or popularity that the dedicated endpoints return. They are
+// enough to display, and they cost nothing extra, so they are recorded as seeds
+// while the rows stay in the enrichment queue for the rest.
+func simplifiedFrom(tracks []spotify.Track) ([]domain.Artist, []domain.Album) {
+	artists := make([]domain.Artist, 0, len(tracks)*2)
+	albums := make([]domain.Album, 0, len(tracks))
+	seenArtist := make(map[string]struct{}, len(tracks)*2)
+	seenAlbum := make(map[string]struct{}, len(tracks))
+
+	for _, t := range tracks {
+		for _, a := range t.Artists {
+			if a.ID == "" || a.Name == "" {
+				continue
+			}
+			if _, dup := seenArtist[a.ID]; dup {
+				continue
+			}
+			seenArtist[a.ID] = struct{}{}
+			artists = append(artists, domain.Artist{
+				ID: a.ID, Name: a.Name, NameNorm: domain.NormalizeArtist(a.Name),
+			})
+		}
+		for _, a := range t.Album.Artists {
+			if a.ID == "" || a.Name == "" {
+				continue
+			}
+			if _, dup := seenArtist[a.ID]; dup {
+				continue
+			}
+			seenArtist[a.ID] = struct{}{}
+			artists = append(artists, domain.Artist{
+				ID: a.ID, Name: a.Name, NameNorm: domain.NormalizeArtist(a.Name),
+			})
+		}
+		if t.Album.ID == "" || t.Album.Name == "" {
+			continue
+		}
+		if _, dup := seenAlbum[t.Album.ID]; dup {
+			continue
+		}
+		seenAlbum[t.Album.ID] = struct{}{}
+		albums = append(albums, domain.Album{
+			ID: t.Album.ID, Name: t.Album.Name, NameNorm: domain.NormalizeTitle(t.Album.Name),
+		})
+	}
+	return artists, albums
 }

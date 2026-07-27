@@ -76,6 +76,15 @@ func run() error {
 		Service: "worker",
 		Version: version,
 	})
+	// One maintenance task runs instead of the loops rather than alongside them:
+	// it reads back what was imported and exits, and running it while the worker
+	// is also enriching would only have the two writing the same rows.
+	if len(os.Args) > 1 && os.Args[1] == "backfill-names" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return backfillTrackNames(ctx, cfg, lg)
+	}
+
 	// The single most useful line in a self-hosted deployment's logs: what this
 	// process actually believes its configuration to be, secrets replaced.
 	lg.Info("encore-worker starting", configAttrs(cfg)...)

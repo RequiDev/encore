@@ -116,6 +116,14 @@ type Spotify struct {
 	TokenURL    string
 	// RateLimit is the sustained request rate Encore allows itself against the
 	// Spotify API, shared by every worker in the process.
+	//
+	// The default is deliberately low. A Spotify application starts in
+	// development mode, whose daily quota is small and undocumented, and
+	// exceeding it does not earn a short pause — it earns a 429 carrying a
+	// Retry-After of most of a day and a body saying QUOTA_EXCEEDED. Nothing
+	// Encore does benefits from going faster: enriching a sixteen-thousand-track
+	// backlog takes about three hundred requests, which at two per second is a
+	// few minutes. Speed here buys nothing and risks a day of blank metadata.
 	RateLimit float64
 	RateBurst int
 	// Timeout is the per-request HTTP timeout.
@@ -269,8 +277,8 @@ func parse(get lookup) (*Config, error) {
 		Scopes:       DefaultScopes(),
 		APIBaseURL:   strings.TrimRight(p.str("ENCORE_SPOTIFY_API_BASE_URL", "https://api.spotify.com"), "/"),
 		AuthBaseURL:  strings.TrimRight(p.str("ENCORE_SPOTIFY_AUTH_BASE_URL", "https://accounts.spotify.com"), "/"),
-		RateLimit:    p.float("ENCORE_SPOTIFY_RATE_LIMIT", 8),
-		RateBurst:    p.intRange("ENCORE_SPOTIFY_RATE_BURST", 16, 1, 10000),
+		RateLimit:    p.float("ENCORE_SPOTIFY_RATE_LIMIT", 2),
+		RateBurst:    p.intRange("ENCORE_SPOTIFY_RATE_BURST", 4, 1, 10000),
 		Timeout:      p.duration("ENCORE_SPOTIFY_TIMEOUT", 20*time.Second),
 		MaxRetries:   p.intRange("ENCORE_SPOTIFY_MAX_RETRIES", 5, 0, 20),
 	}

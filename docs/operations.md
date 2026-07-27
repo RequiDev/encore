@@ -168,6 +168,35 @@ If `proxy_pass` names the upstream through a variable, nginx stops forwarding th
 own and every call arrives at the upstream's root. The `/api/` location must end in `$request_uri`.
 This is also covered by `go test ./test/deploy/...`.
 
+### Tracks and artists have no names, and the log says `spotify daily quota exhausted`
+
+A Spotify application starts in **development mode**, whose daily request quota is small and
+undocumented. Exhausting it does not earn a short pause: Spotify answers `429` with
+`"reason":"QUOTA_EXCEEDED"` and a `Retry-After` of most of a day, and Encore honours it — continuing
+to ask would only extend the ban.
+
+```bash
+docker compose logs worker | grep -i 'quota exhausted'
+```
+
+Listening data is never affected; only the names, artwork and genres are. What to do:
+
+1. Keep `ENCORE_SPOTIFY_RATE_LIMIT` low. The default of 2/s is deliberate — a sixteen-thousand-track
+   backlog is only about three hundred requests, so speed buys nothing and risks a day of blank
+   metadata.
+2. Recover the track names immediately, without Spotify, from the exports you already uploaded:
+
+   ```bash
+   docker compose run --rm worker /usr/local/bin/encore-worker backfill-names
+   ```
+
+   Both export formats print the track title beside the URI, so this fills in every track a retained
+   import references. It touches nothing but empty names — no listens, no job state, no counters —
+   and is safe to run twice. Artist names and artwork still need Spotify, and arrive on their own
+   once the quota resets.
+3. If you have many users, apply for
+   [extended quota mode](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
+
 ### A user cannot sign in and the browser shows `INVALID_CLIENT: Invalid redirect URI`
 
 `ENCORE_PUBLIC_URL` and the redirect URI registered in the Spotify dashboard have to match exactly,

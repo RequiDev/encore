@@ -18,13 +18,17 @@ import (
 type batch struct {
 	// staged are the listens to insert.
 	staged []listens.StagedListen
-	// trackIDs are the catalogue ids the staged listens reference. Every one of
-	// them must exist before the insert, because listens.track_id is a foreign
-	// key.
-	trackIDs []string
+	// trackSeeds are the catalogue ids the staged listens reference, with the
+	// names the feed reported. Every one must exist before the insert, because
+	// listens.track_id is a foreign key.
+	trackSeeds []listens.TrackSeed
 	// tracks and albums are the catalogue detail this page carried for free.
 	tracks []domain.Track
 	albums []domain.Album
+	// seedArtists are the simplified artist objects embedded in the page. They
+	// carry a name but none of the detail the artist endpoint returns, so they
+	// are recorded as names only and left in the enrichment queue.
+	seedArtists []domain.Artist
 	// newest is the newest play the batch accounted for, and the value the
 	// cursor may advance to once the batch commits.
 	newest time.Time
@@ -73,7 +77,7 @@ func prepare(userID uuid.UUID, plays []spotify.PlayHistory, now time.Time) batch
 			continue
 		}
 		seenTrack[play.Track.ID] = struct{}{}
-		b.trackIDs = append(b.trackIDs, play.Track.ID)
+		b.trackSeeds = append(b.trackSeeds, listens.TrackSeed{ID: play.Track.ID, Name: play.Track.Name})
 
 		// A play-history entry carries the full track object, so the catalogue
 		// detail is already paid for; making the enrichment workers fetch it
@@ -95,7 +99,38 @@ func prepare(userID uuid.UUID, plays []spotify.PlayHistory, now time.Time) batch
 		seenAlbum[album.ID] = struct{}{}
 		b.albums = append(b.albums, album.ToDomainAlbum())
 	}
+	b.seedArtists = simplifiedArtists(plays)
 	return b
+}
+
+// simplifiedArtists collects the artist names a page of play history carried.
+//
+// The artists are deliberately not upserted as resolved — the embedded objects
+// have no genres, followers or images — but discarding their names as well left
+// every listen attributed to nobody until the artist queue drained. The name is
+// already in hand, so it is kept.
+func simplifiedArtists(plays []spotify.PlayHistory) []domain.Artist {
+	out := make([]domain.Artist, 0, len(plays)*2)
+	seen := make(map[string]struct{}, len(plays)*2)
+	add := func(a spotify.Artist) {
+		if a.ID == "" || a.Name == "" {
+			return
+		}
+		if _, dup := seen[a.ID]; dup {
+			return
+		}
+		seen[a.ID] = struct{}{}
+		out = append(out, domain.Artist{ID: a.ID, Name: a.Name, NameNorm: domain.NormalizeArtist(a.Name)})
+	}
+	for _, p := range plays {
+		for _, a := range p.Track.Artists {
+			add(a)
+		}
+		for _, a := range p.Track.Album.Artists {
+			add(a)
+		}
+	}
+	return out
 }
 
 // listenFrom converts one play-history entry into a domain listen.
@@ -108,10 +143,10 @@ func prepare(userID uuid.UUID, plays []spotify.PlayHistory, now time.Time) batch
 // ms_played is the track's own duration, because the feed does not report how
 // much of the track was actually heard. It is an estimate and it is the only one
 // available: recording zero would understate a live-synced listener's time by
-// the whole of their history. The consequence is worth stating plainly — where a
-// play is later also present in an extended-history export, which does carry the
-// real figure, the cross-source rule keeps the row that arrived first, so the
-// estimate stands.
+// the whole of their history. The estimate is not permanent, though — when the
+// same play later arrives from an extended-history export, which does carry the
+// real figure, the ingest path upgrades the stored row in place rather than
+// discarding the better record as a duplicate.
 func listenFrom(userID uuid.UUID, play spotify.PlayHistory) domain.Listen {
 	return domain.Listen{
 		UserID:    userID,
@@ -161,7 +196,7 @@ func (p *Poller) commit(ctx context.Context, userID uuid.UUID, b batch, timezone
 		// row is what keeps ingestion independent of the catalogue. It is
 		// created even for a track whose detail is being upserted immediately
 		// below, so the key holds whatever the upsert makes of the payload.
-		if err := p.dep.Listens.EnsureTracks(ctx, tx, b.trackIDs); err != nil {
+		if err := p.dep.Listens.EnsureTracks(ctx, tx, b.trackSeeds); err != nil {
 			return err
 		}
 		if err := p.dep.Catalog.UpsertTracks(ctx, tx, b.tracks); err != nil {

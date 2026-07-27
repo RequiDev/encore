@@ -95,6 +95,9 @@ func (p *AccountDataParser) Parse(raw json.RawMessage, minMsPlayed int32) (Recor
 		Identity:  identity,
 		MsPlayed:  ms,
 		Source:    domain.SourceAccountData,
+
+		TrackName:  rec.TrackName.String(),
+		ArtistName: rec.ArtistName.String(),
 	}}, nil
 }
 

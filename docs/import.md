@@ -96,6 +96,17 @@ POST /api/imports  (multipart)
 Metadata enrichment runs entirely outside this picture, on its own schedule, against the `pending`
 rows that ingestion created.
 
+**Names are kept at ingest time.** Both export formats print the track title and artist beside the
+URI, so the importer records the title on the `tracks` row it creates and the names on the listen
+itself. The row still goes into the enrichment queue for its album, artwork, duration and genres —
+but a freshly imported history is readable straight away instead of only once several hundred Spotify
+requests have completed. That matters more than it sounds: a development-mode application can exhaust
+its daily quota, and without this the entire library would show as blank for a day.
+
+For a history imported before this existed, `encore-worker backfill-names` reads the names back out
+of the retained export files. It is not a re-import — a completed job could never verify a second
+time, because its listens already exist and would all count as duplicates.
+
 ---
 
 ## 3. Streaming and memory

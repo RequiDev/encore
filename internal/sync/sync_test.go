@@ -177,9 +177,9 @@ func TestPrepareCarriesTheCatalogueDetail(t *testing.T) {
 	if len(b.staged) != 3 {
 		t.Fatalf("staged %d listens, want 3", len(b.staged))
 	}
-	if len(b.trackIDs) != 2 || len(b.tracks) != 2 || len(b.albums) != 2 {
+	if len(b.trackSeeds) != 2 || len(b.tracks) != 2 || len(b.albums) != 2 {
 		t.Fatalf("catalogue = %d ids, %d tracks, %d albums; want 2 of each",
-			len(b.trackIDs), len(b.tracks), len(b.albums))
+			len(b.trackSeeds), len(b.tracks), len(b.albums))
 	}
 	if b.tracks[0].ID != "t1" || b.tracks[0].Name != "Song" {
 		t.Errorf("first track = %+v, want the detail the feed carried", b.tracks[0])
@@ -205,8 +205,8 @@ func TestPrepareWithoutTrackDetailStillStagesTheListen(t *testing.T) {
 	if len(b.staged) != 1 {
 		t.Fatalf("staged %d listens, want 1", len(b.staged))
 	}
-	if len(b.trackIDs) != 1 {
-		t.Fatalf("track ids = %v, want the id so the foreign key holds", b.trackIDs)
+	if len(b.trackSeeds) != 1 {
+		t.Fatalf("track ids = %v, want the id so the foreign key holds", b.trackSeeds)
 	}
 	if len(b.tracks) != 0 || len(b.albums) != 0 {
 		t.Errorf("upserted %d tracks and %d albums, want none", len(b.tracks), len(b.albums))

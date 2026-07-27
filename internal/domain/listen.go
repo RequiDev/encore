@@ -109,6 +109,16 @@ type Listen struct {
 	MsPlayed  int32
 	Source    Source
 
+	// TrackName and ArtistName are what the source called this, exactly as it
+	// spelled it. They are kept even when Identity is anchored to a Spotify id,
+	// because both export formats carry the names beside the URI and throwing
+	// them away leaves a freshly imported history displaying nothing at all
+	// until the catalogue queue drains — which on a rate-limited application can
+	// be a day. They are for display only; nothing about identity or duplicate
+	// detection reads them.
+	TrackName  string
+	ArtistName string
+
 	// Rich context, present only in extended streaming history. Empty strings and
 	// nil pointers mean "not reported", which is distinct from false.
 	Platform    string
