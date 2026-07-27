@@ -142,6 +142,41 @@ docker compose exec -T db pg_dump -U encore -d encore --format=custom > pre-upgr
 
 ---
 
+## Troubleshooting
+
+### `502 Bad Gateway` from nginx on every `/api` request
+
+The web container reaches the API by name over the Compose network. If nginx has cached a stale
+address, every API call fails while the API itself is perfectly healthy — `docker compose ps` shows
+everything up, `curl http://localhost:8080/healthz` works, and only requests through port 3000 fail.
+
+Confirm it by comparing what nginx tried against where the API actually is:
+
+```bash
+docker compose logs web | grep 'connect() failed'    # shows the upstream address nginx used
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' encore-api-1
+```
+
+Encore's nginx configuration resolves the upstream per request precisely so this cannot happen, and
+`go test ./test/deploy/...` guards it. If you have edited `deploy/nginx.conf` and reintroduced a
+literal hostname in `proxy_pass`, that test will tell you. The immediate unblock is
+`docker compose restart web`; the fix is to name the upstream through a variable.
+
+### The API answers `404` for calls that should work
+
+If `proxy_pass` names the upstream through a variable, nginx stops forwarding the request URI on its
+own and every call arrives at the upstream's root. The `/api/` location must end in `$request_uri`.
+This is also covered by `go test ./test/deploy/...`.
+
+### A user cannot sign in and the browser shows `INVALID_CLIENT: Invalid redirect URI`
+
+`ENCORE_PUBLIC_URL` and the redirect URI registered in the Spotify dashboard have to match exactly,
+including scheme and port. Encore logs the one it will use at startup:
+
+```bash
+docker compose logs api | head -1 | grep -o '"spotify_redirect":"[^"]*"'
+```
+
 ## Routine maintenance
 
 Encore does its own housekeeping — expired sessions and OAuth states are reaped by the worker, and
