@@ -87,6 +87,8 @@ export function BarChart({
 
   const rows = useMemo(() => (data ?? []).filter((row) => Number.isFinite(row.value)), [data])
   const total = useMemo(() => rows.reduce((sum, row) => sum + row.value, 0), [rows])
+  // The axis is keyed on identity, so the tick formatter needs the name back.
+  const labels = useMemo(() => new Map(rows.map((row) => [row.key, row.label])), [rows])
 
   // Roughly 6.5 pixels a character at 11px; the tooltip and the summary carry
   // the whole name, so shortening here loses nothing.
@@ -163,13 +165,16 @@ export function BarChart({
           />
           <YAxis
             type="category"
-            dataKey="label"
+            // Keyed on identity rather than on the name drawn beside it: two
+            // tracks called "Intro" are two rows, and a category axis keyed on
+            // the label would merge them and point every hover at the first.
+            dataKey="key"
             tick={categoryTick(palette)}
             tickLine={false}
             axisLine={false}
             width={labelWidth}
             interval={0}
-            tickFormatter={shorten}
+            tickFormatter={(value: string) => shorten(labels.get(value) ?? '')}
           />
           <Tooltip
             content={tooltip}

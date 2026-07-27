@@ -241,7 +241,15 @@ export function TimelineChart({
         <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }} {...a11y}>
           <CartesianGrid stroke={palette.grid} strokeWidth={1} vertical={false} />
           <XAxis
-            dataKey="label"
+            // Keyed on the bucket instant, never on the text drawn beneath it.
+            // A category axis identifies points by the value of its dataKey, and
+            // day and week labels deliberately omit the year — so across a long
+            // history the same "26 Jul" recurs once a year, every duplicate
+            // collapses onto the first, and hovering anywhere put the marker on
+            // the earliest matching bucket. The instant is unique; the label is
+            // only ever drawn.
+            dataKey="key"
+            tickFormatter={(value: string) => axisLabelFor(value, interval, timeZone)}
             tick={numericTick(palette)}
             tickLine={false}
             axisLine={axisLine(palette)}
