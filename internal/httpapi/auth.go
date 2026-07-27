@@ -32,9 +32,13 @@ var errIdentityMismatch = errors.New("the Spotify account does not match the lin
 // OAuth failure codes. They are appended to ${ENCORE_WEB_URL}/login?error= so
 // the client can explain what happened; they are stable identifiers, not prose.
 const (
-	oauthErrInvalidRequest        = "invalid_request"
-	oauthErrInvalidState          = "invalid_state"
-	oauthErrExchangeFailed        = "exchange_failed"
+	oauthErrInvalidRequest = "invalid_request"
+	oauthErrInvalidState   = "invalid_state"
+	oauthErrExchangeFailed = "exchange_failed"
+	// oauthErrSpotifyRateLimited is separate from exchange_failed because the
+	// advice differs completely. "Try again" is right for a spent code and wrong
+	// for a rate limit, where trying again is the one thing that will not work.
+	oauthErrSpotifyRateLimited    = "spotify_rate_limited"
 	oauthErrProfileFailed         = "profile_failed"
 	oauthErrRegistrationsDisabled = "registrations_disabled"
 	oauthErrAccountDisabled       = "account_disabled"
@@ -132,6 +136,12 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.spotify.ExchangeCode(ctx, code, verifier)
 	if err != nil {
+		if paused := asPaused(err); paused != nil {
+			lg.Warn("sign-in refused: spotify is rate limiting this instance",
+				"resumes_at", paused.Until.UTC().Format(time.RFC3339))
+			s.redirectWithError(w, r, oauthErrSpotifyRateLimited)
+			return
+		}
 		lg.Error("could not exchange the authorisation code", logging.Err(err))
 		s.redirectWithError(w, r, oauthErrExchangeFailed)
 		return
@@ -146,6 +156,12 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	profile, err := s.spotify.CurrentUser(ctx, token.AccessToken)
 	if err != nil {
+		if paused := asPaused(err); paused != nil {
+			lg.Warn("sign-in refused: spotify is rate limiting this instance",
+				"resumes_at", paused.Until.UTC().Format(time.RFC3339))
+			s.redirectWithError(w, r, oauthErrSpotifyRateLimited)
+			return
+		}
 		lg.Error("could not read the Spotify profile", logging.Err(err))
 		s.redirectWithError(w, r, oauthErrProfileFailed)
 		return
@@ -331,4 +347,18 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearAuthCookies(w)
 	writeNoContent(w)
+}
+
+// asPaused reports whether a failure was Spotify holding this application back,
+// rather than anything about the request or the person making it.
+//
+// The distinction reaches the browser: a spent authorisation code and a rate
+// limit both fail a sign-in, but "try again" fixes the first and is useless
+// advice for the second.
+func asPaused(err error) *spotify.PausedError {
+	var paused *spotify.PausedError
+	if errors.As(err, &paused) {
+		return paused
+	}
+	return nil
 }

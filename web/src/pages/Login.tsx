@@ -29,6 +29,10 @@ const ERROR_MESSAGES: Record<string, string> = {
     'That sign-in attempt had expired, or had already been used. Starting again will fix it.',
   csrf: 'That sign-in attempt could not be verified. Starting again will fix it.',
   rate_limited: 'Too many attempts in a short time. Wait a moment and try again.',
+  // Deliberately does not say "try again": for this one, trying again is the
+  // only thing that cannot help.
+  spotify_rate_limited:
+    'Spotify is currently rate limiting this instance, so it could not verify the sign-in. This clears on its own — usually within a day — and no listening data is affected. Whoever runs this instance can see when it lifts under Settings → Music metadata.',
 }
 
 function messageFor(code: string): string {

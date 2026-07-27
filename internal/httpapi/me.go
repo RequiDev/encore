@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RequiDev/encore/internal/crypto"
 	"github.com/RequiDev/encore/internal/domain"
@@ -184,6 +185,22 @@ func (s *Server) handleSyncNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.syncing.release(user.ID)
+
+	// Refused up front while Spotify is holding the instance back.
+	//
+	// The poller's calls are background ones: they queue on the shared limiter
+	// and wait however long Spotify asked for, which after an exhausted daily
+	// quota is most of a day. That is correct for the loop that runs on its own
+	// schedule and useless to somebody who has just pressed a button, so the
+	// answer is given now rather than in twenty hours.
+	if until, err := s.settings.SpotifyPausedUntil(r.Context(), s.querier); err == nil &&
+		!until.IsZero() && until.After(s.now()) {
+		writeError(w, r, ErrConflictf(
+			"Spotify is rate limiting this instance until %s. Your listening history is "+
+				"unaffected and syncing resumes by itself — nothing needs restarting.",
+			until.UTC().Format(time.RFC3339)))
+		return
+	}
 
 	outcome, err := s.syncNow(r.Context(), user.ID)
 	if err != nil {
