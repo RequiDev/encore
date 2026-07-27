@@ -91,7 +91,9 @@ services:
     volumes:
       - encore-imports:/var/lib/encore/imports
     ports:
-      - "${ENCORE_API_PORT:-8080}:8080"
+      # ENCORE_BIND_ADDR=127.0.0.1 keeps the port off the network when something
+      # else terminates TLS in front of Encore. See docs/deployment.md.
+      - "${ENCORE_BIND_ADDR:-0.0.0.0}:${ENCORE_API_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -138,7 +140,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "${ENCORE_WEB_PORT:-3000}:80"
+      - "${ENCORE_BIND_ADDR:-0.0.0.0}:${ENCORE_WEB_PORT:-3000}:80"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz.txt"]
       interval: 10s

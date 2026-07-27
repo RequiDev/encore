@@ -1,0 +1,87 @@
+# Encore behind an existing nginx that already terminates TLS.
+#
+# Copy to /etc/nginx/sites-available/encore.conf, replace encore.example.com and
+# the certificate paths, then:
+#
+#     sudo ln -s /etc/nginx/sites-available/encore.conf /etc/nginx/sites-enabled/
+#     sudo nginx -t && sudo systemctl reload nginx
+#
+# Everything is proxied to the web container on 127.0.0.1:3000. That container
+# serves the built client and forwards /api to the API container itself, so this
+# file needs exactly one upstream and Encore is reached through a single origin.
+# One origin is what lets the session cookie stay SameSite=Lax with no CORS.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name encore.example.com;
+
+    # Leave the ACME path alone so certbot can still renew.
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name encore.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/encore.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/encore.example.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # --- the two settings imports depend on ---------------------------------
+    #
+    # A Spotify extended-streaming-history export is routinely hundreds of
+    # megabytes and can exceed a gigabyte. nginx's 1 MB default rejects the
+    # upload here, before Encore ever sees it, with a bare 413 and nothing in
+    # the application log to explain it. Keep this at or above
+    # ENCORE_IMPORT_MAX_UPLOAD_BYTES.
+    client_max_body_size 8G;
+
+    # Stream the upload straight through. With buffering on, nginx writes the
+    # whole body to its own temp directory first, which doubles the disk needed
+    # and delays the progress bar until the transfer has already finished.
+    proxy_request_buffering off;
+
+    # A multi-gigabyte upload over a domestic connection legitimately takes a
+    # long time; the default 60s would abort it mid-transfer.
+    proxy_read_timeout    600s;
+    proxy_send_timeout    600s;
+    proxy_connect_timeout 10s;
+
+    # --- security headers ----------------------------------------------------
+    #
+    # Encore sets its own CSP, nosniff and referrer policy. HSTS belongs here,
+    # because only this layer knows TLS is in use. Add `preload` and submit the
+    # domain only if you are certain every subdomain will always be HTTPS.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # The client polls an import's progress; buffering the response would
+        # make each poll feel a beat behind.
+        proxy_buffering off;
+    }
+
+    # Optional: keep /metrics on the local network only. Encore can also require
+    # basic auth on it through ENCORE_METRICS_USERNAME and ENCORE_METRICS_PASSWORD;
+    # this is belt and braces for an instance published to the internet.
+    #location = /metrics {
+    #    allow 192.168.0.0/16;
+    #    allow 10.0.0.0/8;
+    #    deny all;
+    #    proxy_pass http://127.0.0.1:3000;
+    #    proxy_set_header Host $host;
+    #}
+}

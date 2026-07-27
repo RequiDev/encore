@@ -46,8 +46,8 @@ cp .env.example .env
 Edit `.env` and set the five required values:
 
 ```dotenv
-ENCORE_PUBLIC_URL=http://localhost:8080
-ENCORE_WEB_URL=http://localhost:3000
+ENCORE_PUBLIC_URL=http://127.0.0.1:8080
+ENCORE_WEB_URL=http://127.0.0.1:3000
 ENCORE_SPOTIFY_CLIENT_ID=<from the Spotify dashboard>
 ENCORE_SPOTIFY_CLIENT_SECRET=<from the Spotify dashboard>
 ENCORE_ENCRYPTION_KEY=<openssl rand -base64 32>
@@ -60,15 +60,15 @@ Then:
 docker compose up -d --build
 ```
 
-Open <http://localhost:3000> and sign in with Spotify. **The first account to sign in becomes the
+Open <http://127.0.0.1:3000> and sign in with Spotify. **The first account to sign in becomes the
 administrator**, so do this yourself before sharing the URL.
 
 Check everything came up:
 
 ```bash
 docker compose ps
-curl -fsS http://localhost:8080/healthz     # liveness
-curl -fsS http://localhost:8080/readyz      # readiness: database reachable, migrations applied
+curl -fsS http://127.0.0.1:8080/healthz     # liveness
+curl -fsS http://127.0.0.1:8080/readyz      # readiness: database reachable, migrations applied
 ```
 
 To stop: `docker compose down`. To stop and delete all data: `docker compose down -v`.
@@ -82,13 +82,20 @@ To stop: `docker compose down`. To stop and delete all data: `docker compose dow
 3. Set the **Redirect URI** to exactly:
 
    ```
-   http://localhost:8080/api/auth/spotify/callback
+   http://127.0.0.1:8080/api/auth/spotify/callback
    ```
 
-   For a real deployment, use your public API URL instead:
-   `https://encore.example.com/api/auth/spotify/callback`.
+   **Not `localhost`.** Spotify requires redirect URIs to be HTTPS, with one exception: an explicit
+   loopback literal such as `http://127.0.0.1:PORT`. `localhost` has been rejected since April 2025.
+   For a deployment on anything other than the machine you browse from, you therefore need HTTPS —
+   see [`docs/deployment.md`](docs/deployment.md).
+
    It must match `ENCORE_PUBLIC_URL` + `/api/auth/spotify/callback` character for character —
-   a trailing slash or `http` versus `https` will fail with `INVALID_CLIENT: Invalid redirect URI`.
+   a trailing slash, or `http` versus `https`, fails with `INVALID_CLIENT: Invalid redirect URI`.
+
+   Use the **same host form in both URLs**. `localhost` and `127.0.0.1` are different origins as far
+   as cookies are concerned, so mixing them lets the sign-in succeed and then immediately drops you
+   back to the login page with no visible error.
 4. Under **Which API/SDKs are you planning to use?** tick **Web API**.
 5. Save, then copy the **Client ID** and **Client secret** into `.env`.
 
@@ -135,8 +142,8 @@ docker run -d --name encore-dev-db \
   -p 5432:5432 postgres:17-alpine
 
 export ENCORE_DATABASE_URL='postgres://encore:encore@localhost:5432/encore?sslmode=disable'
-export ENCORE_PUBLIC_URL='http://localhost:8080'
-export ENCORE_WEB_URL='http://localhost:5173'
+export ENCORE_PUBLIC_URL='http://127.0.0.1:8080'
+export ENCORE_WEB_URL='http://127.0.0.1:5173'
 export ENCORE_SPOTIFY_CLIENT_ID='...'
 export ENCORE_SPOTIFY_CLIENT_SECRET='...'
 export ENCORE_ENCRYPTION_KEY="$(openssl rand -base64 32)"
@@ -151,9 +158,9 @@ go run ./cmd/encore-worker
 cd web && npm install && npm run dev
 ```
 
-The Vite dev server runs on <http://localhost:5173> and proxies `/api` to the Go API, so the browser
+The Vite dev server runs on <http://127.0.0.1:5173> and proxies `/api` to the Go API, so the browser
 still sees a single origin and no CORS configuration is needed. Register
-`http://localhost:8080/api/auth/spotify/callback` as your redirect URI.
+`http://127.0.0.1:8080/api/auth/spotify/callback` as your redirect URI.
 
 On Windows PowerShell, use `$env:ENCORE_DATABASE_URL = '...'` in place of `export`.
 
@@ -224,6 +231,7 @@ Measured results, and the hardware they were measured on, are in
 
 | Document | Contents |
 |---|---|
+| [`docs/deployment.md`](docs/deployment.md) | Deploying on your own server behind a reverse proxy, with TLS |
 | [`docs/architecture.md`](docs/architecture.md) | Processes, package layout, dependency rules, request path, scaling |
 | [`docs/import.md`](docs/import.md) | Import pipeline, checkpoints, the duplicate strategy, failure recovery |
 | [`docs/configuration.md`](docs/configuration.md) | Every environment variable |

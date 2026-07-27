@@ -58,8 +58,13 @@ type HTTP struct {
 	// CORSOrigins is the exact allow-list; empty means same-origin only, which is
 	// the correct setting when the frontend is served by the bundled nginx.
 	CORSOrigins []string
-	// TrustProxyHeaders enables X-Forwarded-For / X-Forwarded-Proto parsing. Only
-	// turn this on when a reverse proxy you control is in front of Encore.
+	// TrustProxyHeaders makes Encore believe X-Forwarded-For when recording the
+	// address on a session. Only turn it on behind a reverse proxy you control,
+	// because any client can otherwise set that header to anything.
+	//
+	// Encore deliberately does not derive URLs or cookie security from proxy
+	// headers: those come from PublicURL and CookieSecure, so a misconfigured
+	// proxy cannot downgrade a cookie or forge a redirect.
 	TrustProxyHeaders bool
 	// FrameAncestors populates the CSP frame-ancestors directive.
 	FrameAncestors []string
