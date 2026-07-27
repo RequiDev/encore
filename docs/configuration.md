@@ -68,8 +68,8 @@ accept a plain number or a suffix (`512kb`, `64mb`, `4gb`). Booleans accept `tru
 | Variable | Default | Description |
 |---|---|---|
 | `ENCORE_SPOTIFY_REDIRECT_URL` | `${ENCORE_PUBLIC_URL}/api/auth/spotify/callback` | Override only if you terminate the callback elsewhere. Must match the dashboard exactly. |
-| `ENCORE_SPOTIFY_RATE_LIMIT` | `8` | Sustained requests per second across the whole process. Spotify publishes no fixed limit; this is deliberately conservative. |
-| `ENCORE_SPOTIFY_RATE_BURST` | `16` | |
+| `ENCORE_SPOTIFY_RATE_LIMIT` | `2` | Sustained requests per second across the whole process. Deliberately low: a Spotify app starts in development mode, whose daily quota is small, and exhausting it returns a 429 with a `Retry-After` of nearly a day during which no metadata can be fetched at all. Enriching a sixteen-thousand-track backlog is only about three hundred requests, so speed buys nothing. Raise it only with [extended quota mode](https://developer.spotify.com/documentation/web-api/concepts/quota-modes). |
+| `ENCORE_SPOTIFY_RATE_BURST` | `4` | |
 | `ENCORE_SPOTIFY_TIMEOUT` | `20s` | Per-request HTTP timeout. |
 | `ENCORE_SPOTIFY_MAX_RETRIES` | `5` | Bounded retries per request, exponential with full jitter. `Retry-After` on a 429 always wins over the computed delay. |
 | `ENCORE_SPOTIFY_API_BASE_URL` | `https://api.spotify.com` | Overridden by the test suite. |
