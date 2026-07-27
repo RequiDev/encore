@@ -86,6 +86,7 @@ export interface PageKey {
  */
 export const qk = {
   me: () => ['me'] as const,
+  status: () => ['status'] as const,
   users: () => ['users'] as const,
 
   admin: () => ['admin'] as const,

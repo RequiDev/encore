@@ -72,6 +72,49 @@ export interface MeResponse {
   listening: ListeningBounds
 }
 
+// --- instance status -------------------------------------------------------
+
+/**
+ * How far enrichment has got with one kind of catalogue entity.
+ *
+ * `named` is tracked apart from `resolved` because the two genuinely differ: an
+ * imported track carries its title in the export, so it is readable long before
+ * Spotify has supplied its album, artwork and duration. Showing only `resolved`
+ * would report everything as missing when most of what is on screen is already
+ * there.
+ */
+export interface EntityProgress {
+  total: number
+  resolved: number
+  pending: number
+  failed: number
+  unavailable: number
+  named: number
+}
+
+export interface CatalogueProgress {
+  tracks: EntityProgress
+  artists: EntityProgress
+  albums: EntityProgress
+  aliasesTotal: number
+  aliasesPending: number
+}
+
+/** Whether metadata is still arriving, and whether anything is stopping it. */
+export interface MetadataStatus {
+  outstanding: number
+  complete: boolean
+  /** True when Spotify has rate limited this whole instance. */
+  paused: boolean
+  /** When enrichment resumes. Null unless `paused`. */
+  pausedUntil: Timestamp | null
+}
+
+export interface StatusResponse {
+  catalogue: CatalogueProgress
+  metadata: MetadataStatus
+}
+
 /** A user other than the caller, for the comparison page. Deliberately minimal. */
 export interface PublicUser {
   id: string

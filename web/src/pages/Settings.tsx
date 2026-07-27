@@ -18,8 +18,15 @@ import { qk } from '../lib/query'
 import { useSession } from '../lib/session'
 import { THEME_MODES, themeLabel, useTheme } from '../lib/theme'
 import type { ThemeMode } from '../lib/theme'
-import { EMPTY, formatDateTime, formatPlural, formatRelative } from '../lib/format'
-import type { Artist, SyncOutcome, User } from '../lib/types'
+import {
+  EMPTY,
+  formatCount,
+  formatDateTime,
+  formatPercent,
+  formatPlural,
+  formatRelative,
+} from '../lib/format'
+import type { Artist, EntityProgress, StatusResponse, SyncOutcome, User } from '../lib/types'
 import {
   Button,
   ButtonLink,
@@ -37,6 +44,14 @@ import {
   errorMessage,
   useToast,
 } from '../components/ui'
+
+/**
+ * How often the metadata panel re-reads the instance status while work is
+ * outstanding. Enrichment commits in batches, so a slower poll than this would
+ * make a moving number look stuck, and a faster one would show the same figure
+ * twice.
+ */
+const STATUS_POLL_MS = 30_000
 
 /**
  * Every timezone this browser knows, with the configured one guaranteed to be
@@ -101,6 +116,20 @@ export default function Settings(): ReactElement {
   const blacklist = useQuery({
     queryKey: qk.blacklist(),
     queryFn: ({ signal }) => api.get<Artist[]>('/blacklist', undefined, signal),
+  })
+
+  const status = useQuery({
+    queryKey: qk.status(),
+    queryFn: ({ signal }) => api.get<StatusResponse>('/status', undefined, signal),
+    // Enrichment moves on its own while this page is open, so the panel keeps
+    // itself current until there is nothing left to fetch. Once the queues are
+    // empty and Spotify is not holding us back, the numbers cannot change
+    // without the user doing something, and polling would be pure server load.
+    refetchInterval: (query) => {
+      const data = query.state.data
+      if (!data) return false
+      return data.metadata.complete && !data.metadata.paused ? false : STATUS_POLL_MS
+    },
   })
 
   const sync = useMutation({
@@ -278,6 +307,9 @@ export default function Settings(): ReactElement {
             ) : null}
           </div>
         </Panel>
+
+        {/* --- metadata ----------------------------------------------------- */}
+        <MetadataPanel status={status.data} error={status.error} timezone={user.timezone} />
 
         {/* --- timezone ----------------------------------------------------- */}
         <Panel title="Timezone" description="The clock every statistic is counted against.">
@@ -514,6 +546,152 @@ export default function Settings(): ReactElement {
         <span className="tabular">
           {user.lastLoginAt ? formatDateTime(user.lastLoginAt, user.timezone) : EMPTY}
         </span>
+      </p>
+    </div>
+  )
+}
+
+/**
+ * What Spotify has told this instance about the music, and what it has not yet.
+ *
+ * This panel exists because of one specific confusion. A fresh import lands
+ * hundreds of thousands of listens in minutes, but the names, artwork and genres
+ * behind them arrive one Spotify request at a time, and a development-mode
+ * Spotify application has a daily quota it will exhaust in the first hour. The
+ * result is a working Encore full of blank artists, with nothing on screen to
+ * say whether it is broken, finished, or simply waiting — and the honest answer
+ * used to live only in the worker's log.
+ *
+ * So the panel is written to answer three questions in order: is anything
+ * missing, is anything stopping it, and do I need to act. The last answer is
+ * almost always no.
+ */
+function MetadataPanel({
+  status,
+  error,
+  timezone,
+}: {
+  status: StatusResponse | undefined
+  error: unknown
+  timezone: string
+}): ReactElement {
+  const paused = status?.metadata.paused ?? false
+  const complete = status?.metadata.complete ?? false
+
+  return (
+    <Panel
+      title="Music metadata"
+      description="Names, artwork and genres, fetched from Spotify after the listens land."
+      actions={
+        !status ? null : paused ? (
+          <Chip tone="warn">Rate limited</Chip>
+        ) : complete ? (
+          <Chip tone="good">Complete</Chip>
+        ) : (
+          <Chip tone="info">Filling in</Chip>
+        )
+      }
+    >
+      {error ? (
+        <p role="alert" className="text-sm text-ember">
+          {errorMessage(error)}
+        </p>
+      ) : !status ? (
+        <div className="space-y-3" role="status" aria-busy="true" aria-live="polite">
+          <span className="sr-only">Loading metadata status</span>
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-2/3" />
+        </div>
+      ) : (
+        <>
+          <div className="space-y-3">
+            <ProgressRow label="Tracks" progress={status.catalogue.tracks} />
+            <ProgressRow label="Artists" progress={status.catalogue.artists} />
+            <ProgressRow label="Albums" progress={status.catalogue.albums} />
+          </div>
+
+          {paused && status.metadata.pausedUntil ? (
+            <div className="mt-4 border-t border-seam pt-4">
+              <p className="max-w-prose text-sm text-ink">
+                Spotify has asked Encore to stop calling it until{' '}
+                <span className="tabular">
+                  {formatDateTime(status.metadata.pausedUntil, timezone)}
+                </span>{' '}
+                ({formatRelative(status.metadata.pausedUntil)}). Fetching resumes by itself then —
+                there is nothing to do and nothing to restart.
+              </p>
+              <p className="mt-2 max-w-prose text-sm text-ink-muted">
+                Your listening data is unaffected: every play is already counted, and every
+                statistic, chart and export is complete. Only the names and artwork wait. Restarting
+                Encore would not help and can extend the wait, because the quota does not reset when
+                the process does.
+              </p>
+            </div>
+          ) : complete ? (
+            <p className="mt-4 border-t border-seam pt-4 text-sm text-ink-muted">
+              Everything Spotify was willing to describe has been fetched. Anything still unnamed is
+              music Spotify no longer carries; it stays in your history and keeps counting.
+            </p>
+          ) : (
+            <p className="mt-4 border-t border-seam pt-4 text-sm text-ink-muted">
+              {formatPlural(status.metadata.outstanding, 'record')} still to fetch. Encore works
+              through them steadily, deliberately slowly enough to stay inside Spotify's rate limit.
+              Statistics do not wait for this — the listens are already counted.
+            </p>
+          )}
+        </>
+      )}
+    </Panel>
+  )
+}
+
+/**
+ * One kind of catalogue entity, measured by how much of it is readable.
+ *
+ * The bar tracks names rather than fully resolved records on purpose: a name is
+ * what turns a row of identifiers into a page someone can read, and an import
+ * supplies most of them without Spotify's help. Measuring full resolution would
+ * show a near-empty bar above a screen that is almost entirely legible.
+ */
+function ProgressRow({
+  label,
+  progress,
+}: {
+  label: string
+  progress: EntityProgress
+}): ReactElement {
+  const share = progress.total > 0 ? Math.min(Math.max(progress.named / progress.total, 0), 1) : 1
+  const waiting = progress.pending
+  const lost = progress.failed + progress.unavailable
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm text-ink">{label}</span>
+        <span className="tabular text-xs text-ink-muted">
+          {formatCount(progress.named)} of {formatCount(progress.total)} named ·{' '}
+          {formatPercent(share, 0)}
+        </span>
+      </div>
+      <div
+        className="meter mt-1"
+        role="progressbar"
+        aria-label={`${label} named`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(share * 100)}
+        aria-valuetext={`${formatCount(progress.named)} of ${formatCount(progress.total)} ${label.toLowerCase()} named`}
+      >
+        <span style={{ width: `${share * 100}%` }} />
+      </div>
+      <p className="mt-1 text-xs text-ink-faint">
+        {waiting > 0
+          ? `${formatCount(waiting)} waiting on Spotify`
+          : progress.total === 0
+            ? 'Nothing imported yet'
+            : 'Nothing queued'}
+        {lost > 0 ? ` · ${formatCount(lost)} Spotify could not describe` : ''}
       </p>
     </div>
   )
