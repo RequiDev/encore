@@ -1,0 +1,29 @@
+# Normalise line endings.
+#
+# Everything in this repository is built and run on Linux — CI, the container
+# images, the server it is deployed to — while some of it is edited on Windows.
+# Without this, a CRLF file makes bash reject `set -euo pipefail` because the
+# option name it sees ends in a carriage return, and the failure reads as a
+# nonsense syntax error rather than as a line-ending problem.
+#
+# eol=lf applies to the working tree as well as to the repository, so a Windows
+# checkout also gets LF and cannot reintroduce the problem by saving a file.
+* text=auto eol=lf
+
+# Belt and braces for the files where a stray CR is fatal rather than untidy.
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Makefile    text eol=lf
+Dockerfile  text eol=lf
+*.Dockerfile text eol=lf
+*.conf      text eol=lf
+*.example   text eol=lf
+
+# Fixtures are compared byte for byte; leave them exactly as committed.
+test/**/testdata/**  -text
+internal/**/testdata/** -text
+
+# Generated, and noisy in review.
+web/package-lock.json  linguist-generated=true
+docker-compose.portainer.yml linguist-generated=true
