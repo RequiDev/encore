@@ -36,7 +36,8 @@ type Batch[T any] struct {
 // With no fallback configured it is a thin pass-through, so the enrichment
 // worker has one code path rather than two.
 //
-// The fallback is consulted in two situations, and they are different:
+// By default the primary goes first and the fallback is consulted in two
+// situations, which are different:
 //
 //   - The primary is rate limited. Spotify answers an exhausted daily quota with
 //     a Retry-After of most of a day, and its limiter blocks rather than erroring
@@ -49,12 +50,35 @@ type Batch[T any] struct {
 //     source and wrong as soon as there is another. The fallback is asked for
 //     exactly those ids, and only what neither source has is declined.
 //
+// With WithPreferredFallback the order reverses: the fallback answers what it
+// can and the primary is asked only for the remainder. The quota is then spent
+// on what the mirror lacks rather than on what it already holds, which is what
+// keeps a rate limit from arising in the first place.
+//
+// Either way the rule that matters is unchanged. Only the *primary's* refusal
+// marks an id unavailable, because unavailable is terminal and the fallback is
+// not authoritative about what exists.
+//
 // A fallback failure is never fatal: it is logged and the primary's answer
 // stands, because an instance whose metadata mirror is down should behave like
 // an instance that never had one.
 type Chain struct {
 	primary  Source
 	fallback Source
+	// preferFallback asks the fallback first and keeps Spotify for what it does
+	// not have.
+	//
+	// Worth having because the two sources fail differently. Spotify is
+	// authoritative and current but rationed — a development-mode application
+	// exhausts its daily quota during one import. A local mirror is complete for
+	// everything it was scraped from and answers instantly, but it is a
+	// point-in-time copy, so anything released since is not in it.
+	//
+	// Asking the mirror first means the quota is spent only on what the mirror
+	// lacks, which for a full scrape is new releases and little else. The cost is
+	// that metadata already in the mirror is as fresh as the scrape, not as fresh
+	// as Spotify.
+	preferFallback bool
 
 	// pausedUntil reports when the primary resumes, or the zero time when it is
 	// not held back. Supplied by the caller because the pause belongs to the
@@ -86,6 +110,15 @@ func WithChainLogger(lg *slog.Logger) ChainOption {
 			c.lg = lg
 		}
 	}
+}
+
+// WithPreferredFallback asks the fallback before the primary.
+//
+// The fallback remains a fallback in the sense that matters: it can only add
+// metadata. Anything it does not have still goes to the primary, and only the
+// primary's refusal is ever treated as final.
+func WithPreferredFallback(prefer bool) ChainOption {
+	return func(c *Chain) { c.preferFallback = prefer }
 }
 
 // WithClock replaces the clock used to test the primary's pause.
@@ -167,22 +200,61 @@ func resolve[T any](
 		return Batch[T]{Items: items, Declined: absent(ids, items, idOf)}, nil
 	}
 
-	// The primary is held back. Asking it anyway would not fail fast — the
-	// limiter blocks until the pause expires, which for an exhausted daily quota
-	// is most of a day — so it is skipped entirely.
-	//
-	// Nothing is declined here: the primary has not spoken, and an id the
-	// fallback happens not to know must stay pending rather than become
-	// permanently blank.
+	paused := false
 	if until := c.pausedUntil(); !until.IsZero() && until.After(c.now()) {
+		paused = true
+	}
+
+	// The fallback goes first when it is preferred, and whenever the primary is
+	// rate limited.
+	//
+	// A paused primary is skipped rather than tried: its limiter blocks until the
+	// pause expires, which for an exhausted daily quota is most of a day, so
+	// asking would stall the batch rather than fail it.
+	if c.preferFallback || paused {
 		items, err := get(c.fallback, ctx, ids)
 		if err != nil {
-			return Batch[T]{}, err
+			if paused {
+				// Nowhere left to ask.
+				return Batch[T]{}, err
+			}
+			// The preferred source is down; the primary is still there.
+			c.lg.Warn("the preferred metadata source could not be reached; asking the primary",
+				"kind", kind, "ids", len(ids), "error", err.Error())
+			items = nil
 		}
-		c.lg.Info("primary metadata source is rate limited; served from the fallback",
-			"kind", kind, "requested", len(ids), "served", len(items),
-			"primary_resumes_at", until.UTC().Format(time.RFC3339))
-		return Batch[T]{Items: filter(items, ids, idOf)}, nil
+		items = filter(items, ids, idOf)
+		missing := absent(ids, items, idOf)
+
+		if len(missing) == 0 {
+			return Batch[T]{Items: items}, nil
+		}
+		if paused {
+			// The primary has not spoken, so nothing may be written off: an id the
+			// fallback happens not to know must stay pending rather than become
+			// permanently blank.
+			c.lg.Info("primary metadata source is rate limited; served from the fallback",
+				"kind", kind, "requested", len(ids), "served", len(items))
+			return Batch[T]{Items: items}, nil
+		}
+
+		// Only the primary's answer is final, so it is what decides the rest.
+		rest, err := get(c.primary, ctx, missing)
+		if err != nil {
+			// Whatever the fallback found still stands; the ids the primary was
+			// going to answer for simply stay pending.
+			c.lg.Warn("the primary metadata source failed for what the fallback lacked",
+				"kind", kind, "ids", len(missing), "error", err.Error())
+			return Batch[T]{Items: items}, nil
+		}
+		if len(rest) > 0 {
+			c.lg.Info("filled metadata the preferred source does not have",
+				"kind", kind, "ids", len(missing), "filled", len(rest))
+		}
+		return Batch[T]{
+			Items:    append(items, rest...),
+			Declined: absent(missing, rest, idOf),
+		}, nil
 	}
 
 	items, err := get(c.primary, ctx, ids)

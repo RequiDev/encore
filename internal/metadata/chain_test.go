@@ -252,3 +252,123 @@ func TestEmptyRequestTouchesNothing(t *testing.T) {
 		t.Fatal("an empty request reached a source")
 	}
 }
+
+// --- preferred fallback ------------------------------------------------------
+
+// TestPreferredFallbackAnswersFirst is the point of the setting: the Spotify
+// quota is spent only on what the mirror lacks, so a rate limit never arises.
+func TestPreferredFallbackAnswersFirst(t *testing.T) {
+	primary := newFake("aaaaaaaaaa", "bbbbbbbbbb")
+	fallback := newFake("aaaaaaaaaa", "bbbbbbbbbb")
+	chain := NewChain(primary, fallback, WithPreferredFallback(true))
+
+	batch, err := chain.Tracks(context.Background(), []string{"aaaaaaaaaa", "bbbbbbbbbb"})
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+	if primary.calls != 0 {
+		t.Fatalf("the primary was called %d times for ids the fallback had; the quota is "+
+			"exactly what this setting exists to save", primary.calls)
+	}
+	if got := ids(batch.Items); !slices.Equal(got, []string{"aaaaaaaaaa", "bbbbbbbbbb"}) {
+		t.Fatalf("items = %v, want both from the fallback", got)
+	}
+}
+
+// TestPreferredFallbackStillAsksTheAuthorityForWhatItLacks: a mirror is a
+// point-in-time copy, so anything released since the scrape has to come from
+// Spotify or it never arrives.
+func TestPreferredFallbackStillAsksTheAuthorityForWhatItLacks(t *testing.T) {
+	primary := newFake("newrelease")
+	fallback := newFake("aaaaaaaaaa")
+	chain := NewChain(primary, fallback, WithPreferredFallback(true))
+
+	batch, err := chain.Tracks(context.Background(), []string{"aaaaaaaaaa", "newrelease"})
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+	if got := ids(batch.Items); !slices.Equal(got, []string{"aaaaaaaaaa", "newrelease"}) {
+		t.Fatalf("items = %v, want both sources' answers", got)
+	}
+	// And the primary was asked only about what the fallback could not serve.
+	if !slices.Equal(primary.asked, []string{"newrelease"}) {
+		t.Fatalf("the primary was asked for %v, want only the id the fallback lacked",
+			primary.asked)
+	}
+	if len(batch.Declined) != 0 {
+		t.Fatalf("declined %v when both ids were served", batch.Declined)
+	}
+}
+
+// TestPreferredFallbackDeclinesOnlyWhatTheAuthorityRefuses keeps the terminal
+// state in the authority's hands, whichever source is asked first.
+func TestPreferredFallbackDeclinesOnlyWhatTheAuthorityRefuses(t *testing.T) {
+	primary := newFake()  // Spotify has nothing for either
+	fallback := newFake() // and neither does the mirror
+	chain := NewChain(primary, fallback, WithPreferredFallback(true))
+
+	batch, err := chain.Tracks(context.Background(), []string{"aaaaaaaaaa", "bbbbbbbbbb"})
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+	// Spotify was asked and refused, so these are genuinely unavailable.
+	if !slices.Equal(batch.Declined, []string{"aaaaaaaaaa", "bbbbbbbbbb"}) {
+		t.Fatalf("declined = %v, want both", batch.Declined)
+	}
+}
+
+// TestAPreferredFallbackNeverWritesOffWhatSpotifyDidNotSee is the destructive
+// case, in the reversed order.
+func TestAPreferredFallbackNeverWritesOffWhatSpotifyDidNotSee(t *testing.T) {
+	primary := &fakeSource{err: errors.New("spotify is having a bad minute")}
+	fallback := newFake("aaaaaaaaaa")
+	chain := NewChain(primary, fallback, WithPreferredFallback(true))
+
+	batch, err := chain.Tracks(context.Background(), []string{"aaaaaaaaaa", "bbbbbbbbbb"})
+	if err != nil {
+		t.Fatalf("a failing primary lost the fallback's answer too: %v", err)
+	}
+	if got := ids(batch.Items); !slices.Equal(got, []string{"aaaaaaaaaa"}) {
+		t.Fatalf("items = %v, want what the fallback served", got)
+	}
+	if len(batch.Declined) != 0 {
+		t.Fatal("an id was written off although Spotify never answered for it; " +
+			"unavailable is terminal and nothing revisits it")
+	}
+}
+
+// TestAPreferredFallbackOutageFallsBackToTheAuthority: the preference is an
+// order, not a dependency.
+func TestAPreferredFallbackOutageFallsBackToTheAuthority(t *testing.T) {
+	primary := newFake("aaaaaaaaaa", "bbbbbbbbbb")
+	fallback := &fakeSource{err: errors.New("connection refused")}
+	chain := NewChain(primary, fallback, WithPreferredFallback(true))
+
+	batch, err := chain.Tracks(context.Background(), []string{"aaaaaaaaaa", "bbbbbbbbbb"})
+	if err != nil {
+		t.Fatalf("a fallback outage failed the batch: %v", err)
+	}
+	if got := ids(batch.Items); !slices.Equal(got, []string{"aaaaaaaaaa", "bbbbbbbbbb"}) {
+		t.Fatalf("items = %v, want the primary's answer", got)
+	}
+}
+
+// TestAPreferredFallbackCarriesAPausedInstanceAlone: with Spotify rate limited
+// there is nowhere else to ask, so nothing may be concluded.
+func TestAPreferredFallbackCarriesAPausedInstanceAlone(t *testing.T) {
+	primary := newFake("aaaaaaaaaa", "bbbbbbbbbb")
+	fallback := newFake("aaaaaaaaaa")
+	chain := NewChain(primary, fallback,
+		WithPreferredFallback(true), paused(time.Now().Add(6*time.Hour)))
+
+	batch, err := chain.Tracks(context.Background(), []string{"aaaaaaaaaa", "bbbbbbbbbb"})
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+	if primary.calls != 0 {
+		t.Fatalf("the paused primary was called %d times", primary.calls)
+	}
+	if len(batch.Declined) != 0 {
+		t.Fatalf("declined %v while Spotify was paused", batch.Declined)
+	}
+}

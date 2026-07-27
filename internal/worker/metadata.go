@@ -34,11 +34,15 @@ func MetadataChain(
 		return nil, err
 	}
 
+	note := "consulted while Spotify is rate limiting this instance, and for ids Spotify does not serve"
+	if cfg.Prefer {
+		note = "asked before Spotify, which is then only asked for what the fallback lacks"
+	}
 	lg.Info("a metadata fallback is configured",
 		"url", cfg.URL,
 		"authenticated", cfg.Token != "",
-		"note", "consulted while Spotify is rate limiting this instance, "+
-			"and for ids Spotify does not serve")
+		"preferred", cfg.Prefer,
+		"note", note)
 
 	return metadata.NewChain(client, mirror,
 		metadata.WithChainLogger(lg),
@@ -47,5 +51,6 @@ func MetadataChain(
 		// a paused limiter blocks rather than failing, and for an exhausted daily
 		// quota it would block for most of a day before the fallback ever ran.
 		metadata.WithPauseCheck(client.Limiter().PausedUntil),
+		metadata.WithPreferredFallback(cfg.Prefer),
 	), nil
 }

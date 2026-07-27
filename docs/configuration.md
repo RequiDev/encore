@@ -124,6 +124,7 @@ three Spotify-shaped endpoints — is in [metadata-fallback.md](metadata-fallbac
 | `ENCORE_METADATA_FALLBACK_BATCH_SIZE` | `50` | Ids per request, capped at Spotify's own limit. |
 | `ENCORE_METADATA_FALLBACK_RATE_LIMIT` | *(unlimited)* | Requests per second against the fallback. |
 | `ENCORE_METADATA_FALLBACK_RATE_BURST` | `1` | Burst allowance, only meaningful with a rate limit. |
+| `ENCORE_METADATA_FALLBACK_PREFER` | `true` | Ask the fallback before Spotify, spending the Spotify quota only on what it lacks. `false` keeps Spotify first. |
 
 Encore ships no fallback and endorses none; it ships the interface. What an operator serves from
 their own endpoint is their affair.

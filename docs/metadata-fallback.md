@@ -20,17 +20,28 @@ endpoint, and whether you hold the rights to serve it, is your business and not 
 
 ## When the fallback is consulted
 
+By default — `ENCORE_METADATA_FALLBACK_PREFER=true` — **the fallback is asked first** and
+Spotify is asked only for what it lacks. That is what stops a rate limit arising at all: the
+quota is spent on new releases rather than on catalogue the mirror already holds.
+
 | Situation | What happens |
 |---|---|
-| Spotify is rate limiting the instance | The whole batch goes to the fallback. Spotify is not called at all — its limiter *blocks* rather than failing, so asking would stall the batch for the length of the pause. |
-| Spotify answered, but had nothing for some ids | Those ids, and only those, go to the fallback. |
-| Spotify answered everything | The fallback is not called. |
-| The fallback is unreachable | Logged; Spotify's answer stands. An instance whose fallback is down behaves like one that never had a fallback. |
-| Spotify failed for some other reason | The batch fails and retries on the usual backoff, as it did before. |
+| The fallback has the id | Served from it. Spotify is not called. |
+| The fallback does not have the id | Spotify is asked for exactly those ids. This is how anything released since the mirror was built still arrives. |
+| Spotify is rate limiting the instance | The fallback answers alone, and nothing is concluded about ids it lacks — they stay pending. |
+| The fallback is unreachable | Logged; Spotify answers the whole batch. An instance whose fallback is down behaves like one that never had a fallback. |
+| Spotify fails for what the fallback lacked | Logged; the fallback's answers stand and the rest stay pending. |
+
+Set `ENCORE_METADATA_FALLBACK_PREFER=false` for the reverse: Spotify first, the fallback
+only when Spotify is rate limited or has nothing. That trades the quota for freshness —
+a mirror is a point-in-time copy, so what it holds is as current as the scrape.
 
 One rule governs the whole design, and it is worth stating on its own:
 
 > An id is marked permanently unavailable only when **Spotify** explicitly declined it.
+
+This holds in either order. Preferring the fallback changes who is asked first, never who
+is believed: the fallback can only ever add metadata.
 
 While Spotify is paused it has not spoken, so anything the fallback happens not to know stays queued
 and is asked again later. A fallback can therefore only ever add metadata. It can never cause a track
@@ -137,6 +148,7 @@ Authorization: Bearer hunter2
 | `ENCORE_METADATA_FALLBACK_BATCH_SIZE` | `50` | Ids per request, capped at Spotify's own 50. |
 | `ENCORE_METADATA_FALLBACK_RATE_LIMIT` | *(unlimited)* | Requests per second, if you want Encore to tread lightly on your own server. |
 | `ENCORE_METADATA_FALLBACK_RATE_BURST` | `1` | Burst allowance, only meaningful with a rate limit. |
+| `ENCORE_METADATA_FALLBACK_PREFER` | `true` | Ask the fallback before Spotify. Set `false` to keep Spotify authoritative and use the fallback only when it cannot answer. |
 
 Only the **worker** container reads metadata, so only it needs the URL to work. Give it to the API
 container as well and the Settings page will say that a fallback is configured, which is what turns

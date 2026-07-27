@@ -211,6 +211,16 @@ type MetadataFallback struct {
 	// sensible default for a server the operator runs themselves.
 	RateLimit float64
 	RateBurst int
+	// Prefer asks the fallback before Spotify, keeping Spotify for what the
+	// fallback does not have.
+	//
+	// Defaults to true, because it is what somebody who went to the trouble of
+	// running a metadata source wanted from it: the Spotify quota is then spent
+	// only on ids the source lacks, and a development-mode application stops
+	// exhausting it during the first import. The cost is freshness — a mirror is
+	// a point-in-time copy — so it can be turned off for an instance that would
+	// rather have current data and wait.
+	Prefer bool
 }
 
 // Enabled reports whether a fallback has been configured.
@@ -343,6 +353,7 @@ func parse(get lookup) (*Config, error) {
 		BatchSize: p.intRange("ENCORE_METADATA_FALLBACK_BATCH_SIZE", 50, 1, 50),
 		RateLimit: p.float("ENCORE_METADATA_FALLBACK_RATE_LIMIT", 0),
 		RateBurst: p.intRange("ENCORE_METADATA_FALLBACK_RATE_BURST", 1, 1, 1000),
+		Prefer:    p.boolean("ENCORE_METADATA_FALLBACK_PREFER", true),
 	}
 
 	if c.MetadataFallback.Token != "" && !c.MetadataFallback.Enabled() {
