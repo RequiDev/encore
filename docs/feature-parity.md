@@ -57,7 +57,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Bounded batches | **Implemented** | `ENCORE_IMPORT_BATCH_SIZE`, default 1000. |
 | Database backpressure, no unbounded queue | **Implemented** | The flush is synchronous and the pool is bounded, so a slow database stops the reader rather than growing memory. |
 | Enrichment separated from ingestion | **Implemented** | Ingestion writes `pending` catalogue rows and nothing else. |
-| Respect rate limits and `Retry-After` | **Implemented** | A 429 pauses the whole client for the stated duration rather than each goroutine backing off separately. |
+| Respect rate limits and `Retry-After` | **Implemented** | A 429 pauses every background caller for the stated duration rather than each goroutine backing off separately. Signing in draws on a separate budget that no catalogue 429 pauses, because a background import must never be able to lock somebody out of their own instance. |
 | Bounded retries, exponential backoff, jitter | **Implemented** | `internal/retry`, full jitter by default. |
 | Transient / permanent / job-level failure classes | **Implemented** | [`docs/import.md`](import.md) §6. |
 | Rejected records recorded with diagnostics | **Implemented** | `import_rejects` holds the record index, a stable reason code, a detail and a truncated excerpt. Capped per file. |
