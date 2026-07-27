@@ -33,6 +33,8 @@ type Config struct {
 	Enrich   Enrich
 	Metrics  Metrics
 	Worker   Worker
+	// MetadataFallback is an optional second source of catalogue metadata.
+	MetadataFallback MetadataFallback
 }
 
 // Instance describes how the deployment presents itself to the outside world.
@@ -187,6 +189,33 @@ type Enrich struct {
 	RollupInterval time.Duration
 }
 
+// MetadataFallback configures a second source of catalogue metadata, consulted
+// when Spotify is rate limiting the instance and for ids Spotify will not serve
+// at all.
+//
+// It is off unless URL is set. Encore ships no fallback and endorses no
+// particular one: the contract is three Spotify-shaped endpoints, documented in
+// docs/metadata-fallback.md, and what an operator serves from theirs is their
+// own business.
+type MetadataFallback struct {
+	// URL is the base of a Spotify-shaped API, without a trailing slash — the
+	// part before /v1/tracks. Empty disables the whole feature.
+	URL string
+	// Token, when set, travels as `Authorization: Bearer <token>`.
+	Token string
+	// Timeout is the per-request HTTP timeout.
+	Timeout time.Duration
+	// BatchSize caps ids per request, never above Spotify's own limit of 50.
+	BatchSize int
+	// RateLimit is requests per second. Zero means unlimited, which is the
+	// sensible default for a server the operator runs themselves.
+	RateLimit float64
+	RateBurst int
+}
+
+// Enabled reports whether a fallback has been configured.
+func (m MetadataFallback) Enabled() bool { return strings.TrimSpace(m.URL) != "" }
+
 type Metrics struct {
 	Enabled bool
 	// Username and Password enable basic auth on /metrics. Leave empty to expose
@@ -307,6 +336,20 @@ func parse(get lookup) (*Config, error) {
 		RetainFiles:       p.boolean("ENCORE_IMPORT_RETAIN_FILES", true),
 	}
 
+	c.MetadataFallback = MetadataFallback{
+		URL:       p.optionalURL("ENCORE_METADATA_FALLBACK_URL"),
+		Token:     p.str("ENCORE_METADATA_FALLBACK_TOKEN", ""),
+		Timeout:   p.duration("ENCORE_METADATA_FALLBACK_TIMEOUT", 10*time.Second),
+		BatchSize: p.intRange("ENCORE_METADATA_FALLBACK_BATCH_SIZE", 50, 1, 50),
+		RateLimit: p.float("ENCORE_METADATA_FALLBACK_RATE_LIMIT", 0),
+		RateBurst: p.intRange("ENCORE_METADATA_FALLBACK_RATE_BURST", 1, 1, 1000),
+	}
+
+	if c.MetadataFallback.Token != "" && !c.MetadataFallback.Enabled() {
+		p.errf("ENCORE_METADATA_FALLBACK_TOKEN is set but ENCORE_METADATA_FALLBACK_URL is not, " +
+			"so no fallback is configured")
+	}
+
 	c.Enrich = Enrich{
 		Enabled:        p.boolean("ENCORE_ENRICH_ENABLED", true),
 		Interval:       p.duration("ENCORE_ENRICH_INTERVAL", 5*time.Second),
@@ -368,9 +411,13 @@ func (c *Config) Redacted() map[string]any {
 		"import_workers":     c.Import.Workers,
 		"import_min_ms":      c.Import.MinMsPlayed,
 		"enrich_enabled":     c.Enrich.Enabled,
-		"metrics_enabled":    c.Metrics.Enabled,
-		"metrics_auth":       c.Metrics.Username != "",
-		"worker_id":          c.Worker.ID,
+		// The URL is operational information worth having in a startup log; the
+		// token is a credential and only its presence is reported.
+		"metadata_fallback":      c.MetadataFallback.URL,
+		"metadata_fallback_auth": c.MetadataFallback.Token != "",
+		"metrics_enabled":        c.Metrics.Enabled,
+		"metrics_auth":           c.Metrics.Username != "",
+		"worker_id":              c.Worker.ID,
 	}
 }
 
@@ -461,6 +508,24 @@ func (p *parser) requiredURL(key string) string {
 	u, err := url.Parse(v)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		p.errf("%s must be an absolute URL such as https://encore.example.com, got %q", key, v)
+		return ""
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		p.errf("%s must use http or https, got %q", key, u.Scheme)
+	}
+	return v
+}
+
+// optionalURL validates an absolute http(s) URL when one is set, and returns ""
+// when it is not. Used for the endpoints that switch a feature on by existing.
+func (p *parser) optionalURL(key string) string {
+	v := strings.TrimRight(strings.TrimSpace(p.str(key, "")), "/")
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		p.errf("%s must be an absolute URL such as https://metadata.example.com, got %q", key, v)
 		return ""
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
