@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // refusingQuerier fails the test if a statement reaches it. The validation tests

@@ -12,10 +12,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/store/imports"
 )
 
 // maxNoteBytes bounds the free-text note attached to an import.

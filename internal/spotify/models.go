@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // Image is one size of a piece of artwork. Spotify returns several sizes per

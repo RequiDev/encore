@@ -16,12 +16,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer/formats"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/store"
-	"github.com/requi/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer/formats"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/store"
+	"github.com/RequiDev/encore/internal/store/imports"
 )
 
 // sniffBytes is how much of a file is read to identify its format. One record of

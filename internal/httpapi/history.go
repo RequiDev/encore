@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/requi/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/stats"
 )
 
 // historyPageSize is the default page of the listening feed. It is smaller than

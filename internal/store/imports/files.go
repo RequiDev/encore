@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/store"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/store"
 )
 
 const fileColumns = `id, job_id, ordinal, name, container_path, format, size_bytes, sha256,

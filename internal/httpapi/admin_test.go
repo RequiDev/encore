@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // adminRequest builds a request already carrying an authenticated caller, so

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/metrics"
 )
 
 func testConfig(t *testing.T, extra map[string]string) *config.Config {

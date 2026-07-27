@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/stats"
 )
 
 // searchLimit bounds the type-ahead. The contains arm of the catalogue search is

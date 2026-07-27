@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // Record is the result of parsing one raw export record.

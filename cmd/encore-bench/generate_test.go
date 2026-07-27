@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer/formats"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer/formats"
 )
 
 // generated streams a dataset into memory and reports what it contains. It is

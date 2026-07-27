@@ -8,9 +8,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/spotify"
 )
 
 // SyncUser polls one account's recently-played feed and ingests what it finds.

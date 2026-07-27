@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/store/listens"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/store/listens"
 )
 
 // relinkPageSize is how many listens one relink transaction repoints.

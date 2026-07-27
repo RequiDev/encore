@@ -5,7 +5,7 @@ import (
 	"math/rand/v2"
 	"strings"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // Catalogue dimensions. A real listener's history is not a uniform draw over an

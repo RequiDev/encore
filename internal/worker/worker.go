@@ -37,8 +37,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/retry"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/retry"
 )
 
 // DefaultGrace is how long Run waits for the loops to stop before reporting the

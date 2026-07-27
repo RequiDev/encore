@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/stats"
 )
 
 // affinityListLimit is how many shared entities of each kind a comparison

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"strings"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // SniffBytes is how much of a file's head Encore reads to identify its format.

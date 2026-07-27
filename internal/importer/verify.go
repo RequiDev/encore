@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 // verify decides whether a job may call itself successful.

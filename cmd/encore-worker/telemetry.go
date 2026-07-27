@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/metrics"
 )
 
 // The three adapters below are the only place that knows both the background

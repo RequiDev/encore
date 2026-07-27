@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 // aliasBatch is how many name pairs one pass claims. Each costs its own search

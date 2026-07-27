@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // extendedTimeLayouts are the shapes `ts` has been observed in, most common

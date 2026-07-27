@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/requi/encore/internal/stats"
-	"github.com/requi/encore/internal/store/catalog"
+	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store/catalog"
 )
 
 // backlogInterval is how often the queue-depth gauges are refreshed.

@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/enrich"
-	"github.com/requi/encore/internal/spotify"
-	"github.com/requi/encore/internal/stats"
-	"github.com/requi/encore/internal/store/listens"
-	"github.com/requi/encore/test/harness"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/enrich"
+	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store/listens"
+	"github.com/RequiDev/encore/test/harness"
 )
 
 // fakeSpotify is a stand-in for the Spotify Web API. It counts requests per

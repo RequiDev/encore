@@ -7,11 +7,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/spotify"
-	"github.com/requi/encore/internal/store/catalog"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/store/catalog"
 )
 
 // RunTracksOnce claims one batch of pending track ids, reads them from

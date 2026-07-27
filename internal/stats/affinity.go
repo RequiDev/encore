@@ -6,9 +6,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/store"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/store"
 )
 
 // SharedEntry is one entity both users listened to in the range, with each side's

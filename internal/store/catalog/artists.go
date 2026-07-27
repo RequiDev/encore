@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/store"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/store"
 )
 
 // genreSep joins an artist's genres into one text value for transport.

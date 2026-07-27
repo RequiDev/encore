@@ -10,8 +10,8 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/postgres"
 )
 
 func TestNewGathers(t *testing.T) {

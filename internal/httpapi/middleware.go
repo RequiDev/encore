@@ -14,9 +14,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/crypto"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/crypto"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 // Header and cookie names shared with the web client. They are part of the

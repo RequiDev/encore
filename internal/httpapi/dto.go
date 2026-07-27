@@ -4,10 +4,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer"
-	"github.com/requi/encore/internal/stats"
-	"github.com/requi/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer"
+	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store/imports"
 )
 
 // This file is the server half of the contract in docs/api.md; the client half

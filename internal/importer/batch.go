@@ -9,11 +9,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/retry"
-	"github.com/requi/encore/internal/store/imports"
-	"github.com/requi/encore/internal/store/listens"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/retry"
+	"github.com/RequiDev/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/store/listens"
 )
 
 // batch is a fixed-capacity accumulation of one flush's worth of work.

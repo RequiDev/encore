@@ -16,8 +16,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/postgres"
 )
 
 // version is set at build time with -ldflags.

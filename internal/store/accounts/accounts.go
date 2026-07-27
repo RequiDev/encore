@@ -14,7 +14,7 @@
 // verifier or a session cookie.
 package accounts
 
-import "github.com/requi/encore/internal/store"
+import "github.com/RequiDev/encore/internal/store"
 
 // Repo bundles the identity repositories so that wiring can pass one value
 // around. The sub-repositories are independent and may equally be constructed on

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // rawRecords reads a fixture through the streaming reader, which is how the

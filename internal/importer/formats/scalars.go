@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // The three types below exist because Spotify's exports are not type-stable.

@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer"
 )
 
 // Rig is an Env plus a real importer: the same Intake the HTTP handler uses and

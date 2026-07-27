@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/config"
+	"github.com/RequiDev/encore/internal/config"
 )
 
 func TestIsStreamingRoute(t *testing.T) {

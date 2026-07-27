@@ -21,15 +21,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/crypto"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/store"
-	"github.com/requi/encore/internal/store/accounts"
-	"github.com/requi/encore/internal/store/catalog"
-	"github.com/requi/encore/internal/store/imports"
-	"github.com/requi/encore/internal/store/listens"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/crypto"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/store"
+	"github.com/RequiDev/encore/internal/store/accounts"
+	"github.com/RequiDev/encore/internal/store/catalog"
+	"github.com/RequiDev/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/store/listens"
 )
 
 // TestDatabaseEnv names the connection string the suites use.

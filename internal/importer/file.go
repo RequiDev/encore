@@ -10,10 +10,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer/formats"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer/formats"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/store/imports"
 )
 
 // cancelCheckEvery bounds how often the worker asks the database whether the

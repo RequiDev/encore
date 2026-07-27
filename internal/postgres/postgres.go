@@ -14,8 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // Pool is the shared connection pool. Its size is the backpressure valve for the

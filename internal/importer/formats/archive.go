@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // MaxEntryBytes bounds the uncompressed size of an archive entry Encore is

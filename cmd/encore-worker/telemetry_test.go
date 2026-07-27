@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/metrics"
 )
 
 // exposition scrapes a registry the way Prometheus would, which is the only way

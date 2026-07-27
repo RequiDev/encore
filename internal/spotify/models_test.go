@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 func TestParseReleaseDate(t *testing.T) {

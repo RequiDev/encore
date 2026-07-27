@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/config"
+	"github.com/RequiDev/encore/internal/config"
 )
 
 // fakeStart anchors every fake clock so that expectations can be written as

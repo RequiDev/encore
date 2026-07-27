@@ -8,10 +8,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/stats"
-	"github.com/requi/encore/internal/store/listens"
-	"github.com/requi/encore/test/harness"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store/listens"
+	"github.com/RequiDev/encore/test/harness"
 )
 
 // statsFixture seeds a small, entirely deterministic listening history so every

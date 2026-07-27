@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 // serve runs the HTTP server until ctx is cancelled, then shuts it down inside

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/store"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/store"
 )
 
 // trackSelect reads a whole track row plus its artist ids in credit order.

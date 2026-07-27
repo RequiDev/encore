@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // TestSecurityHeaders pins the headers docs/security.md promises. They are on

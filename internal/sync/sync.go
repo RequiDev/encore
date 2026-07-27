@@ -27,12 +27,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/spotify"
-	"github.com/requi/encore/internal/store"
-	"github.com/requi/encore/internal/store/accounts"
-	"github.com/requi/encore/internal/store/catalog"
-	"github.com/requi/encore/internal/store/listens"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/store"
+	"github.com/RequiDev/encore/internal/store/accounts"
+	"github.com/RequiDev/encore/internal/store/catalog"
+	"github.com/RequiDev/encore/internal/store/listens"
 )
 
 // Sentinel failures a caller is expected to distinguish. Everything else that

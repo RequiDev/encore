@@ -19,9 +19,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/test/harness"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/test/harness"
 )
 
 // --- 1. a plain import, verified against the database -----------------------

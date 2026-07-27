@@ -9,10 +9,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/crypto"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/store"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/crypto"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/store"
 )
 
 // benchMaxConns matches the ENCORE_DATABASE_MAX_CONNS default. The pool size is

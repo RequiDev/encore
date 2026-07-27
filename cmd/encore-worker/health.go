@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/httpapi"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/metrics"
-	"github.com/requi/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/httpapi"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/postgres"
 )
 
 // readyCacheTTL is how long a successful readiness result is trusted.

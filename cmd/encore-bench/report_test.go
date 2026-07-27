@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // passingReport is a run that went exactly as it should: the job completed, the

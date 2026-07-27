@@ -22,8 +22,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/requi/encore/internal/crypto"
-	"github.com/requi/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/crypto"
+	"github.com/RequiDev/encore/internal/postgres"
 )
 
 // Querier is the subset of pgx shared by *pgxpool.Pool and pgx.Tx.

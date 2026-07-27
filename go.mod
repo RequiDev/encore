@@ -1,4 +1,4 @@
-module github.com/requi/encore
+module github.com/RequiDev/encore
 
 go 1.26
 

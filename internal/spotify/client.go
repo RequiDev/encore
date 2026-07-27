@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/retry"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/retry"
 )
 
 const (

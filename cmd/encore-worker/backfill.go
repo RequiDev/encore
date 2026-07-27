@@ -8,15 +8,15 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/crypto"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer/formats"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/store"
-	"github.com/requi/encore/internal/store/catalog"
-	"github.com/requi/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/crypto"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer/formats"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/store"
+	"github.com/RequiDev/encore/internal/store/catalog"
+	"github.com/RequiDev/encore/internal/store/imports"
 )
 
 // backfillBatch is how many names are written per statement.

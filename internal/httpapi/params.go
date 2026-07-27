@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/stats"
 )
 
 // Page-size bounds for the endpoints that take ?limit=&offset=. They mirror the

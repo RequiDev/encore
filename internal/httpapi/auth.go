@@ -11,12 +11,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/crypto"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/spotify"
-	"github.com/requi/encore/internal/store"
-	"github.com/requi/encore/internal/store/accounts"
+	"github.com/RequiDev/encore/internal/crypto"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/store"
+	"github.com/RequiDev/encore/internal/store/accounts"
 )
 
 // oauthStateTTL is how long an authorisation request may take to come back. It

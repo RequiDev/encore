@@ -22,18 +22,18 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/importer"
-	"github.com/requi/encore/internal/metrics"
-	"github.com/requi/encore/internal/postgres"
-	"github.com/requi/encore/internal/spotify"
-	"github.com/requi/encore/internal/stats"
-	"github.com/requi/encore/internal/store"
-	"github.com/requi/encore/internal/store/accounts"
-	"github.com/requi/encore/internal/store/catalog"
-	"github.com/requi/encore/internal/store/imports"
-	"github.com/requi/encore/internal/store/listens"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/importer"
+	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store"
+	"github.com/RequiDev/encore/internal/store/accounts"
+	"github.com/RequiDev/encore/internal/store/catalog"
+	"github.com/RequiDev/encore/internal/store/imports"
+	"github.com/RequiDev/encore/internal/store/listens"
 )
 
 // Deps is everything the HTTP layer needs. Nothing here is constructed by the

@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/requi/encore/internal/crypto"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/crypto"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 // handleMe answers GET /api/me, the bootstrap call the client makes on load.

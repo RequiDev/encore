@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/store/catalog"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/store/catalog"
 )
 
 // repairBatch is how many ids of one kind a repair pass inspects. The pass makes

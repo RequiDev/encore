@@ -16,8 +16,8 @@ package catalog
 import (
 	"fmt"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/store"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/store"
 )
 
 // Repo is the catalogue repository.

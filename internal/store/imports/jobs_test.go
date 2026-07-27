@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 func TestClampPage(t *testing.T) {

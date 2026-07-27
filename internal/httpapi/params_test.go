@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // testUser is the caller the parameter tests parse on behalf of. The timezone

@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 // tickJitter is the fraction of the interval each delay is randomised by.

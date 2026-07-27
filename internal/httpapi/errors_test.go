@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // TestErrorMapping is the table in docs/api.md, asserted directly. The frontend

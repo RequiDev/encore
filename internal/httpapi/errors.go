@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 // The machine-readable error codes of docs/api.md. The frontend switches on

@@ -3,8 +3,8 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/requi/encore/internal/logging"
-	"github.com/requi/encore/internal/postgres"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/postgres"
 )
 
 // handleHealthz answers GET /healthz.

@@ -28,15 +28,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/httpapi"
-	"github.com/requi/encore/internal/importer"
-	"github.com/requi/encore/internal/metrics"
-	"github.com/requi/encore/internal/spotify"
-	"github.com/requi/encore/internal/stats"
-	encoresync "github.com/requi/encore/internal/sync"
-	"github.com/requi/encore/test/harness"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/httpapi"
+	"github.com/RequiDev/encore/internal/importer"
+	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/stats"
+	encoresync "github.com/RequiDev/encore/internal/sync"
+	"github.com/RequiDev/encore/test/harness"
 )
 
 // --- the fake Spotify -------------------------------------------------------

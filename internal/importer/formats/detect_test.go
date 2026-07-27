@@ -3,7 +3,7 @@ package formats
 import (
 	"testing"
 
-	"github.com/requi/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 func TestDetectByName(t *testing.T) {

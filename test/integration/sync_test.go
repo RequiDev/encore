@@ -12,11 +12,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/requi/encore/internal/config"
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/spotify"
-	encoresync "github.com/requi/encore/internal/sync"
-	"github.com/requi/encore/test/harness"
+	"github.com/RequiDev/encore/internal/config"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/spotify"
+	encoresync "github.com/RequiDev/encore/internal/sync"
+	"github.com/RequiDev/encore/test/harness"
 )
 
 // fakeRecentlyPlayed stands in for the recently-played endpoint and the token

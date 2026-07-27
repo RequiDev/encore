@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/requi/encore/internal/domain"
-	"github.com/requi/encore/internal/spotify"
-	"github.com/requi/encore/internal/store/listens"
+	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/spotify"
+	"github.com/RequiDev/encore/internal/store/listens"
 )
 
 // batch is one poll's worth of work, already converted, validated and ready to

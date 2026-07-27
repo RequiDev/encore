@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/requi/encore/migrations"
+	"github.com/RequiDev/encore/migrations"
 )
 
 // MigrationStatus describes how far the database has been migrated.
