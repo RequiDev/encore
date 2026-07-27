@@ -26,6 +26,7 @@ type Repo struct {
 	OAuthStates *OAuthStates
 	Settings    *Settings
 	Shares      *Shares
+	Playlists   *Playlists
 }
 
 // New builds every identity repository from one store.
@@ -37,6 +38,7 @@ func New(db *store.Store) *Repo {
 		OAuthStates: NewOAuthStates(db),
 		Settings:    NewSettings(db),
 		Shares:      NewShares(db),
+		Playlists:   NewPlaylists(db),
 	}
 }
 
