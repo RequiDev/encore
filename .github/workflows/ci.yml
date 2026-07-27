@@ -57,7 +57,7 @@ jobs:
       # is what stops someone deploying a stale stack from the web editor.
       - name: The Portainer stack file is up to date
         run: |
-          ./scripts/gen-portainer-stack.sh
+          bash ./scripts/gen-portainer-stack.sh
           git diff --exit-code docker-compose.portainer.yml             || { echo "docker-compose.portainer.yml is stale; run ./scripts/gen-portainer-stack.sh"; exit 1; }
 
   unit:
