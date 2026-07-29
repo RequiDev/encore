@@ -92,6 +92,8 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	s.route(mux, "GET /api/stats/affinity/{userId}", s.handleAffinity)
 	s.route(mux, "GET /api/stats/genres", s.handleGenres)
 	s.route(mux, "GET /api/stats/genres/timeline", s.handleGenreTimeline)
+	s.route(mux, "GET /api/stats/taste", s.handleTaste)
+	s.route(mux, "GET /api/stats/context", s.handlePlaybackContext)
 
 	// Entities.
 	s.route(mux, "GET /api/tracks/{id}", s.handleTrack)

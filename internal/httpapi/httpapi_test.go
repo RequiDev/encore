@@ -304,6 +304,8 @@ func TestNewStatsRoutesRequireASession(t *testing.T) {
 	for _, path := range []string{
 		"/api/stats/genres",
 		"/api/stats/genres/timeline",
+		"/api/stats/taste",
+		"/api/stats/context",
 	} {
 		rec := ts.do(httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusUnauthorized {

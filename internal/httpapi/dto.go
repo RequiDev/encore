@@ -520,9 +520,8 @@ type CoverageResponse struct {
 // RateResponse is a ratio and the coverage it was computed over.
 //
 // Declared here rather than beside its first caller because it is this
-// endpoint group's coverage shape, generalised: taste and playback-context
-// statistics reuse it once they exist. It carries no reference from this
-// package yet, which is deliberate rather than dead code.
+// endpoint group's coverage shape, generalised: the taste and playback-context
+// endpoints below are what actually reuse it.
 type RateResponse struct {
 	Value   float64 `json:"value"`
 	Covered int64   `json:"covered"`
@@ -563,6 +562,75 @@ type GenreTimelineResponse struct {
 
 func toCoverage(c stats.Coverage) CoverageResponse {
 	return CoverageResponse{Covered: c.Covered, Total: c.Total}
+}
+
+// TasteResponse carries both scores with their own coverage.
+type TasteResponse struct {
+	Obscurity  RateResponse `json:"obscurity"`
+	ReleaseLag RateResponse `json:"releaseLag"`
+}
+
+// ContextSliceEntry is one category of a breakdown.
+type ContextSliceEntry struct {
+	Key   string `json:"key"`
+	Plays int64  `json:"plays"`
+}
+
+// PlaybackContextResponse is the whole "how you listen" payload.
+//
+// Every rate carries its own denominator because the underlying columns are
+// written only by the extended-export importer, and an export may omit any one
+// of them independently.
+type PlaybackContextResponse struct {
+	EndReasons        []ContextSliceEntry `json:"endReasons"`
+	EndReasonCoverage CoverageResponse    `json:"endReasonCoverage"`
+	SkipRate          RateResponse        `json:"skipRate"`
+	ShuffleRate       RateResponse        `json:"shuffleRate"`
+	Platforms         []ContextSliceEntry `json:"platforms"`
+	PlatformCoverage  CoverageResponse    `json:"platformCoverage"`
+	Countries         []ContextSliceEntry `json:"countries"`
+	CountryCoverage   CoverageResponse    `json:"countryCoverage"`
+	OfflineRate       RateResponse        `json:"offlineRate"`
+	IncognitoRate     RateResponse        `json:"incognitoRate"`
+}
+
+// toRate pairs a ratio with the coverage it was computed over.
+//
+// It lives here rather than beside toCoverage in the previous task because
+// nothing called it until now, and staticcheck (U1000) rightly refuses an
+// unexported function with no call sites.
+func toRate(v float64, c stats.Coverage) RateResponse {
+	return RateResponse{Value: v, Covered: c.Covered, Total: c.Total}
+}
+
+func toContextSlices(in []stats.ContextSlice) []ContextSliceEntry {
+	out := make([]ContextSliceEntry, 0, len(in))
+	for _, s := range in {
+		out = append(out, ContextSliceEntry{Key: s.Key, Plays: s.Plays})
+	}
+	return out
+}
+
+func toTaste(t stats.Taste) TasteResponse {
+	return TasteResponse{
+		Obscurity:  toRate(t.Obscurity, t.ObscurityCoverage),
+		ReleaseLag: toRate(t.ReleaseLagYears, t.ReleaseLagCoverage),
+	}
+}
+
+func toPlaybackContext(c stats.PlaybackContext) PlaybackContextResponse {
+	return PlaybackContextResponse{
+		EndReasons:        toContextSlices(c.EndReasons),
+		EndReasonCoverage: toCoverage(c.EndReasonCoverage),
+		SkipRate:          toRate(c.SkipRate, c.SkipCoverage),
+		ShuffleRate:       toRate(c.ShuffleRate, c.ShuffleCoverage),
+		Platforms:         toContextSlices(c.Platforms),
+		PlatformCoverage:  toCoverage(c.PlatformCoverage),
+		Countries:         toContextSlices(c.Countries),
+		CountryCoverage:   toCoverage(c.CountryCoverage),
+		OfflineRate:       toRate(c.OfflineRate, c.OfflineCoverage),
+		IncognitoRate:     toRate(c.IncognitoRate, c.IncognitoCoverage),
+	}
 }
 
 func toGenres(p stats.GenrePage) GenresResponse {

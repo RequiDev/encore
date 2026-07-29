@@ -677,6 +677,36 @@ func dedupeGenres(in []string) []string {
 	return out
 }
 
+// handleTaste answers GET /api/stats/taste.
+func (s *Server) handleTaste(w http.ResponseWriter, r *http.Request) {
+	user, tr, err := s.callerAndRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	t, err := s.stats.Taste(r.Context(), s.querier, user.ID, tr, user.Timezone)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toTaste(t))
+}
+
+// handlePlaybackContext answers GET /api/stats/context.
+func (s *Server) handlePlaybackContext(w http.ResponseWriter, r *http.Request) {
+	user, tr, err := s.callerAndRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	c, err := s.stats.PlaybackContext(r.Context(), s.querier, user.ID, tr, user.Timezone)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toPlaybackContext(c))
+}
+
 // handleListUsers answers GET /api/users: who else is on this instance.
 //
 // Deactivated accounts and the caller are left out, and each entry carries only
