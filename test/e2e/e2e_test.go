@@ -1009,7 +1009,9 @@ func TestASharedLinkCannotReachTheListeningHistory(t *testing.T) {
 	// which is a different disclosure from a favourite artist.
 	for _, forbidden := range []string{
 		"history", "listens", "plays", "items",
-		"skipRate", "shuffleRate", "platforms", "countries", "offlineRate", "incognitoRate",
+		"endReasons", "endReasonCoverage", "skipRate", "shuffleRate",
+		"platforms", "platformCoverage", "countries", "countryCoverage",
+		"offlineRate", "incognitoRate",
 	} {
 		if _, present := shared[forbidden]; present {
 			t.Fatalf("the shared payload carries a %q field; a share must expose "+
