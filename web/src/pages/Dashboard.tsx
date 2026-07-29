@@ -98,6 +98,22 @@ const RECENT_LIMIT = 12
  */
 const GENRE_CHART_HEIGHT = TOP_PAGE.limit * 30 + 34
 
+/**
+ * The obscurity panel's minimum body height, pinned to the tallest of its
+ * three *routine* states — the loading skeleton, the populated `Stat`, and
+ * the empty state shown while coverage is still zero — so the panel does not
+ * resize as coverage crosses from zero to nonzero while enrichment runs.
+ * `Stat`, `EmptyState` and `ErrorState` have no `height` prop the way
+ * `BarChart` does, so the constant is applied to a wrapping element instead
+ * of any of those shared components.
+ *
+ * `ErrorState` is deliberately left free to grow past this: it is taller
+ * than the other three (its retry button adds height none of them have), a
+ * failed request is rare, and it already commands attention on its own —
+ * a resize there costs far less than one during ordinary enrichment.
+ */
+const OBSCURITY_MIN_HEIGHT = 210
+
 export default function Dashboard(): ReactElement {
   const { range, label, timeZone } = useRange()
   const [metric, setMetric] = useState<TimelineMetric>('plays')
@@ -649,40 +665,42 @@ export default function Dashboard(): ReactElement {
             </Link>
           }
         >
-          {taste.isPending ? (
-            <div className="p-4">
-              <Skeleton className="h-3 w-24" />
-              <Skeleton className="mt-3 h-9 w-20" />
-              <Skeleton className="mt-3 h-3 w-40" />
-            </div>
-          ) : taste.isError ? (
-            <ErrorState
-              error={taste.error}
-              title="Obscurity could not be loaded"
-              onRetry={() => {
-                void taste.refetch()
-              }}
-            />
-          ) : noObscurity ? (
-            <EmptyState
-              title="Not known yet"
-              description="Obscurity is worked out from your artists' popularity, once enrichment has caught up."
-            />
-          ) : (
-            <Stat
-              label="Obscurity"
-              value={formatCount(obscurity?.value ?? 0)}
-              suffix="of 100"
-              meter={(obscurity?.value ?? 0) / 100}
-              hint={
-                <>
-                  {obscurityBand(obscurity?.value ?? 0)} — known for{' '}
-                  {formatRatio(obscurity?.covered ?? 0, obscurity?.total ?? 0)} of your listening in
-                  this range
-                </>
-              }
-            />
-          )}
+          <div className="flex flex-col justify-center" style={{ minHeight: OBSCURITY_MIN_HEIGHT }}>
+            {taste.isPending ? (
+              <div className="p-4">
+                <Skeleton className="h-3 w-24" />
+                <Skeleton className="mt-3 h-9 w-20" />
+                <Skeleton className="mt-3 h-3 w-40" />
+              </div>
+            ) : taste.isError ? (
+              <ErrorState
+                error={taste.error}
+                title="Obscurity could not be loaded"
+                onRetry={() => {
+                  void taste.refetch()
+                }}
+              />
+            ) : noObscurity ? (
+              <EmptyState
+                title="Not known yet"
+                description="Obscurity is worked out from your artists' popularity, once enrichment has caught up."
+              />
+            ) : (
+              <Stat
+                label="Obscurity"
+                value={formatCount(obscurity?.value ?? 0)}
+                suffix="of 100"
+                meter={(obscurity?.value ?? 0) / 100}
+                hint={
+                  <>
+                    {obscurityBand(obscurity?.value ?? 0)} — known for{' '}
+                    {formatRatio(obscurity?.covered ?? 0, obscurity?.total ?? 0)} of your listening in
+                    this range
+                  </>
+                }
+              />
+            )}
+          </div>
         </Panel>
       </div>
 
