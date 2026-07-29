@@ -194,3 +194,59 @@ func TestTopGenresEmptyRangeIsNotAnError(t *testing.T) {
 		t.Errorf("expected zero coverage, got %+v", page.Coverage)
 	}
 }
+
+// TestGenreTimelineReturnsACompleteGrid checks the property every chart in
+// Encore relies on: an empty bucket is a zero, never a missing point, and the
+// caller's genre list fixes the series so they stay stable while paging.
+//
+// 2024-01-04 is silent in the fixture, so it is the bucket that matters.
+func TestGenreTimelineReturnsACompleteGrid(t *testing.T) {
+	f := seedStats(t)
+
+	points, err := f.svc.GenreTimeline(f.env.Ctx(), f.env.Store.DB(), f.user.ID,
+		f.fullRange(), f.tz, domain.IntervalDay, []string{"rock", "jazz"})
+	if err != nil {
+		t.Fatalf("genre timeline: %v", err)
+	}
+
+	// Ten days in fullRange, two genres.
+	if len(points) != 20 {
+		t.Fatalf("got %d points, want 20", len(points))
+	}
+
+	type key struct {
+		day   string
+		genre string
+	}
+	got := map[key]int64{}
+	for _, p := range points {
+		got[key{p.Bucket.In(f.loc).Format("2006-01-02"), p.Genre}] = p.Plays
+	}
+
+	// rock is art-x: trk-a x3 and trk-b x1 on the 1st, trk-a x1 on the 3rd.
+	if got[key{"2024-01-01", "rock"}] != 4 {
+		t.Errorf("rock on the 1st = %d, want 4", got[key{"2024-01-01", "rock"}])
+	}
+	// jazz is art-y, credited on trk-a and trk-c: three on the 1st, two on the 2nd.
+	if got[key{"2024-01-02", "jazz"}] != 2 {
+		t.Errorf("jazz on the 2nd = %d, want 2", got[key{"2024-01-02", "jazz"}])
+	}
+	if v, ok := got[key{"2024-01-04", "rock"}]; !ok || v != 0 {
+		t.Errorf("the silent day is missing or non-zero for rock: %v %v", v, ok)
+	}
+}
+
+// TestGenreTimelineWithNoGenresIsEmpty guards the degenerate call rather than
+// letting it build a grid of nothing.
+func TestGenreTimelineWithNoGenresIsEmpty(t *testing.T) {
+	f := seedStats(t)
+
+	points, err := f.svc.GenreTimeline(f.env.Ctx(), f.env.Store.DB(), f.user.ID,
+		f.fullRange(), f.tz, domain.IntervalDay, nil)
+	if err != nil {
+		t.Fatalf("genre timeline: %v", err)
+	}
+	if len(points) != 0 {
+		t.Errorf("got %d points for no genres, want 0", len(points))
+	}
+}

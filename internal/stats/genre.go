@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -192,4 +193,99 @@ func (s *Service) TopGenres(
 		return GenrePage{}, postgres.Classify("genre coverage", err)
 	}
 	return page, nil
+}
+
+// GenrePoint is one bucket of one genre's share of a timeline.
+type GenrePoint struct {
+	Bucket   time.Time
+	Genre    string
+	Plays    int64
+	MsPlayed int64
+}
+
+// genreTimelineSQL buckets the requested genres over the range.
+//
+// The series are cross-joined from the caller's list rather than derived from
+// the data, for the same reason the bucket grid is generated rather than
+// grouped: a genre with no plays in a bucket must appear as a zero. Passing the
+// list in also keeps a chart's series stable while the ranking beneath it is
+// paged or re-ranged.
+//
+// Parameters are $1 user, $2 from, $3 to, $4 timezone, $5 interval, $6 genres.
+var genreTimelineSQL = fmt.Sprintf(`
+WITH %s,
+bounds AS (
+    SELECT date_trunc($5::text, ($2::timestamptz AT TIME ZONE $4::text)) AS lo,
+           ($3::timestamptz AT TIME ZONE $4::text) AS hi
+),
+buckets AS (
+    SELECT generate_series(b.lo, b.hi - interval '1 microsecond', ('1 ' || $5::text)::interval) AS bucket
+    FROM bounds b
+),
+series AS (SELECT g.genre FROM unnest($6::text[]) AS g(genre)),
+agg AS (
+    SELECT date_trunc($5::text, (l.played_at AT TIME ZONE $4::text)) AS bucket,
+           tg.genre,
+           count(*)::bigint                      AS plays,
+           coalesce(sum(l.ms_played), 0)::bigint AS ms
+    FROM listens l
+    JOIN track_genre tg ON tg.track_id = l.track_id
+    WHERE %s AND tg.genre = ANY($6::text[])
+    GROUP BY 1, 2
+)
+SELECT b.bucket, s.genre, coalesce(a.plays, 0)::bigint, coalesce(a.ms, 0)::bigint
+FROM buckets b
+CROSS JOIN series s
+LEFT JOIN agg a ON a.bucket = b.bucket AND a.genre = s.genre
+ORDER BY b.bucket, s.genre`,
+	trackGenreCTE, rangeFilter("l", "$1", "$2", "$3"))
+
+// GenreTimeline buckets the named genres across the range, so taste drift is
+// visible rather than inferred from two rankings side by side.
+//
+// The caller names the genres. The page passes the range's top eight, which is
+// where a stacked area chart stops being readable.
+func (s *Service) GenreTimeline(
+	ctx context.Context,
+	q store.Querier,
+	userID uuid.UUID,
+	r domain.TimeRange,
+	tz string,
+	interval domain.Interval,
+	genres []string,
+) ([]GenrePoint, error) {
+	loc, err := scope(userID, r, tz)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkInterval(r, interval); err != nil {
+		return nil, err
+	}
+	if len(genres) == 0 {
+		return nil, nil
+	}
+
+	rows, err := q.Query(ctx, genreTimelineSQL,
+		store.UUIDArg(userID), r.From.UTC(), r.To.UTC(), tzArg(tz), string(interval), genres)
+	if err != nil {
+		return nil, postgres.Classify("genre timeline", err)
+	}
+	defer rows.Close()
+
+	out := make([]GenrePoint, 0, len(genres)*16)
+	for rows.Next() {
+		var p GenrePoint
+		if err := rows.Scan(&p.Bucket, &p.Genre, &p.Plays, &p.MsPlayed); err != nil {
+			return nil, postgres.Classify("scan genre timeline", err)
+		}
+		// date_trunc returns a bucket boundary as a wall-clock timestamp with no
+		// zone; inLocation reattaches the user's, which is what makes the point
+		// mean the local midnight it was computed as.
+		p.Bucket = inLocation(p.Bucket, loc)
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, postgres.Classify("genre timeline", err)
+	}
+	return out, nil
 }

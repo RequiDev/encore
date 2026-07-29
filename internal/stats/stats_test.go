@@ -66,6 +66,7 @@ func statements() []statement {
 		{name: "topGenresFact", sql: topGenresFactSQL, params: 5},
 		{name: "topGenresRollup", sql: topGenresRollupSQL, params: 6},
 		{name: "genreCoverage", sql: genreCoverageSQL, params: 3},
+		{name: "genreTimeline", sql: genreTimelineSQL, params: 6},
 	}
 }
 
