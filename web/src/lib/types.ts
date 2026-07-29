@@ -398,6 +398,40 @@ export interface GenreTimelineResponse {
   points: GenreTimelinePoint[]
 }
 
+// --- habits (playback context & taste) --------------------------------------
+
+/** One category of a breakdown: an end reason, a platform family, a country. */
+export interface ContextSlice {
+  key: string
+  plays: number
+}
+
+/** The two taste scores, each with its own coverage. Consumed by the dashboard. */
+export interface TasteResponse {
+  obscurity: Rate
+  releaseLag: Rate
+}
+
+/**
+ * How listening happened, as opposed to what was listened to.
+ *
+ * Every rate carries its own denominator: the underlying columns are written
+ * only by the extended-export importer, and an export may omit any one of them
+ * independently of the others.
+ */
+export interface PlaybackContextResponse {
+  endReasons: ContextSlice[]
+  endReasonCoverage: Coverage
+  skipRate: Rate
+  shuffleRate: Rate
+  platforms: ContextSlice[]
+  platformCoverage: Coverage
+  countries: ContextSlice[]
+  countryCoverage: Coverage
+  offlineRate: Rate
+  incognitoRate: Rate
+}
+
 export interface ListeningSession {
   startedAt: Timestamp
   endedAt: Timestamp

@@ -111,6 +111,8 @@ export const qk = {
   genres: (range: DateRange, page: PageKey) => ['stats', 'genres', range, page] as const,
   genreTimeline: (range: DateRange, interval: string | null, genres: string[]) =>
     ['stats', 'genres', 'timeline', range, interval, genres] as const,
+  playbackContext: (range: DateRange) => ['stats', 'context', range] as const,
+  taste: (range: DateRange) => ['stats', 'taste', range] as const,
   streaks: (range: DateRange) => ['stats', 'streaks', range] as const,
   extras: (range: DateRange) => ['stats', 'extras', range] as const,
   compare: (a: DateRange, b: DateRange) => ['stats', 'compare', a, b] as const,
