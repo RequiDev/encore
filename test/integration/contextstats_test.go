@@ -10,10 +10,12 @@ import (
 
 // seedContext adds playback detail to the shared fixture's listens.
 //
-// The fixture's eight plays are all source 0 (sync) by default, which carry no
-// context at all. This marks five of them as source 2 with detail, and leaves
-// one of those five with a NULL shuffle so the per-column denominator rule has
-// something to prove.
+// seedStats in stats_test.go stages the fixture's eight plays as
+// domain.SourceExtended already, but none of them carry playback-context
+// detail — reason_end, shuffle, platform, conn_country, offline and incognito
+// are all NULL until this function sets them. It marks five of the eight with
+// that detail, and leaves one of those five with a NULL shuffle so the
+// per-column denominator rule has something to prove.
 func seedContext(t *testing.T, f *statsFixture) {
 	t.Helper()
 	f.env.Exec(`

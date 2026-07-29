@@ -50,7 +50,7 @@ Spotify.*
   call per listen.
 - **Shows you the statistics** — top tracks, artists and albums with rank movement, listening time
   over any date range, hour-of-day and weekday patterns, longest sessions, listening streaks, new-artist
-  discovery, year in review, and period-over-period comparison.
+  discovery, year in review, period-over-period comparison, genres and listening habits.
 - **Names your music from the export itself.** Both formats print the artist and album of every play
   and identify neither, so Encore mints catalogue rows from the names. A freshly imported history has
   working artist and album pages immediately, with no Spotify call at all — a 144,000-record export

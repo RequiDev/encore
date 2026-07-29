@@ -91,6 +91,8 @@ Encore's target is practical parity with the user-facing capabilities of
 | Catalogue search | **Implemented** | Artists, albums and tracks. |
 | Playlist creation from statistics | **Implemented** | Four modes: most played, a minimum play count, first-heard-in-period, and forgotten favourites — each over any range, ranked by plays or by listening time. Broader than the reference. Every definition can be previewed first — the exact tracks, ranked, without touching Spotify and without the write scope, which is what lets somebody decide whether to grant it. The scope is requested only when a playlist is actually created, so an account that never makes one keeps a read-only grant. |
 | Play button / Spotify remote control | **Deferred** | Needs `user-modify-playback-state` and an active device; same read-only reasoning. |
+| Genre statistics | **Implemented** | Top genres, genre timeline and an obscurity score, from `artists.genres` and `artists.popularity`. Not in the reference project. Every figure reports what share of the range's listening it could see, because genres exist only where enrichment has resolved the artist. |
+| Playback-context statistics | **Implemented** | Skip rate, shuffle share, how tracks ended, platform and country. Not in the reference project. Only extended-export rows carry these columns, so each figure reports its own denominator. |
 
 ## 5. Optional enhancements (built after the required scope)
 
@@ -150,6 +152,12 @@ Encore's target is practical parity with the user-facing capabilities of
 
 Where Encore does less than the reference, or less than it could:
 
+- **Audio features, audio analysis, recommendations, related artists and the browse playlist
+  endpoints are permanently unavailable**, not deferred. Spotify restricted all eight of those
+  endpoints on 2024-11-27 to applications already in extended quota mode, which now requires
+  250,000 monthly active users. Encore runs against the operator's own Spotify application, so every
+  instance is a new application in development mode and receives 403 from every one of them. See
+  [`docs/design/2026-07-29-spotify-api-expansion-overview.md`](design/2026-07-29-spotify-api-expansion-overview.md).
 - **Playback control** is deferred: it needs `user-modify-playback-state` and an active device, and
   it is the one write scope with no read-only equivalent.
 - **PWA support stops at installable.** There is no service worker, for the reason given above.
