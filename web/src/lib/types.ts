@@ -127,6 +127,15 @@ export interface SharedStats {
   timeline: TimelineBucket[]
   hours: RepartitionBucket[]
   weekdays: RepartitionBucket[]
+  /**
+   * Aggregate taste — the same data class as the top lists above: what
+   * somebody listens to, never how or where. Optional because the Go DTO
+   * carries both as `omitempty` pointers; playback-context statistics (skip,
+   * shuffle, platform, country, offline, incognito) are never in this shape,
+   * on any version, because device and location are not what a share is for.
+   */
+  genres?: GenresResponse
+  taste?: TasteResponse
 }
 
 // --- playlists -------------------------------------------------------------
