@@ -250,3 +250,96 @@ func TestGenreTimelineWithNoGenresIsEmpty(t *testing.T) {
 		t.Errorf("got %d points for no genres, want 0", len(points))
 	}
 }
+
+// TestTasteObscurityIsPlayWeighted checks the mean is over listens rather than
+// over artists: an artist played ten times must pull the score ten times as hard
+// as one played once.
+func TestTasteObscurityIsPlayWeighted(t *testing.T) {
+	f := seedStats(t)
+	f.env.Exec(`UPDATE artists SET popularity = 90 WHERE id = 'art-x'`)
+	f.env.Exec(`UPDATE artists SET popularity = 30 WHERE id = 'art-y'`)
+	f.env.Exec(`UPDATE artists SET popularity = 0  WHERE id = 'art-z'`)
+
+	got, err := f.svc.Taste(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz)
+	if err != nil {
+		t.Fatalf("taste: %v", err)
+	}
+
+	// Per listen, the mean is taken over that listen's own credited artists
+	// first (the inner CTE), and only then averaged across listens (the outer
+	// query) — a listen of trk-a, which credits two artists, is one unit of
+	// weight, not two:
+	//   trk-a x4, each listen averaging art-x(90) and art-y(30) -> 60 x4 = 240
+	//   trk-b x1, averaging art-x(90) alone                     -> 90
+	//   trk-c x2, averaging art-y(30) alone                     -> 30 x2 = 60
+	//   trk-d x1, averaging art-z(0) alone                      -> 0
+	// (240 + 90 + 60 + 0) / 8 = 390/8 = 48.75
+	if diff := got.Obscurity - 48.75; diff > 0.001 || diff < -0.001 {
+		t.Errorf("obscurity = %v, want 48.75", got.Obscurity)
+	}
+	if got.ObscurityCoverage.Total != 8 || got.ObscurityCoverage.Covered != 8 {
+		t.Errorf("obscurity coverage = %+v, want 8/8", got.ObscurityCoverage)
+	}
+}
+
+// TestTasteObscurityExcludesUnresolvedArtists is the coverage half: an artist
+// enrichment has not resolved carries popularity 0 by column default, and
+// counting that as "not popular" would drag every fresh instance's score to zero.
+func TestTasteObscurityExcludesUnresolvedArtists(t *testing.T) {
+	f := seedStats(t)
+	f.env.Exec(`UPDATE artists SET popularity = 80, metadata_state = 'resolved' WHERE id = 'art-x'`)
+	f.env.Exec(`UPDATE artists SET popularity = 0,  metadata_state = 'pending'  WHERE id = 'art-y'`)
+	f.env.Exec(`UPDATE artists SET popularity = 0,  metadata_state = 'pending'  WHERE id = 'art-z'`)
+
+	got, err := f.svc.Taste(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz)
+	if err != nil {
+		t.Fatalf("taste: %v", err)
+	}
+	if diff := got.Obscurity - 80.0; diff > 0.001 || diff < -0.001 {
+		t.Errorf("obscurity = %v, want 80 — an unresolved artist was counted as popularity 0", got.Obscurity)
+	}
+	// trk-a and trk-b credit art-x; that is five listens of eight.
+	if got.ObscurityCoverage.Covered != 5 || got.ObscurityCoverage.Total != 8 {
+		t.Errorf("obscurity coverage = %+v, want 5/8", got.ObscurityCoverage)
+	}
+}
+
+// TestTasteReleaseLag answers "how old is the music you listen to".
+func TestTasteReleaseLag(t *testing.T) {
+	f := seedStats(t)
+
+	got, err := f.svc.Taste(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz)
+	if err != nil {
+		t.Fatalf("taste: %v", err)
+	}
+
+	// All plays are in 2024. alb-1 (2010) carries trk-a x4 and trk-b x1;
+	// alb-2 (2020) carries trk-c x2; alb-3 (2000) carries trk-d x1.
+	// (5*14 + 2*4 + 1*24) / 8 = 102/8 = 12.75
+	if diff := got.ReleaseLagYears - 12.75; diff > 0.001 || diff < -0.001 {
+		t.Errorf("release lag = %v, want 12.75", got.ReleaseLagYears)
+	}
+	if got.ReleaseLagCoverage.Covered != 8 || got.ReleaseLagCoverage.Total != 8 {
+		t.Errorf("release lag coverage = %+v, want 8/8", got.ReleaseLagCoverage)
+	}
+}
+
+// TestTasteEmptyRangeIsNotAnError guards the same state as the genre case: a
+// valid window that simply contains no listens.
+//
+// Note it is NOT a zero-width range. scope() rejects from == to as
+// domain.ErrValidation by deliberate design, so a zero-width range can only
+// ever error and would be testing the wrong thing.
+func TestTasteEmptyRangeIsNotAnError(t *testing.T) {
+	f := seedStats(t)
+	from := time.Date(2025, time.January, 1, 0, 0, 0, 0, f.loc)
+	empty := domain.TimeRange{From: from, To: from.AddDate(0, 0, 10)}
+
+	got, err := f.svc.Taste(f.env.Ctx(), f.env.Store.DB(), f.user.ID, empty, f.tz)
+	if err != nil {
+		t.Fatalf("taste over an empty range: %v", err)
+	}
+	if got.Obscurity != 0 || got.ObscurityCoverage.Total != 0 {
+		t.Errorf("expected a zeroed taste, got %+v", got)
+	}
+}
