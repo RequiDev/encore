@@ -769,14 +769,17 @@ func TestTasteObscurityIsPlayWeighted(t *testing.T) {
 		t.Fatalf("taste: %v", err)
 	}
 
-	// Per listen, over every credited artist:
-	//   trk-a x4 credits art-x(90) and art-y(30) -> 8 artist-plays
-	//   trk-b x1 credits art-x(90)               -> 1
-	//   trk-c x2 credits art-y(30)               -> 2
-	//   trk-d x1 credits art-z(0)                -> 1
-	// (4*90 + 4*30 + 1*90 + 2*30 + 1*0) / 12 = 630/12 = 52.5
-	if diff := got.Obscurity - 52.5; diff > 0.001 || diff < -0.001 {
-		t.Errorf("obscurity = %v, want 52.5", got.Obscurity)
+	// The mean is NESTED: each listen first averages its own credited artists,
+	// then those per-listen values are averaged. A collaboration is one
+	// listening event, not two, which is why it is not a flat average over
+	// (listen, artist) pairs.
+	//   trk-a x4 credits art-x(90) and art-y(30) -> 60 each -> 240
+	//   trk-b x1 credits art-x(90)               -> 90
+	//   trk-c x2 credits art-y(30)               -> 30 each -> 60
+	//   trk-d x1 credits art-z(0)                -> 0
+	// (240 + 90 + 60 + 0) / 8 = 390/8 = 48.75
+	if diff := got.Obscurity - 48.75; diff > 0.001 || diff < -0.001 {
+		t.Errorf("obscurity = %v, want 48.75", got.Obscurity)
 	}
 	if got.ObscurityCoverage.Total != 8 || got.ObscurityCoverage.Covered != 8 {
 		t.Errorf("obscurity coverage = %+v, want 8/8", got.ObscurityCoverage)
