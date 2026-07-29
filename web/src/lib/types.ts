@@ -355,6 +355,49 @@ export interface HeatmapCell {
   msPlayed: number
 }
 
+// --- genres ------------------------------------------------------------
+
+/** The denominator every partial statistic carries. */
+export interface Coverage {
+  covered: number
+  total: number
+}
+
+/** A ratio and the coverage it was computed over. */
+export interface Rate extends Coverage {
+  value: number
+}
+
+export interface GenreEntry {
+  genre: string
+  plays: number
+  msPlayed: number
+}
+
+/**
+ * One page of the genre ranking.
+ *
+ * Plays across genres sum to more than the range's total plays: a track counts
+ * toward each of its genres. The page says so rather than normalising it away.
+ */
+export interface GenresResponse {
+  genres: GenreEntry[]
+  total: number
+  coverage: Coverage
+}
+
+export interface GenreTimelinePoint {
+  bucket: string
+  genre: string
+  plays: number
+  msPlayed: number
+}
+
+export interface GenreTimelineResponse {
+  interval: Interval
+  points: GenreTimelinePoint[]
+}
+
 export interface ListeningSession {
   startedAt: Timestamp
   endedAt: Timestamp

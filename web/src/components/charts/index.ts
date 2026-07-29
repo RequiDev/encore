@@ -16,6 +16,9 @@ export type { ChartCardProps } from './ChartCard'
 export { ChartEmpty, ChartFrame, TooltipCard } from './ChartFrame'
 export type { ChartA11yProps, ChartEmptyProps, ChartFrameProps, TooltipRow } from './ChartFrame'
 
+export { GenreTimelineChart } from './GenreTimelineChart'
+export type { GenreTimelineChartProps } from './GenreTimelineChart'
+
 export { Heatmap } from './Heatmap'
 export type { HeatmapProps } from './Heatmap'
 
@@ -28,7 +31,7 @@ export type { ShareBarProps } from './ShareBar'
 export { Sparkline } from './Sparkline'
 export type { SparklineProps } from './Sparkline'
 
-export { MetricToggle, TimelineChart } from './TimelineChart'
+export { INTERVAL_NOUN, MetricToggle, TimelineChart } from './TimelineChart'
 export type { MetricToggleProps, TimelineChartProps, TimelineMetric } from './TimelineChart'
 
 export { WeekdayChart } from './WeekdayChart'

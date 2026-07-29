@@ -27,6 +27,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const TopTracks = lazy(() => import('./pages/TopTracks'))
 const TopArtists = lazy(() => import('./pages/TopArtists'))
 const TopAlbums = lazy(() => import('./pages/TopAlbums'))
+const Genres = lazy(() => import('./pages/Genres'))
 const History = lazy(() => import('./pages/History'))
 const ArtistDetail = lazy(() => import('./pages/ArtistDetail'))
 const AlbumDetail = lazy(() => import('./pages/AlbumDetail'))
@@ -88,6 +89,7 @@ export const routes: RouteObject[] = [
               { path: 'artists/:id', element: <ArtistDetail /> },
               { path: 'albums', element: <TopAlbums /> },
               { path: 'albums/:id', element: <AlbumDetail /> },
+              { path: 'genres', element: <Genres /> },
               { path: 'history', element: <History /> },
               { path: 'search', element: <Search /> },
               { path: 'sessions', element: <Sessions /> },

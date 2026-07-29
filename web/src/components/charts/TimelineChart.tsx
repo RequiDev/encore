@@ -53,7 +53,8 @@ interface Row {
   msPlayed: number
 }
 
-const INTERVAL_NOUN: Record<Interval, string> = {
+/** Exported so charts plotting more than one series over time — genres, say — reuse the same date wording. */
+export const INTERVAL_NOUN: Record<Interval, string> = {
   hour: 'hour',
   day: 'day',
   week: 'week',
@@ -70,7 +71,8 @@ function withoutYear(value: string): string {
   return value.replace(/\s\d{4}$/, '')
 }
 
-function axisLabelFor(bucket: string, interval: Interval, timeZone: string): string {
+/** Exported so a multi-series timeline (the genre chart) shares this exactly rather than re-deriving it. */
+export function axisLabelFor(bucket: string, interval: Interval, timeZone: string): string {
   switch (interval) {
     case 'hour':
       return formatTimeOfDay(bucket, timeZone)
@@ -84,7 +86,8 @@ function axisLabelFor(bucket: string, interval: Interval, timeZone: string): str
   }
 }
 
-function fullLabelFor(bucket: string, interval: Interval, timeZone: string): string {
+/** Exported for the same reason as `axisLabelFor`. */
+export function fullLabelFor(bucket: string, interval: Interval, timeZone: string): string {
   switch (interval) {
     case 'hour':
       return formatDateTime(bucket, timeZone)
