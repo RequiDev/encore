@@ -34,7 +34,7 @@ import { api } from '../lib/api'
 import { qk } from '../lib/query'
 import { useRange } from '../lib/range'
 import { formatCount, formatPercent, formatRatio } from '../lib/format'
-import type { PlaybackContextResponse, Rate } from '../lib/types'
+import type { PlaybackContextResponse, Rate, TasteResponse } from '../lib/types'
 import {
   EmptyState,
   ErrorState,
@@ -106,6 +106,22 @@ function rateHint(rate: Rate | undefined, pending: boolean): string {
   return `${formatRatio(rate.covered, rate.total)} of plays in this range carry this detail`
 }
 
+/** What a taste score's own hint reads while its query is still in flight or done. */
+function tasteHint(rate: Rate | undefined, pending: boolean): string {
+  if (pending) return 'Looking for it'
+  if (!rate || rate.total <= 0) return 'Not known for this range'
+  return `Known for ${formatRatio(rate.covered, rate.total)} of your listening in this range`
+}
+
+/**
+ * A release-lag figure is a count of years, not a ratio — `formatPercent`
+ * would turn "8.4 years" into a nonsense percentage.
+ */
+function formatYears(value: number): string {
+  if (!Number.isFinite(value)) return '0.0'
+  return value.toFixed(1)
+}
+
 /** A chart-shaped placeholder, so the card does not resize when data lands. */
 function ChartLoading({ label }: { label: string }): ReactElement {
   return (
@@ -130,10 +146,26 @@ export default function Habits(): ReactElement {
   })
 
   const data = context.data
-  // Zero, not merely partial: the extended-export columns are entirely
-  // absent from this range, so every rate below would be a fabricated zero
-  // rather than a measurement. Mirrors `Genres.tsx`'s own `noGenres` gate.
-  const noContext = context.isSuccess && (data?.skipRate.covered ?? 0) === 0
+  // Zero, not merely partial: *every* extended-export column is absent from
+  // this range, so every rate below would be a fabricated zero rather than a
+  // measurement. Gating on `skipRate` alone — one column of six, independent
+  // of the rest per this file's own doc comment above — collapsed the page
+  // to "No playback detail yet" whenever an export happened to omit
+  // `reason_end` while still carrying `platform`, `shuffle` and the rest.
+  const noContext =
+    context.isSuccess &&
+    (data?.skipRate.covered ?? 0) === 0 &&
+    (data?.shuffleRate.covered ?? 0) === 0 &&
+    (data?.offlineRate.covered ?? 0) === 0 &&
+    (data?.incognitoRate.covered ?? 0) === 0 &&
+    (data?.platformCoverage.covered ?? 0) === 0 &&
+    (data?.countryCoverage.covered ?? 0) === 0
+
+  const taste = useQuery({
+    queryKey: qk.taste(range),
+    queryFn: ({ signal }) =>
+      api.get<TasteResponse>('/stats/taste', { from: range.from, to: range.to }, signal),
+  })
 
   const status = context.isPending
     ? `Loading listening habits for ${label.toLowerCase()}.`
@@ -142,7 +174,7 @@ export default function Habits(): ReactElement {
       : noContext
         ? 'No playback detail is known yet for this range.'
         : data
-          ? `Playback detail is known for ${formatRatio(data.skipRate.covered, data.skipRate.total)} of your listening in ${label.toLowerCase()}.`
+          ? `How a play ended is known for ${formatRatio(data.skipRate.covered, data.skipRate.total)} of your listening in ${label.toLowerCase()}.`
           : ''
 
   const endReasonData = useMemo(
@@ -179,7 +211,7 @@ export default function Habits(): ReactElement {
           <Icon name="info" size={20} className="mt-0.5 shrink-0 text-ink-muted" />
           <p className="text-sm text-ink">
             Based on the {formatRatio(data.skipRate.covered, data.skipRate.total)} of your
-            listening that carries playback detail. Only Spotify's extended streaming history
+            listening that records how a play ended. Only Spotify's extended streaming history
             export records it — plays recorded live by Encore, and plays from the one-year
             account-data export, do not.
           </p>
@@ -300,6 +332,55 @@ export default function Habits(): ReactElement {
             A skip is a track ended with the forward button. Going back is counted separately.
           </p>
         </>
+      )}
+
+      {/*
+       * Taste: what kind of catalogue this is, independent of the playback-
+       * context columns above. Obscurity and release lag come from artist
+       * popularity and album release dates — enrichment data that a sync-only
+       * or account-data-only instance can have plenty of even when every rate
+       * above reads "not known" — so this section renders on its own rather
+       * than living inside the `noContext` gate. It is also the taste
+       * statistic the Dashboard's obscurity card points here to find; before
+       * this section existed, that link led to a page with none.
+       */}
+      {taste.isError ? (
+        <Panel padded={false}>
+          <ErrorState
+            error={taste.error}
+            title="Taste could not be loaded"
+            onRetry={() => {
+              void taste.refetch()
+            }}
+          />
+        </Panel>
+      ) : (
+        <Panel
+          title="Taste"
+          description="How mainstream your listening is, and how old the music tends to be."
+          padded={false}
+        >
+          {/* `StatGrid` would draw a second panel border inside this one, so
+              the seamed grid it is built from is repeated here without the
+              frame — the same technique the dashboard's own "Also worth
+              knowing" panel uses for the same reason. */}
+          <div className="grid gap-px bg-seam sm:grid-cols-2 [&>*]:bg-panel">
+            <Stat
+              label="Obscurity"
+              value={formatCount(taste.data?.obscurity.value ?? 0)}
+              suffix="of 100"
+              loading={taste.isPending}
+              hint={tasteHint(taste.data?.obscurity, taste.isPending)}
+            />
+            <Stat
+              label="Release lag"
+              value={formatYears(taste.data?.releaseLag.value ?? 0)}
+              suffix="years old"
+              loading={taste.isPending}
+              hint={tasteHint(taste.data?.releaseLag, taste.isPending)}
+            />
+          </div>
+        </Panel>
       )}
     </div>
   )
