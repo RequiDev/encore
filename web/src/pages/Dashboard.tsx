@@ -27,6 +27,7 @@ import {
   formatDateTime,
   formatDuration,
   formatPlural,
+  formatRatio,
   formatRelative,
   formatSigned,
   rankChange,
@@ -34,11 +35,13 @@ import {
 import type {
   ArtistRef,
   CompareResponse,
+  GenresResponse,
   HistoryItem,
   HistoryResponse,
   RepartitionBucket,
   StatsExtras,
   Summary,
+  TasteResponse,
   TimelineResponse,
   TopArtists,
   TopEntry,
@@ -68,6 +71,7 @@ import {
   StatGrid,
 } from '../components/ui'
 import {
+  BarChart,
   ChartCard,
   HourChart,
   MetricToggle,
@@ -76,7 +80,7 @@ import {
   TimelineChart,
   WeekdayChart,
 } from '../components/charts'
-import type { TimelineMetric } from '../components/charts'
+import type { BarDatum, TimelineMetric } from '../components/charts'
 
 const DAY_MS = 86_400_000
 
@@ -85,6 +89,14 @@ const TOP_PAGE = { limit: 5, offset: 0 }
 
 /** Enough recent plays to fill the strip on a wide screen. */
 const RECENT_LIMIT = 12
+
+/**
+ * The top-genres bar chart's fixed height, so the card is the same size
+ * whether it is showing a skeleton, five bars or the empty state — never a
+ * card that grows or shrinks as its query settles. Matches the row-height
+ * arithmetic `Genres.tsx` tunes its own top-genres chart to.
+ */
+const GENRE_CHART_HEIGHT = TOP_PAGE.limit * 30 + 34
 
 export default function Dashboard(): ReactElement {
   const { range, label, timeZone } = useRange()
@@ -200,6 +212,24 @@ export default function Dashboard(): ReactElement {
       api.get<StatsExtras>('/stats/extras', { from: range.from, to: range.to }, signal),
   })
 
+  // The head of the genre ranking, exactly like `topTracks`/`topArtists`
+  // above: the same five-row page, so a card beside them behaves the same way.
+  const genres = useQuery({
+    queryKey: qk.genres(range, TOP_PAGE),
+    queryFn: ({ signal }) =>
+      api.get<GenresResponse>(
+        '/stats/genres',
+        { from: range.from, to: range.to, ...TOP_PAGE },
+        signal,
+      ),
+  })
+
+  const taste = useQuery({
+    queryKey: qk.taste(range),
+    queryFn: ({ signal }) =>
+      api.get<TasteResponse>('/stats/taste', { from: range.from, to: range.to }, signal),
+  })
+
   const buckets = timeline.data?.buckets ?? []
   const interval = timeline.data?.interval ?? 'day'
   const rangeDays = Math.max(
@@ -298,6 +328,26 @@ export default function Dashboard(): ReactElement {
   /** What the tiles can honestly say about the preceding period right now. */
   const comparison: ComparisonState =
     previous === null ? 'none' : compare.isPending ? 'loading' : compare.isError ? 'error' : 'ready'
+
+  // Genre coverage is zero exactly when no listen in range has a resolved
+  // artist yet, which is also exactly when the top-five fetch below is empty —
+  // this is what decides *which* empty state the chart shows, never the chart's
+  // own row count, so a genuinely quiet range and an unenriched one read
+  // differently even though both hand the chart zero rows.
+  const genreCoverage = genres.data?.coverage
+  const noGenres = genres.isSuccess && (genreCoverage?.covered ?? 0) === 0
+  const genreBarData: BarDatum[] = (genres.data?.genres ?? []).map((entry) => ({
+    key: entry.genre,
+    label: entry.genre,
+    value: entry.plays,
+    hint: formatDuration(entry.msPlayed),
+  }))
+
+  // Same shape of gate as `noGenres`: a genuine obscurity of 0 with plays
+  // behind it is "deep cuts", a real reading, and must not be confused with
+  // nothing having been measured at all.
+  const obscurity = taste.data?.obscurity
+  const noObscurity = taste.isSuccess && (obscurity?.covered ?? 0) === 0
 
   return (
     <Shell
@@ -553,6 +603,89 @@ export default function Dashboard(): ReactElement {
         </ChartCard>
       </div>
 
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard
+          title="Top genres"
+          description="Your five most played genres in this range."
+          control={
+            <Link to="/genres" className="text-xs text-ink-muted hover:text-lamp">
+              All genres
+            </Link>
+          }
+        >
+          {genres.isPending ? (
+            <ChartLoading height={GENRE_CHART_HEIGHT} label="Loading top genres" />
+          ) : genres.isError ? (
+            <ErrorState
+              error={genres.error}
+              title="Top genres could not be loaded"
+              onRetry={() => {
+                void genres.refetch()
+              }}
+            />
+          ) : (
+            <BarChart
+              data={genreBarData}
+              label="Top genres by plays"
+              valueName="plays"
+              height={GENRE_CHART_HEIGHT}
+              busy={genres.isFetching}
+              emptyDescription={
+                noGenres
+                  ? 'Not known yet — Encore learns genres from your artists as enrichment catches up.'
+                  : 'Nothing was played in this range yet.'
+              }
+            />
+          )}
+        </ChartCard>
+
+        <Panel
+          title="Obscurity"
+          description="How mainstream your listening is, in this range."
+          padded={false}
+          actions={
+            <Link to="/habits" className="text-xs text-ink-muted hover:text-lamp">
+              Habits
+            </Link>
+          }
+        >
+          {taste.isPending ? (
+            <div className="p-4">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="mt-3 h-9 w-20" />
+              <Skeleton className="mt-3 h-3 w-40" />
+            </div>
+          ) : taste.isError ? (
+            <ErrorState
+              error={taste.error}
+              title="Obscurity could not be loaded"
+              onRetry={() => {
+                void taste.refetch()
+              }}
+            />
+          ) : noObscurity ? (
+            <EmptyState
+              title="Not known yet"
+              description="Obscurity is worked out from your artists' popularity, once enrichment has caught up."
+            />
+          ) : (
+            <Stat
+              label="Obscurity"
+              value={formatCount(obscurity?.value ?? 0)}
+              suffix="of 100"
+              meter={(obscurity?.value ?? 0) / 100}
+              hint={
+                <>
+                  {obscurityBand(obscurity?.value ?? 0)} — known for{' '}
+                  {formatRatio(obscurity?.covered ?? 0, obscurity?.total ?? 0)} of your listening in
+                  this range
+                </>
+              }
+            />
+          )}
+        </Panel>
+      </div>
+
       <Panel
         title="Recently played"
         description="The latest listens in this range"
@@ -736,6 +869,18 @@ function formatYear(value: number | null): string {
 function formatAverage(value: number): string {
   if (!Number.isFinite(value)) return EMPTY
   return value.toFixed(1)
+}
+
+/**
+ * The obscurity score in a word. The score is already Spotify's own artist
+ * popularity, 0-100 and play-weighted, so these bands read off it directly —
+ * there is no fraction to convert first.
+ */
+function obscurityBand(value: number): string {
+  if (value >= 75) return 'chart music'
+  if (value >= 50) return 'broadly popular'
+  if (value >= 25) return 'off the beaten track'
+  return 'deep cuts'
 }
 
 // --- panels ----------------------------------------------------------------
