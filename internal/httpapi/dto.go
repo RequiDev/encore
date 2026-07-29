@@ -943,6 +943,13 @@ type SharedStatsResponse struct {
 	Timeline []TimelineBucket          `json:"timeline"`
 	Hours    []RepartitionBucket       `json:"hours"`
 	Weekdays []RepartitionBucket       `json:"weekdays"`
+
+	// Genres and Taste are aggregate taste, the same data class as the top
+	// lists above them. Playback context is deliberately absent: device and
+	// country say what hardware somebody owns and where they have travelled,
+	// which is not what a share is for.
+	Genres *GenresResponse `json:"genres,omitempty"`
+	Taste  *TasteResponse  `json:"taste,omitempty"`
 }
 
 // --- playlists --------------------------------------------------------------
