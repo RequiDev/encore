@@ -640,18 +640,31 @@ export default function Dashboard(): ReactElement {
               }}
             />
           ) : (
-            <BarChart
-              data={genreBarData}
-              label="Top genres by plays"
-              valueName="plays"
-              height={GENRE_CHART_HEIGHT}
-              busy={genres.isFetching}
-              emptyDescription={
-                noGenres
-                  ? 'Not known yet — Encore learns genres from your artists as enrichment catches up.'
-                  : 'Nothing was played in this range yet.'
-              }
-            />
+            <>
+              <BarChart
+                data={genreBarData}
+                label="Top genres by plays"
+                valueName="plays"
+                height={GENRE_CHART_HEIGHT}
+                busy={genres.isFetching}
+                emptyDescription={
+                  noGenres
+                    ? 'Not known yet — Encore learns genres from your artists as enrichment catches up.'
+                    : 'Nothing was played in this range yet.'
+                }
+              />
+              {/* Coverage in prose, not a tooltip — matches `Genres.tsx`'s own
+                  sentence so the two never disagree about the same number. Held
+                  back exactly when `noGenres` is, since the chart's own empty
+                  state already explains a zero in that case. */}
+              {!noGenres && genreCoverage ? (
+                <p className="px-1 pb-1 text-xs text-ink-faint">
+                  {genreCoverage.covered === genreCoverage.total
+                    ? 'Genres are known for all of your listening in this range.'
+                    : `Genres are known for ${formatRatio(genreCoverage.covered, genreCoverage.total)} of your listening in this range — ${formatCount(genreCoverage.covered)} of ${formatCount(genreCoverage.total)} plays.`}
+                </p>
+              ) : null}
+            </>
           )}
         </ChartCard>
 
