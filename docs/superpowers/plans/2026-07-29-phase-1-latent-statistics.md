@@ -1652,10 +1652,6 @@ func toCoverage(c stats.Coverage) CoverageResponse {
 	return CoverageResponse{Covered: c.Covered, Total: c.Total}
 }
 
-func toRate(v float64, c stats.Coverage) RateResponse {
-	return RateResponse{Value: v, Covered: c.Covered, Total: c.Total}
-}
-
 func toGenres(p stats.GenrePage) GenresResponse {
 	out := GenresResponse{
 		Genres:   make([]GenreEntry, 0, len(p.Genres)),
@@ -1854,6 +1850,15 @@ type PlaybackContextResponse struct {
 	CountryCoverage   CoverageResponse    `json:"countryCoverage"`
 	OfflineRate       RateResponse        `json:"offlineRate"`
 	IncognitoRate     RateResponse        `json:"incognitoRate"`
+}
+
+// toRate pairs a ratio with the coverage it was computed over.
+//
+// It lives here rather than beside toCoverage in the previous task because
+// nothing called it until now, and staticcheck (U1000) rightly refuses an
+// unexported function with no call sites.
+func toRate(v float64, c stats.Coverage) RateResponse {
+	return RateResponse{Value: v, Covered: c.Covered, Total: c.Total}
 }
 
 func toContextSlices(in []stats.ContextSlice) []ContextSliceEntry {
