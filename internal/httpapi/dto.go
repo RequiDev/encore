@@ -505,6 +505,78 @@ type AlbumDetail struct {
 	TopTracks []TopEntry[TrackRef] `json:"topTracks"`
 }
 
+// --- genres ----------------------------------------------------------------
+
+// CoverageResponse is the shape every partial statistic carries.
+//
+// One shape across every endpoint so the client renders it with one component,
+// and so a reader of the JSON never has to work out which denominator a given
+// percentage was taken over.
+type CoverageResponse struct {
+	Covered int64 `json:"covered"`
+	Total   int64 `json:"total"`
+}
+
+// RateResponse is a ratio and the coverage it was computed over.
+//
+// Declared here rather than beside its first caller because it is this
+// endpoint group's coverage shape, generalised: taste and playback-context
+// statistics reuse it once they exist. It carries no reference from this
+// package yet, which is deliberate rather than dead code.
+type RateResponse struct {
+	Value   float64 `json:"value"`
+	Covered int64   `json:"covered"`
+	Total   int64   `json:"total"`
+}
+
+// GenreEntry is one row of the genre ranking.
+type GenreEntry struct {
+	Genre    string `json:"genre"`
+	Plays    int64  `json:"plays"`
+	MsPlayed int64  `json:"msPlayed"`
+}
+
+// GenresResponse is one page of the ranking.
+//
+// Plays across genres sum to more than the range's total plays, because a track
+// counts toward each of its genres. The client says so on the page.
+type GenresResponse struct {
+	Genres   []GenreEntry     `json:"genres"`
+	Total    int64            `json:"total"`
+	Coverage CoverageResponse `json:"coverage"`
+}
+
+// GenreTimelinePoint is one genre in one bucket.
+type GenreTimelinePoint struct {
+	Bucket   time.Time `json:"bucket"`
+	Genre    string    `json:"genre"`
+	Plays    int64     `json:"plays"`
+	MsPlayed int64     `json:"msPlayed"`
+}
+
+// GenreTimelineResponse carries the interval so the client formats the axis
+// without re-deriving it.
+type GenreTimelineResponse struct {
+	Interval string               `json:"interval"`
+	Points   []GenreTimelinePoint `json:"points"`
+}
+
+func toCoverage(c stats.Coverage) CoverageResponse {
+	return CoverageResponse{Covered: c.Covered, Total: c.Total}
+}
+
+func toGenres(p stats.GenrePage) GenresResponse {
+	out := GenresResponse{
+		Genres:   make([]GenreEntry, 0, len(p.Genres)),
+		Total:    p.Total,
+		Coverage: toCoverage(p.Coverage),
+	}
+	for _, g := range p.Genres {
+		out.Genres = append(out.Genres, GenreEntry{Genre: g.Genre, Plays: g.Plays, MsPlayed: g.MsPlayed})
+	}
+	return out
+}
+
 // --- listening history -----------------------------------------------------
 
 // HistoryItem is one row of the raw listening feed.

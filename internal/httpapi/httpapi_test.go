@@ -296,3 +296,18 @@ func errorCodeOf(t *testing.T, rec *httptest.ResponseRecorder) string {
 	}
 	return body.Error.Code
 }
+
+// TestNewStatsRoutesRequireASession keeps the new endpoints inside the same
+// session and CSRF envelope as every other statistic.
+func TestNewStatsRoutesRequireASession(t *testing.T) {
+	ts := newTestServer(t)
+	for _, path := range []string{
+		"/api/stats/genres",
+		"/api/stats/genres/timeline",
+	} {
+		rec := ts.do(httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s = %d, want 401", path, rec.Code)
+		}
+	}
+}
