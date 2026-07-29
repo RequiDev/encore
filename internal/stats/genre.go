@@ -136,16 +136,24 @@ func (s *Service) TopGenres(
 	}
 	limit, offset = clampLimit(limit), clampOffset(offset)
 
-	dirty, err := s.HasDirtyDays(ctx, q, userID, r, tz)
-	if err != nil {
-		return GenrePage{}, err
+	// rollupEligible is checked first because it costs nothing to evaluate: for
+	// the common case of a narrow range it is false, and the dirty-day query,
+	// which can only ever pull the answer back toward the fact table, would not
+	// change that. See top() in top.go for the same gate.
+	rollup := false
+	if rollupEligible(r, loc) {
+		dirty, err := s.HasDirtyDays(ctx, q, userID, r, tz)
+		if err != nil {
+			return GenrePage{}, err
+		}
+		rollup = useRollup(r, loc, dirty)
 	}
 
 	var (
 		sql  = topGenresFactSQL
 		args = []any{store.UUIDArg(userID), r.From.UTC(), r.To.UTC(), limit, offset}
 	)
-	if useRollup(r, loc, dirty) {
+	if rollup {
 		sql = topGenresRollupSQL
 		args = append(args, tzArg(tz))
 	}
