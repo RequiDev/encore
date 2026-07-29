@@ -1,0 +1,196 @@
+//go:build integration
+
+package integration
+
+import (
+	"testing"
+	"time"
+
+	"github.com/RequiDev/encore/internal/domain"
+)
+
+// TestTopGenresCountsEachListenOncePerGenre pins the counting rule: a listen
+// contributes one play to each distinct genre across all of its credited
+// artists, and a genre shared by two credited artists is still one play.
+//
+// From the shared fixture: trk-a plays four times and credits art-x (rock) and
+// art-y (jazz), trk-b twice-over-one play credits art-x, trk-c plays twice
+// crediting art-y, trk-d once crediting art-z.
+//
+//	rock: trk-a x4 + trk-b x1 = 5
+//	jazz: trk-a x4 + trk-c x2 = 6
+//	folk: trk-d x1            = 1
+func TestTopGenresCountsEachListenOncePerGenre(t *testing.T) {
+	f := seedStats(t)
+
+	page, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz, 10, 0)
+	if err != nil {
+		t.Fatalf("top genres: %v", err)
+	}
+
+	want := map[string]int64{"rock": 5, "jazz": 6, "folk": 1}
+	if len(page.Genres) != len(want) {
+		t.Fatalf("got %d genres, want %d: %+v", len(page.Genres), len(want), page.Genres)
+	}
+	for _, g := range page.Genres {
+		if want[g.Genre] != g.Plays {
+			t.Errorf("%s: got %d plays, want %d", g.Genre, g.Plays, want[g.Genre])
+		}
+	}
+	if page.Total != 3 {
+		t.Errorf("total genres = %d, want 3", page.Total)
+	}
+}
+
+// TestTopGenresDeduplicatesASharedGenre is the case the DISTINCT in
+// trackGenreCTE exists for. Retagging art-y as rock means trk-a credits two
+// artists who are both rock; the four plays of it must add four to rock, not
+// eight.
+func TestTopGenresDeduplicatesASharedGenre(t *testing.T) {
+	f := seedStats(t)
+	f.env.Exec(`UPDATE artists SET genres = ARRAY['rock'] WHERE id = 'art-y'`)
+
+	page, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz, 10, 0)
+	if err != nil {
+		t.Fatalf("top genres: %v", err)
+	}
+
+	var rock int64
+	for _, g := range page.Genres {
+		if g.Genre == "rock" {
+			rock = g.Plays
+		}
+	}
+	// trk-a x4 (both artists rock, counted once) + trk-b x1 + trk-c x2 = 7
+	if rock != 7 {
+		t.Errorf("rock = %d plays, want 7 — a genre shared by two credited artists was double counted", rock)
+	}
+}
+
+// TestGenreCoverageExcludesUnenrichedArtists is what stops a fresh instance from
+// rendering an empty chart that looks like a bug. Stripping art-x's genres
+// leaves every listen of trk-b uncovered; trk-a stays covered because art-y
+// still supplies one.
+func TestGenreCoverageExcludesUnenrichedArtists(t *testing.T) {
+	f := seedStats(t)
+	f.env.Exec(`UPDATE artists SET genres = '{}' WHERE id = 'art-x'`)
+
+	page, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz, 10, 0)
+	if err != nil {
+		t.Fatalf("top genres: %v", err)
+	}
+
+	// Eight listens total; the one play of trk-b is the only one with no genred artist.
+	if page.Coverage.Total != 8 {
+		t.Errorf("coverage total = %d, want 8", page.Coverage.Total)
+	}
+	if page.Coverage.Covered != 7 {
+		t.Errorf("coverage covered = %d, want 7", page.Coverage.Covered)
+	}
+}
+
+// TestTopGenresRespectsTheBlacklist checks the fragment did its job. Blacklisting
+// art-x removes every listen of any track crediting it — trk-a and trk-b — so
+// rock disappears entirely and jazz keeps only trk-c's two plays.
+func TestTopGenresRespectsTheBlacklist(t *testing.T) {
+	f := seedStats(t)
+	f.env.Exec(`INSERT INTO user_blacklisted_artists (user_id, artist_id) VALUES ($1, 'art-x')`, f.user.ID)
+
+	page, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz, 10, 0)
+	if err != nil {
+		t.Fatalf("top genres: %v", err)
+	}
+
+	got := map[string]int64{}
+	for _, g := range page.Genres {
+		got[g.Genre] = g.Plays
+	}
+	if _, ok := got["rock"]; ok {
+		t.Error("rock survived blacklisting its only artist")
+	}
+	if got["jazz"] != 2 {
+		t.Errorf("jazz = %d plays, want 2 (trk-c only)", got["jazz"])
+	}
+	if got["folk"] != 1 {
+		t.Errorf("folk = %d plays, want 1", got["folk"])
+	}
+}
+
+// TestTopGenresRollupMatchesTheFactTable is the test that makes the rollup path
+// safe to have at all. Two statements answering one question must agree, or a
+// wide range silently returns different numbers from a narrow one.
+//
+// The range is deliberately wide and aligned to local midnight so useRollup says
+// yes; refreshing the rollup first is what makes the comparison meaningful,
+// because a dirty rollup would send both calls down the fact-table path and the
+// test would pass without ever exercising the rollup SQL.
+func TestTopGenresRollupMatchesTheFactTable(t *testing.T) {
+	f := seedStats(t)
+
+	// Drain the dirty queue so the rollup is current and eligible.
+	if err := f.svc.RefreshDirtyDays(f.env.Ctx(), 1000); err != nil {
+		t.Fatalf("refresh rollups: %v", err)
+	}
+
+	// RollupMinRange is 90 days, so a shorter range would take the fact-table
+	// path in both calls and the comparison would prove nothing. Six months,
+	// starting at a local midnight, clears it.
+	wide := f.fullRange()
+	wide.To = wide.From.AddDate(0, 6, 0)
+
+	dirty, err := f.svc.HasDirtyDays(f.env.Ctx(), f.env.Store.DB(), f.user.ID, wide, f.tz)
+	if err != nil {
+		t.Fatalf("dirty check: %v", err)
+	}
+	if dirty {
+		t.Fatal("rollups are still dirty after a refresh; this test would not exercise the rollup path")
+	}
+
+	viaRollup, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, wide, f.tz, 50, 0)
+	if err != nil {
+		t.Fatalf("top genres via rollup: %v", err)
+	}
+
+	// Force the fact-table path by dirtying a day inside the range.
+	f.env.Exec(`INSERT INTO rollup_dirty_days (user_id, day) VALUES ($1, DATE '2024-01-01')
+	            ON CONFLICT DO NOTHING`, f.user.ID)
+	viaFacts, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, wide, f.tz, 50, 0)
+	if err != nil {
+		t.Fatalf("top genres via facts: %v", err)
+	}
+
+	if viaRollup.Total != viaFacts.Total {
+		t.Fatalf("totals differ: rollup %d, facts %d", viaRollup.Total, viaFacts.Total)
+	}
+	if len(viaRollup.Genres) != len(viaFacts.Genres) {
+		t.Fatalf("row counts differ: rollup %d, facts %d", len(viaRollup.Genres), len(viaFacts.Genres))
+	}
+	for i := range viaRollup.Genres {
+		if viaRollup.Genres[i] != viaFacts.Genres[i] {
+			t.Errorf("row %d differs: rollup %+v, facts %+v", i, viaRollup.Genres[i], viaFacts.Genres[i])
+		}
+	}
+}
+
+// TestTopGenresEmptyRangeIsNotAnError guards the state every new instance is in:
+// a valid window that simply contains no listens.
+//
+// Note it is NOT a zero-width range. scope() rejects from == to as
+// domain.ErrValidation by deliberate design, so a zero-width range can only ever
+// error and would be testing the wrong thing.
+func TestTopGenresEmptyRangeIsNotAnError(t *testing.T) {
+	f := seedStats(t)
+	from := time.Date(2025, time.January, 1, 0, 0, 0, 0, f.loc)
+	empty := domain.TimeRange{From: from, To: from.AddDate(0, 0, 10)}
+
+	page, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, empty, f.tz, 10, 0)
+	if err != nil {
+		t.Fatalf("top genres over an empty range: %v", err)
+	}
+	if len(page.Genres) != 0 || page.Total != 0 {
+		t.Errorf("expected no genres, got %+v", page)
+	}
+	if page.Coverage.Covered != 0 || page.Coverage.Total != 0 {
+		t.Errorf("expected zero coverage, got %+v", page.Coverage)
+	}
+}
