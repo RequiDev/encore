@@ -167,9 +167,16 @@ export default function Genres(): ReactElement {
       ),
   })
 
+  const coverage = genres.data?.coverage
+  const noGenres = genres.isSuccess && (coverage?.covered ?? 0) === 0
+
   // The full ranking, paginated on its own — independent of the head query
-  // above, so paging it can never change what the charts are plotting.
+  // above, so paging it can never change what the charts are plotting. Held
+  // back once the head query has confirmed there is nothing to rank, so a
+  // zero-coverage page load — the EmptyState case — does not also fire a
+  // second request whose result is discarded behind it.
   const ranking = useQuery({
+    enabled: !noGenres,
     queryKey: qk.genres(range, { limit: PAGE_SIZE, offset }),
     queryFn: ({ signal }) =>
       api.get<GenresResponse>(
@@ -178,9 +185,6 @@ export default function Genres(): ReactElement {
         signal,
       ),
   })
-
-  const coverage = genres.data?.coverage
-  const noGenres = genres.isSuccess && (coverage?.covered ?? 0) === 0
 
   const status = genres.isPending
     ? `Loading genres for ${label.toLowerCase()}.`
