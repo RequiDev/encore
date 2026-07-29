@@ -78,6 +78,9 @@ package integration
 
 import (
 	"testing"
+	"time"
+
+	"github.com/RequiDev/encore/internal/domain"
 )
 
 // TestTopGenresCountsEachListenOncePerGenre pins the counting rule: a listen
@@ -243,11 +246,16 @@ func TestTopGenresRollupMatchesTheFactTable(t *testing.T) {
 	}
 }
 
-// TestTopGenresEmptyRangeIsNotAnError guards the state every new instance is in.
+// TestTopGenresEmptyRangeIsNotAnError guards the state every new instance is in:
+// a valid window that simply contains no listens.
+//
+// Note it is NOT a zero-width range. scope() rejects from == to as
+// domain.ErrValidation by deliberate design, so a zero-width range can only ever
+// error and would be testing the wrong thing.
 func TestTopGenresEmptyRangeIsNotAnError(t *testing.T) {
 	f := seedStats(t)
-	empty := f.fullRange()
-	empty.From = empty.To
+	from := time.Date(2025, time.January, 1, 0, 0, 0, 0, f.loc)
+	empty := domain.TimeRange{From: from, To: from.AddDate(0, 0, 10)}
 
 	page, err := f.svc.TopGenres(f.env.Ctx(), f.env.Store.DB(), f.user.ID, empty, f.tz, 10, 0)
 	if err != nil {
@@ -586,7 +594,7 @@ func TestGenreTimelineWithNoGenresIsEmpty(t *testing.T) {
 }
 ```
 
-Add `"github.com/RequiDev/encore/internal/domain"` to that file's imports.
+`"time"` and the `domain` import are already present from Task 1.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -817,11 +825,16 @@ func TestTasteReleaseLag(t *testing.T) {
 	}
 }
 
-// TestTasteEmptyRangeIsNotAnError guards the same state as the genre case.
+// TestTasteEmptyRangeIsNotAnError guards the same state as the genre case: a
+// valid window that simply contains no listens.
+//
+// Note it is NOT a zero-width range. scope() rejects from == to as
+// domain.ErrValidation by deliberate design, so a zero-width range can only
+// ever error and would be testing the wrong thing.
 func TestTasteEmptyRangeIsNotAnError(t *testing.T) {
 	f := seedStats(t)
-	empty := f.fullRange()
-	empty.From = empty.To
+	from := time.Date(2025, time.January, 1, 0, 0, 0, 0, f.loc)
+	empty := domain.TimeRange{From: from, To: from.AddDate(0, 0, 10)}
 
 	got, err := f.svc.Taste(f.env.Ctx(), f.env.Store.DB(), f.user.ID, empty, f.tz)
 	if err != nil {
