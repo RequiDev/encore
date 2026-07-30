@@ -708,7 +708,7 @@ func seedAlbum(t *testing.T, env *harness.Env, id string) {
 }
 
 func TestAlbumTrackStateIsEmptyBeforeAnyAttempt(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	seedAlbum(t, env, "album000000000000000001")
 
 	st, err := env.Catalog.AlbumTrackState(context.Background(), env.Store.DB(), "album000000000000000001")
@@ -724,7 +724,7 @@ func TestAlbumTrackStateIsEmptyBeforeAnyAttempt(t *testing.T) {
 }
 
 func TestClaimAlbumTrackFetchIsExclusive(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	seedAlbum(t, env, "album000000000000000001")
 
@@ -751,7 +751,7 @@ func TestClaimAlbumTrackFetchIsExclusive(t *testing.T) {
 }
 
 func TestClaimAlbumTrackFetchReclaimsAnExpiredLease(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	seedAlbum(t, env, "album000000000000000001")
 
@@ -782,7 +782,7 @@ func TestClaimAlbumTrackFetchReclaimsAnExpiredLease(t *testing.T) {
 }
 
 func TestReplaceAlbumTracksDeletesWhatIsAbsent(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	seedAlbum(t, env, "album000000000000000001")
 
@@ -821,7 +821,7 @@ func TestReplaceAlbumTracksDeletesWhatIsAbsent(t *testing.T) {
 }
 
 func TestAlbumTracksComeBackInDiscAndTrackOrder(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	seedAlbum(t, env, "album000000000000000001")
 
@@ -849,7 +849,7 @@ func TestAlbumTracksComeBackInDiscAndTrackOrder(t *testing.T) {
 }
 
 func TestFailAlbumTrackFetchKeepsTheOlderListing(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	seedAlbum(t, env, "album000000000000000001")
 
@@ -891,7 +891,7 @@ func TestFailAlbumTrackFetchKeepsTheOlderListing(t *testing.T) {
 }
 
 func TestAlbumTracksCascadeWithTheAlbum(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	seedAlbum(t, env, "album000000000000000001")
 	if err := env.Catalog.ReplaceAlbumTracks(ctx, env.Store.DB(), "album000000000000000001",
@@ -2478,7 +2478,7 @@ Append to `test/integration/completion_test.go`:
 // question, and a page that shows "9 of 12 heard" beside four tracks it calls
 // unheard is worse than one that shows neither.
 func TestAlbumHeardTracksMatchesTheCompletionNumerator(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	user := harness.SeedUser(t, env)
 
@@ -2507,7 +2507,7 @@ func TestAlbumHeardTracksMatchesTheCompletionNumerator(t *testing.T) {
 // here too. Without it the album page would name tracks by an artist the
 // listener has told Encore to forget.
 func TestAlbumHeardTracksRespectsTheBlacklist(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	user := harness.SeedUser(t, env)
 	seedAlbumWithPlays(t, env, user.ID, "album000000000000000001", 12, 9)
@@ -2537,7 +2537,7 @@ func TestAlbumHeardTracksRespectsTheBlacklist(t *testing.T) {
 // five years ago is not a track you have never played, whatever the range
 // picker says.
 func TestAlbumHeardTracksIgnoresTheRange(t *testing.T) {
-	env := harness.NewEnv(t)
+	env := harness.New(t)
 	ctx := context.Background()
 	user := harness.SeedUser(t, env)
 	// Every play is in 2019; nothing is within any recent range.
