@@ -131,6 +131,7 @@ All accept `from` and `to`.
 | `GET` | `/api/stats/taste` | `{ "obscurity": <rate>, "releaseLag": <rate> }`. Obscurity is the play-weighted mean of Spotify's own artist popularity, 0–100, where **higher means more mainstream**. `releaseLag` is the play-weighted mean gap, in years, between an album's release and the play. |
 | `GET` | `/api/stats/context` | How the range was listened to, not what. `endReasons` (why a track stopped), `skipRate` (`reason_end = 'fwdbtn'` — going back is deliberately not counted as a skip), `shuffleRate`, `platforms`, `countries`, `offlineRate`, `incognitoRate`. |
 | `GET` | `/api/stats/library` | `?limit=`, default 10. The last enumeration's snapshot of the account's saved and followed Spotify library, crossed against what has actually been played. See "Library" below — its three lists are deliberately scoped three different ways, and the endpoint is a snapshot, not a live query. |
+| `GET` | `/api/stats/top-diff` | `?kind=track\|artist&range=short_term\|medium_term\|long_term`, both required. Spotify's own top ranking against Encore's, for the same window. See "Top diff" below — it takes no `from`/`to` at all. |
 
 Genre, taste and playback-context statistics are partial by construction — genres exist only where
 enrichment has resolved the credited artist, and the playback-context columns exist only on rows an
@@ -234,6 +235,64 @@ follow's `lastPlayedAt` is null when the artist has never been played at all.
 
 The blacklist applies here too: a blacklisted artist never appears in `dormantFollows`, and none of
 its plays count toward whether a followed artist looks dormant or a saved track looks played.
+
+### Top diff
+
+`GET /api/stats/top-diff?kind=track|artist&range=short_term|medium_term|long_term` compares
+Spotify's own top ranking of the account's tracks or artists against Encore's ranking of the same
+entities, over the matching window. Both parameters are required and are validated against these
+exact sets — anything else, including an omitted one, is `400`.
+
+**Spotify's ranking is opaque.** Spotify calls it "calculated affinity"; it is not a play count, its
+time ranges are approximate, and it is computed over the account's whole Spotify listening history,
+including everywhere else the account has ever been used and everything before this instance
+existed. Disagreement between the two columns is the expected, ordinary case, not a bug in either
+side.
+
+`range` addresses Spotify's own rolling window, not the `from`/`to` pair every other statistic
+takes — this endpoint accepts no range of its own at all. Encore's side is computed over the
+matching approximate window (`short_term` ~ the last 4 weeks, `medium_term` ~ 6 months, `long_term`
+~ 12 months; see `topDiffWindow` in `internal/stats/topdiff.go`), because comparing Spotify's ranking
+against some other window the caller happened to pick would make the two sides answers to different
+questions rather than a real disagreement about the same one.
+
+Reading it needs the `user-top-read` scope; an account that connected before Encore asked for it
+answers with that scope present in `missingScopes` (see `GET /api/me`), and the client is expected to
+offer relink rather than render an empty comparison.
+
+**This reads a snapshot, not a live query.** The same daily background worker that enumerates the
+library (`ENCORE_LIBRARY_SYNC_INTERVAL`, default `24h`; see
+[`docs/configuration.md`](configuration.md)) also captures Spotify's own top artists and tracks
+across all three time ranges, and this endpoint only ever reads that capture back. `capturedAt` is
+nullable, and **null means "never captured", not "captured and empty"** — every `(kind, range)` set
+is `null` until that worker's first successful run for it, including every account that existed
+before this feature shipped. A client must never substitute a zero timestamp for it. Once captured,
+the snapshot is up to a day stale by design, the same as the library.
+
+```json
+{
+  "capturedAt": "2026-07-29T04:00:00Z",
+  "timeRange": "short_term",
+  "entries": [
+    { "entity": { "id": "…", "name": "…" }, "spotifyRank": 2, "encoreRank": 1, "plays": 41 },
+    { "entity": { "id": "…", "name": "…" }, "spotifyRank": 1, "encoreRank": null, "plays": 0 },
+    { "entity": { "id": "…", "name": "…" }, "spotifyRank": null, "encoreRank": 2, "plays": 12 }
+  ]
+}
+```
+
+Each list entry wraps its resolved entity under an `entity` key, the same convention `TopEntry`,
+`AffinityEntry` and the library lists above all use. `spotifyRank` and `encoreRank` are **null when
+the entity is absent from that side, never zero** — zero would read as tied for last place rather
+than missing, and an entity present on only one side is precisely the disagreement this statistic
+exists to surface. `plays` is Encore's own play count for the window and is meaningless when
+`encoreRank` is null: Spotify's side of this comparison carries no play count at all, only a rank.
+
+A blacklisted artist — or, for `kind=track`, a track credited to one — is removed from **both**
+sides before ranking, with the surviving ranks on each side closed up to fill the gap, rather than
+kept at their original position with a hole where the blacklisted entry used to be. The two lists
+this endpoint compares are therefore exhaustive only *after* the blacklist is applied, the same as
+every other ranked list in this API.
 
 ## Entities
 
