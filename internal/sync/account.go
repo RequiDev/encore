@@ -294,6 +294,20 @@ func unauthorised(err error) bool {
 
 // forbidden reports a 403: the token is valid but does not carry the scope the
 // endpoint needs.
+//
+// What that means depends entirely on which endpoint asked, and the two cases
+// must not be conflated.
+//
+// For recently-played, above, a 403 means the grant lost user-read-recently-played
+// — a scope Encore cannot function without — so the account is parked.
+//
+// For anything reading the library, follows, top items or playlists, a 403 means
+// only that the listener did not grant an optional read scope, which is the
+// ordinary state of every account connected before Encore began asking for them.
+// Those callers must NOT reach markNeedsReauth: doing so would stop ingesting an
+// account whose listening history still reads perfectly. They must not retry
+// either — a scope failure spends quota to fail identically. They mark their own
+// feature unavailable and let /api/me's missingScopes surface the prompt.
 func forbidden(err error) bool {
 	apiErr, ok := spotify.AsAPIError(err)
 	return ok && apiErr.IsForbidden()

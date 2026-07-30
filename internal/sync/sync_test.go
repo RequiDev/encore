@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"testing"
 	"time"
 
@@ -379,6 +380,95 @@ func TestErrorClassification(t *testing.T) {
 				t.Errorf("forbidden = %v, want %v", got, tc.forbade)
 			}
 		})
+	}
+}
+
+// reachesMarkNeedsReauth runs fn and reports whether it reached a real write
+// through markNeedsReauth (or its sibling reauth check in accessToken).
+//
+// testDeps() deliberately does not back its repositories with a database —
+// its own comment says the repositories are never called by this file's
+// tests — so a write through Credentials.MarkNeedsReauth, or through
+// Credentials.UpdateTokens on the token-refresh success path, cannot
+// complete here: Store.DB() resolves to a nil connection pool, and pgx
+// panics reaching for it. Faking a pool or repository to avoid that would be
+// a new harness, which this file does not have and this task does not add;
+// the full consequence — a row updated, SyncUser returning ErrNeedsReauth —
+// is exercised with a real database by test/integration/sync_test.go, which
+// already covers the sibling refresh-token-invalid-grant case that way.
+//
+// That panic is this helper's evidence, not its bug: in this harness, it is
+// the only observable proof that execution actually reached the branch that
+// parks an account, rather than the generic "fetch recently played: %w"
+// every other error gets. If a future change loosened the switch so a 403 (or
+// a 401 with nothing to refresh) no longer reached that branch, fn would
+// return normally, this helper would see no panic, and the calling test
+// would fail with a clear message instead of silently passing.
+func reachesMarkNeedsReauth(t *testing.T, fn func()) (reached bool) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if _, ok := r.(runtime.Error); !ok {
+			panic(r) // not the database-shaped panic this helper exists to catch
+		}
+		reached = true
+	}()
+	fn()
+	return false
+}
+
+// TestRecentlyPlayedForbiddenParksTheAccount pins behaviour that looks wrong
+// and is right.
+//
+// A 403 from recently-played is not "an optional feature was not granted" —
+// it is the one scope Encore cannot work without having gone away. Parking
+// the account is correct; polling it into the rate limit every minute would
+// not be.
+//
+// The rule for the scopes added in this branch is the opposite, and it
+// belongs to the endpoints that use them, not here: see the comment on
+// forbidden in account.go.
+//
+// A 403 never enters fetch's retry branch — that is only for a 401 — so this
+// exercises the switch's case at account.go:156-162 directly. See
+// reachesMarkNeedsReauth for why a panic, not a returned error, is this
+// test's evidence.
+func TestRecentlyPlayedForbiddenParksTheAccount(t *testing.T) {
+	p := testPoller(t, config.Sync{})
+	p.dep.Spotify = &fakeSpotify{err: &spotify.APIError{StatusCode: http.StatusForbidden}}
+
+	reached := reachesMarkNeedsReauth(t, func() {
+		_, _ = p.fetch(context.Background(), uuid.New(), domain.SpotifyCredentials{}, "token", now.Add(-time.Hour))
+	})
+	if !reached {
+		t.Fatal("a 403 from recently-played must reach markNeedsReauth, not the generic fetch-error path")
+	}
+}
+
+// TestRecentlyPlayedUnauthorizedParksTheAccount pins the 401 half of the same
+// rule: a token that recently-played rejects outright, with no way to refresh
+// it, must park the account rather than be treated as an ordinary failure or
+// retried.
+//
+// This does not exercise fetch's own retry-then-switch arm for a 401 — that
+// arm only fires after a *successful* forced refresh, and that success path
+// unconditionally calls Credentials.UpdateTokens, a second database
+// dependency testDeps() cannot back either (see reachesMarkNeedsReauth). With
+// no refresh token stored, the same fetch call instead reaches accessToken's
+// own check at account.go:179-182, which is the only place a 401 can lead in
+// this harness — and still the same conclusion: park, do not retry.
+func TestRecentlyPlayedUnauthorizedParksTheAccount(t *testing.T) {
+	p := testPoller(t, config.Sync{})
+	p.dep.Spotify = &fakeSpotify{err: &spotify.APIError{StatusCode: http.StatusUnauthorized}}
+
+	reached := reachesMarkNeedsReauth(t, func() {
+		_, _ = p.fetch(context.Background(), uuid.New(), domain.SpotifyCredentials{}, "token", now.Add(-time.Hour))
+	})
+	if !reached {
+		t.Fatal("a 401 with no refresh token must reach markNeedsReauth, not loop or fail generically")
 	}
 }
 

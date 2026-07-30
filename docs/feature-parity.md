@@ -89,7 +89,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Artist blacklist | **Implemented** | Excluded from every statistic through one shared SQL fragment. |
 | Affinity / comparison between two users | **Implemented** | Shared artists, albums and tracks plus a cosine similarity score. |
 | Catalogue search | **Implemented** | Artists, albums and tracks. |
-| Playlist creation from statistics | **Implemented** | Four modes: most played, a minimum play count, first-heard-in-period, and forgotten favourites — each over any range, ranked by plays or by listening time. Broader than the reference. Every definition can be previewed first — the exact tracks, ranked, without touching Spotify and without the write scope, which is what lets somebody decide whether to grant it. The scope is requested only when a playlist is actually created, so an account that never makes one keeps a read-only grant. |
+| Playlist creation from statistics | **Implemented** | Four modes: most played, a minimum play count, first-heard-in-period, and forgotten favourites — each over any range, ranked by plays or by listening time. Broader than the reference. Every definition can be previewed first — the exact tracks, ranked, without touching Spotify and without the write scope, which is what lets somebody decide whether to grant it. The scope is requested only when a playlist is actually created, so an account that never makes one keeps a grant confined to the eight read scopes requested at sign-in: `user-read-recently-played`, `user-read-private`, `user-read-email`, `user-top-read`, `user-library-read`, `user-follow-read`, `playlist-read-private` and `user-read-playback-state`. |
 | Play button / Spotify remote control | **Deferred** | Needs `user-modify-playback-state` and an active device; same read-only reasoning. |
 | Genre statistics | **Implemented** | Top genres, genre timeline and an obscurity score, from `artists.genres` and `artists.popularity`. Not in the reference project. Every figure reports what share of the range's listening it could see, because genres exist only where enrichment has resolved the artist. |
 | Playback-context statistics | **Implemented** | Skip rate, shuffle share, how tracks ended, platform and country. Not in the reference project. Only extended-export rows carry these columns, so each figure reports its own denominator. |
@@ -143,9 +143,14 @@ Encore's target is practical parity with the user-facing capabilities of
 4. **No Spotify call during ingestion, at all.** The requirement that an API outage cannot lose a
    listening record is only satisfiable this way.
 5. **Whole-archive upload.** Removes the most common import support burden.
-6. **Read-only Spotify scopes by default.** The one write scope, `playlist-modify-private`, is asked
-   for only when somebody creates a playlist, so an account that never does keeps a grant that
-   cannot alter anything even if the instance is compromised. Playback control is still declined.
+6. **Read scopes at sign-in, write scopes at the point of use.** Encore asks for
+   eight read scopes when somebody signs in, and for a write scope only at the
+   moment they use the feature that needs it. The narrower claim is the one that
+   matters and it is unchanged: **Encore never holds a grant that can modify a
+   listener's Spotify account unless they have used a feature that needs it.**
+   `playlist-modify-private` is requested only when a playlist is created; an
+   account that never creates one holds a grant that cannot alter anything, even
+   if the instance is compromised. Playback control is still declined outright.
 7. **Own visual design.** Not required to match, and accessibility and dark mode are first-class.
 
 ## Known gaps

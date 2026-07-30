@@ -92,6 +92,12 @@ type SpotifyConnection struct {
 	LastSyncAt    *string  `json:"lastSyncAt"`
 	LastSyncError string   `json:"lastSyncError"`
 	Scopes        []string `json:"scopes"`
+	// MissingScopes is what this account granted less than Encore now asks for.
+	//
+	// Computed on the server against config.DefaultScopes() rather than compared
+	// in the client, because two copies of the required list would drift and the
+	// TypeScript one would drift silently. Empty means the grant is current.
+	MissingScopes []string `json:"missingScopes"`
 }
 
 // InstanceInfo is what the client needs to know about the deployment itself.

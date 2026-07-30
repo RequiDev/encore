@@ -43,9 +43,12 @@ Encore is not affiliated with, endorsed by, or sponsored by Spotify AB.
 
 "Spotify" is a trademark of Spotify AB. Encore uses the Spotify Web API under the
 [Spotify Developer Terms](https://developer.spotify.com/terms) and requires each operator to register
-their own Spotify application. Encore requests only read scopes
-(`user-read-recently-played`, `user-read-private`, `user-read-email`) and never modifies a listener's
-Spotify account, library, or playlists.
+their own Spotify application. Encore requests eight read scopes at sign-in
+(`user-read-recently-played`, `user-read-private`, `user-read-email`, `user-top-read`,
+`user-library-read`, `user-follow-read`, `playlist-read-private`, `user-read-playback-state`) and never
+holds a grant that can modify a listener's Spotify account unless they have used a feature that needs
+it. Creating a playlist is the only such feature; it asks for its own write scope separately, at the
+moment it is used, and Encore never asks for permission to control playback.
 
 Album art and artist images are served as URLs from Spotify's own CDN and are not copied or cached by
 Encore.
