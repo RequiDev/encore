@@ -60,6 +60,11 @@ SELECT
 // as an album with no tracks heard would drag the figure down for a reason that
 // has nothing to do with listening.
 //
+// "Heard in full" is heard >= total rather than heard == total: heard counts
+// tracks currently linked to the album, so if enrichment's stored total ever
+// drifts below the live catalogue, "=" would leave the album permanently
+// incomplete even after everything attributable to it had been heard.
+//
 // Parameters are $1 user, $2 from, $3 to.
 var completedAlbumsSQL = fmt.Sprintf(`
 WITH played AS (

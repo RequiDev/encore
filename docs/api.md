@@ -167,7 +167,7 @@ played inside `from`/`to`, how many were heard in full.
 ```
 
 The two are expected to disagree. A listener who finished an album years before the selected range
-still reports `completion` as complete (`known: true`, `heard` equal to `total`), while
+still reports `completion` as complete (`known: true`, `heard` at least `total`), while
 `albumsCompleted` only credits that album if the plays that completed it fall inside the range.
 
 `known` is false when the album's `total_tracks` is still 0 — enrichment has not resolved the track
