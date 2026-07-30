@@ -3,12 +3,19 @@ package catalog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/postgres"
 	"github.com/RequiDev/encore/internal/store"
 )
+
+// maxFailureReasonLen bounds what FailAlbumTrackFetch stores in last_error.
+// The column is unbounded text, but a driver error carrying a whole HTTP
+// response body has no business being replayed to an operator reading the
+// table, matching accounts.maxSyncErrorLen's reasoning for the same figure.
+const maxFailureReasonLen = 500
 
 // The three states of one album's listing. See
 // migrations/00013_album_tracks.sql for why the outcome lives in its own table
@@ -173,6 +180,13 @@ func (r *Repo) ClaimAlbumTrackFetch(
 // also the caller's job to run this and MarkAlbumTracksFetched inside the same
 // Store.InTx — see the comment on that function.
 //
+// An empty listing is refused before this statement ever runs — see
+// ReplaceAlbumTracks — because track_id <> ALL('{}') is vacuously true and
+// would otherwise delete every row an album has, which is indistinguishable
+// on disk from "Spotify says this album has no tracks", a claim
+// migrations/00013_album_tracks.sql says has no representation and must be
+// recorded as a failure instead.
+//
 // Parameters are $1 album, $2..$5 the parallel arrays.
 const replaceAlbumTracksSQL = `
 WITH input AS (
@@ -193,10 +207,22 @@ ON CONFLICT (album_id, track_id) DO UPDATE SET
     track_number = EXCLUDED.track_number`
 
 // ReplaceAlbumTracks makes items the album's complete listing.
+//
+// An empty (or all-blank-id) items is refused rather than stored: this is the
+// one call that can make album_tracks disappear, and "Spotify listed zero
+// tracks for this album" is not a state migrations/00013_album_tracks.sql
+// allows — it treats a 200 with no items the same as any other failed read.
+// A caller that reached this with an empty listing should have called
+// FailAlbumTrackFetch instead; refusing here means it cannot get that wrong
+// by accident, even for a listing that was genuinely truncated to nothing.
 func (r *Repo) ReplaceAlbumTracks(
 	ctx context.Context, q store.Querier, albumID string, items []AlbumTrack,
 ) error {
 	ids, names, discs, numbers := albumTrackRows(items)
+	if len(ids) == 0 {
+		return fmt.Errorf("replace album tracks: %w: refusing to store an empty listing for %q",
+			domain.ErrValidation, albumID)
+	}
 	if _, err := q.Exec(ctx, replaceAlbumTracksSQL, albumID, ids, names, discs, numbers); err != nil {
 		return postgres.Classify("replace album tracks", err)
 	}
@@ -225,13 +251,18 @@ func albumTrackRows(items []AlbumTrack) (ids, names []string, discs, numbers []i
 }
 
 // markAlbumTracksFetchedSQL records a success. It clears last_error so a stale
-// message cannot be read beside a listing that is now current.
+// message cannot be read beside a listing that is now current, and resets
+// attempts to 1: migrations/00013_album_tracks.sql names attempts as what
+// drives the retry backoff after a failure, and a healthy album that once
+// failed five times before succeeding must not have the next transient error
+// backed off as though it were a sixth.
 const markAlbumTracksFetchedSQL = `
 INSERT INTO album_track_fetches (album_id, status, fetched_at, attempted_at, attempts, last_error)
 VALUES ($1, 'ok', $2, $2, 1, '')
 ON CONFLICT (album_id) DO UPDATE SET
     status     = 'ok',
     fetched_at = $2,
+    attempts   = 1,
     last_error = ''`
 
 // MarkAlbumTracksFetched records that the listing now stored is complete.
@@ -270,9 +301,13 @@ ON CONFLICT (album_id) DO UPDATE SET
 func (r *Repo) FailAlbumTrackFetch(
 	ctx context.Context, q store.Querier, albumID string, at time.Time, reason string,
 ) error {
-	if len(reason) > 500 {
-		reason = reason[:500]
-	}
+	// store.Truncate cuts on a rune boundary. A byte offset could slice a
+	// multi-byte rune in half and hand Postgres bytes it rejects outright,
+	// which would fail the very write meant to record that the fetch failed —
+	// the row stays 'fetching' from the claim, the lease eventually expires,
+	// a new claim wins, the same fetch fails the same way, and the write is
+	// rejected again: a permanent strand disguised as a retry loop.
+	reason = store.Truncate(reason, maxFailureReasonLen)
 	if _, err := q.Exec(ctx, failAlbumTrackFetchSQL, albumID, at.UTC(), reason); err != nil {
 		return postgres.Classify("fail album track fetch", err)
 	}
