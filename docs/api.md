@@ -129,14 +129,16 @@ All accept `from` and `to`.
 | `GET` | `/api/stats/genres` | `?limit=&offset=`. Ranked genres of the artists behind the range's listening, with each genre's `plays` and `msPlayed`. Genre plays sum to more than the range's total plays, because a track counts toward every genre of every credited artist. Carries `coverage`: how many of the range's listens resolved to at least one genred artist. |
 | `GET` | `/api/stats/genres/timeline` | `?interval=&genre=`, with `genre` **repeated** (`?genre=rock&genre=jazz`), never comma-joined. Buckets the named genres across the range — one point per bucket per genre, zeroes included. Omitting `genre` charts the range's current top eight; at most **eight** genres may be requested in one call, matching what a stacked area chart can still show as distinct series. |
 | `GET` | `/api/stats/taste` | `{ "obscurity": <rate>, "releaseLag": <rate> }`. Obscurity is the play-weighted mean of Spotify's own artist popularity, 0–100, where **higher means more mainstream**. `releaseLag` is the play-weighted mean gap, in years, between an album's release and the play. |
-| `GET` | `/api/stats/context` | How the range was listened to, not what. `endReasons` (why a track stopped), `skipRate` (`reason_end = 'fwdbtn'` — going back is deliberately not counted as a skip), `shuffleRate`, `platforms`, `countries`, `offlineRate`, `incognitoRate`. |
+| `GET` | `/api/stats/context` | How the range was listened to, not what. `endReasons` (why a track stopped), `skipRate` (`reason_end = 'fwdbtn'` — going back is deliberately not counted as a skip), `shuffleRate`, `platforms`, `countries`, `offlineRate`, `incognitoRate`, and `playlists`/`playlistCoverage` — what the range was listened **from**. See "Playback context: what you were playing from" below. |
 | `GET` | `/api/stats/library` | `?limit=`, default 10. The last enumeration's snapshot of the account's saved and followed Spotify library, crossed against what has actually been played. See "Library" below — its three lists are deliberately scoped three different ways, and the endpoint is a snapshot, not a live query. |
 | `GET` | `/api/stats/top-diff` | `?kind=track\|artist&range=short_term\|medium_term\|long_term`, both required. Spotify's own top ranking against Encore's, for the same window. See "Top diff" below — it takes no `from`/`to` at all. |
 
 Genre, taste and playback-context statistics are partial by construction — genres exist only where
 enrichment has resolved the credited artist, and the playback-context columns exist only on rows an
-extended-history import wrote. Every figure above therefore ships its own denominator, in one of two
-shapes:
+extended-history import wrote. `playlists`/`playlistCoverage` is the one figure on this whole page
+with the **reversed** lineage: it exists only on rows Encore's own live sync wrote, and no import of
+either format ever carries it — see "Playback context: what you were playing from" below. Every
+figure above therefore ships its own denominator, in one of two shapes:
 
 ```json
 { "covered": 812, "total": 900 }
@@ -177,6 +179,54 @@ count yet, not that the album has no tracks. A client renders "track count not k
 than a ratio or `0%` in that case, and `albumsCompleted` excludes such albums from both `complete`
 and `albums` for the same reason: crediting or penalising a listener for a number Spotify has not
 supplied yet would not describe their listening.
+
+### Playback context: what you were playing from
+
+`playlists` and `playlistCoverage`, part of `/api/stats/context`'s payload, answer what the range
+was listened **from** — a playlist, an album, an artist, or "collection" (Spotify's own encoding
+for Liked Songs) — as opposed to everything else on that endpoint, which answers *how*.
+
+```json
+{
+  "playlists": [
+    { "contextType": "playlist", "contextId": "37i9dQZF1E39…", "name": "Evening commute", "plays": 41 },
+    { "contextType": "collection", "contextId": "", "name": "", "plays": 18 },
+    { "contextType": "playlist", "contextId": "1a2b3c…", "name": "", "plays": 3 }
+  ],
+  "playlistCoverage": { "covered": 62, "total": 900 }
+}
+```
+
+**This carries the narrowest coverage of anything this endpoint returns, and for a different reason
+than the other six figures.** `endReasons`, the two rates, `platforms` and `countries` are partial
+because an extended-history import may omit an individual column; `playlists` is partial because
+**`context_type` and `context_id` are written only by Encore's own live sync of the recently-played
+feed, and no Spotify export — account-data or extended, of any vintage — ever records what a play
+came from at all.** A fresh instance with nothing synced live yet reports `playlistCoverage` as
+`{ "covered": 0, "total": <n> }`; an instance built mostly from an import reports a small, honest
+slice that grows only as live sync accumulates more history alongside the import. This is expected,
+not a bug to chase, and the single most common question this feature will raise: **imported history
+can never contribute to this statistic, no matter which export format or how much of it there is.**
+
+Each entry's `name` is resolved against the listener's own enumerated playlists
+(`user_playlists`, populated by the daily library-sync worker — see
+[`docs/configuration.md`](configuration.md) and "Library" below) and is empty
+whenever that lookup finds nothing. That happens for three distinct, all-ordinary reasons, and an
+empty name is never itself an error:
+
+- **The context isn't a playlist at all.** `album`, `artist` and `collection` contexts are never in
+  `user_playlists` — nothing will ever name them, by construction, not because a lookup failed.
+- **The playlist enumeration hasn't caught up yet.** `user_playlists` is a once-a-day snapshot, the
+  same staleness contract as the library and top-diff snapshots below: a playlist created an hour
+  ago has no row yet and shows unnamed until the worker's next run.
+- **The id no longer resolves to one of the listener's own playlists.** Deleted since, or a
+  playlist that was never theirs to enumerate in the first place (someone else's, played via a
+  shared link). The row still counts — dropping it would understate the total `playlistCoverage`
+  promises — it is just permanently unnamed rather than temporarily so.
+
+`contextId` is a bare Spotify id, never a track, album or artist id resolved through the catalogue,
+so it is not a candidate for a client's usual entity-linking logic. A `collection` context, and any
+context whose URI Encore could not parse into `spotify:<type>:<id>`, carries `contextId: ""`.
 
 ### Library
 
