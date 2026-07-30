@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +49,38 @@ func TestEncryptionKeyRejectsTheWrongLength(t *testing.T) {
 	}
 	if len(got) == KeyBytes {
 		t.Fatal("a 16-byte key must not be reported as 32 bytes")
+	}
+}
+
+// TestDefaultScopesAreTheEightReadScopes pins the sign-in grant.
+//
+// The list is asserted exactly, in order, rather than by length or by
+// membership: this is the set every listener is asked to consent to, and it
+// should not be possible to widen it without a test changing to say so.
+func TestDefaultScopesAreTheEightReadScopes(t *testing.T) {
+	want := []string{
+		"user-read-recently-played",
+		"user-read-private",
+		"user-read-email",
+		"user-top-read",
+		"user-library-read",
+		"user-follow-read",
+		"playlist-read-private",
+		"user-read-playback-state",
+	}
+	got := DefaultScopes()
+	if !slices.Equal(got, want) {
+		t.Errorf("DefaultScopes() =\n  %v\nwant\n  %v", got, want)
+	}
+}
+
+// TestDefaultScopesAreAllReadOnly is the property that matters more than the
+// list itself: nothing here can alter a listener's Spotify account. Every write
+// scope Encore ever requests is asked for at the point of use instead.
+func TestDefaultScopesGrantNoWriteAccess(t *testing.T) {
+	for _, s := range DefaultScopes() {
+		if strings.Contains(s, "modify") || strings.Contains(s, "ugc-") {
+			t.Errorf("%q is a write scope and must not be in the sign-in grant", s)
+		}
 	}
 }

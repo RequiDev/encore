@@ -35,7 +35,7 @@ func TestAuthorizeURL(t *testing.T) {
 		"state":                 "state-value",
 		"code_challenge_method": "S256",
 		"code_challenge":        "challenge-value",
-		"scope":                 "user-read-recently-played user-read-private user-read-email",
+		"scope":                 "user-read-recently-played user-read-private user-read-email user-top-read user-library-read user-follow-read playlist-read-private user-read-playback-state",
 	}
 	for k, v := range want {
 		if got := q.Get(k); got != v {

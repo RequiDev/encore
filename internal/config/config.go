@@ -392,10 +392,35 @@ func parse(get lookup) (*Config, error) {
 	return c, nil
 }
 
-// DefaultScopes is the minimum grant Encore needs. It is read-only: Encore never
-// asks for permission to modify a listener's account.
+// DefaultScopes is the grant Encore asks for at sign-in.
+//
+// Every one of these is read-only. Encore never asks, at sign-in, for
+// permission to change anything about a listener's Spotify account: the two
+// write scopes it can ever hold — playlist-modify-private and
+// ugc-image-upload — are requested together at the moment somebody creates a
+// playlist, and an account that never creates one is never asked.
+//
+// The read set is granted in one step rather than feature by feature. Five
+// separate consent interruptions, each explaining a statistic the listener has
+// not seen yet, is a worse experience than one; and every one of these is
+// inert on its own — reading what somebody saved, follows, or ranked highly
+// cannot alter any of it. See docs/security.md.
 func DefaultScopes() []string {
-	return []string{"user-read-recently-played", "user-read-private", "user-read-email"}
+	return []string{
+		"user-read-recently-played",
+		"user-read-private",
+		"user-read-email",
+		// Spotify's own ranking, to diff against Encore's.
+		"user-top-read",
+		// Saved tracks and albums, for saved-but-never-played.
+		"user-library-read",
+		// Followed artists, for followed-but-dormant.
+		"user-follow-read",
+		// Playlist names, so a listen's playlist context can be named.
+		"playlist-read-private",
+		// Device and shuffle state for the optional now-playing poller.
+		"user-read-playback-state",
+	}
 }
 
 // Redacted returns a copy safe to log: secrets are replaced, not merely shortened.
