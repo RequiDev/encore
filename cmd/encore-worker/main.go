@@ -32,6 +32,7 @@ import (
 	"github.com/RequiDev/encore/internal/crypto"
 	"github.com/RequiDev/encore/internal/enrich"
 	"github.com/RequiDev/encore/internal/importer"
+	"github.com/RequiDev/encore/internal/library"
 	"github.com/RequiDev/encore/internal/logging"
 	"github.com/RequiDev/encore/internal/metrics"
 	"github.com/RequiDev/encore/internal/postgres"
@@ -41,6 +42,7 @@ import (
 	"github.com/RequiDev/encore/internal/store/accounts"
 	"github.com/RequiDev/encore/internal/store/catalog"
 	"github.com/RequiDev/encore/internal/store/imports"
+	libstore "github.com/RequiDev/encore/internal/store/library"
 	"github.com/RequiDev/encore/internal/store/listens"
 	"github.com/RequiDev/encore/internal/sync"
 	"github.com/RequiDev/encore/internal/worker"
@@ -127,6 +129,7 @@ func run() error {
 	accountsRepo := accounts.New(db)
 	catalogRepo := catalog.New(db)
 	listensRepo := listens.New(db)
+	libraryRepo := libstore.New(db)
 	importsRepo := imports.New(db)
 	statsSvc := stats.New(db)
 
@@ -203,6 +206,26 @@ func run() error {
 	// Also unconditional: with ENCORE_SYNC_ENABLED false, Run says so once and
 	// returns nil, which the supervisor treats as a loop that has finished.
 	sup.Add("sync", poller.Run)
+
+	libraryWorker, err := library.New(cfg.Library, library.Deps{
+		Store:    db,
+		Accounts: accountsRepo,
+		Catalog:  catalogRepo,
+		Library:  libraryRepo,
+		Spotify:  client,
+		// The token refresh dance, including parking an account as
+		// needs_reauth when Spotify has revoked the grant, belongs to
+		// recently-played sync, which cannot function without its own scope;
+		// the library worker reuses it rather than duplicating it.
+		Tokens: poller,
+		Logger: lg,
+	})
+	if err != nil {
+		return err
+	}
+	// Unconditional for the same reason as sync: ENCORE_LIBRARY_SYNC_ENABLED
+	// false makes Run log once and return nil.
+	sup.Add("library", libraryWorker.Run)
 
 	sup.Add("reaper", reaper(db, accountsRepo, lg))
 	sup.Add("telemetry", publishPoolStats(reg, pool))
