@@ -45,6 +45,13 @@ export interface SpotifyConnection {
   lastSyncAt: Timestamp | null
   lastSyncError: string
   scopes: string[]
+  /**
+   * Scopes this account granted less than Encore now asks for.
+   *
+   * Computed server-side against the required list; the client deliberately
+   * holds no copy of that list, because two copies drift.
+   */
+  missingScopes: string[]
 }
 
 export interface InstanceInfo {

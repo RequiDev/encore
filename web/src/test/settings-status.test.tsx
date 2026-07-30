@@ -37,6 +37,7 @@ const ME: MeResponse = {
     lastSyncAt: '2026-07-26T08:11:03Z',
     lastSyncError: '',
     scopes: ['user-read-recently-played'],
+    missingScopes: [],
   },
   csrfToken: 'not-a-real-token',
   listening: {

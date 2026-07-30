@@ -17,6 +17,7 @@ import { useSession } from '../../lib/session'
 import { SkeletonText } from '../ui/Skeleton'
 import { BottomNav, NavDrawer, Sidebar } from './Sidebar'
 import { navTitleFor } from './nav'
+import { ReconsentBanner } from './ReconsentBanner'
 import { TopBar } from './TopBar'
 
 export function AppShell(): ReactElement {
@@ -52,6 +53,7 @@ export function AppShell(): ReactElement {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
+        <ReconsentBanner />
         <main
           id="main"
           ref={main}
