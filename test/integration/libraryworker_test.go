@@ -38,7 +38,17 @@ type fakeLibraryAPI struct {
 	artists    []spotify.Artist
 	artistsErr error
 
+	// topArtists/topArtistsErr and topTracks/topTracksErr are keyed by time
+	// range, mirroring internal/library/library_test.go's own fakeSpotify, so
+	// a test can fail or supply data for exactly one of the six top-item
+	// calls without disturbing the other five.
+	topArtists    map[spotify.TopTimeRange][]spotify.Artist
+	topArtistsErr map[spotify.TopTimeRange]error
+	topTracks     map[spotify.TopTimeRange][]spotify.Track
+	topTracksErr  map[spotify.TopTimeRange]error
+
 	trackCalls, albumCalls, artistCalls int
+	topArtistCalls, topTrackCalls       int
 }
 
 func (f *fakeLibraryAPI) SavedTracks(context.Context, string, int) ([]spotify.SavedTrack, error) {
@@ -54,6 +64,16 @@ func (f *fakeLibraryAPI) SavedAlbums(context.Context, string, int) ([]spotify.Sa
 func (f *fakeLibraryAPI) FollowedArtists(context.Context, string, int) ([]spotify.Artist, error) {
 	f.artistCalls++
 	return f.artists, f.artistsErr
+}
+
+func (f *fakeLibraryAPI) TopArtists(_ context.Context, _ string, tr spotify.TopTimeRange, _ int) ([]spotify.Artist, error) {
+	f.topArtistCalls++
+	return f.topArtists[tr], f.topArtistsErr[tr]
+}
+
+func (f *fakeLibraryAPI) TopTracks(_ context.Context, _ string, tr spotify.TopTimeRange, _ int) ([]spotify.Track, error) {
+	f.topTrackCalls++
+	return f.topTracks[tr], f.topTracksErr[tr]
 }
 
 // fakeLibraryTokens satisfies library.Tokens with a fixed token. The real
@@ -100,6 +120,55 @@ func librarySyncedAt(t *testing.T, env *harness.Env, userID uuid.UUID) *time.Tim
 		t.Fatalf("read library_synced_at: %v", err)
 	}
 	return at
+}
+
+// connectWithScopes is connect (test/integration/sync_test.go) with an
+// explicit scope list, for a test that needs a grant narrower than, or
+// otherwise different from, config.DefaultScopes().
+func connectWithScopes(t *testing.T, env *harness.Env, userID uuid.UUID, expiresAt time.Time, scopes []string) {
+	t.Helper()
+	if err := env.Accounts.Credentials.Upsert(env.Ctx(), env.Store.DB(), domain.SpotifyCredentials{
+		UserID:         userID,
+		AccessToken:    "initial-access-token",
+		RefreshToken:   "the-refresh-token",
+		TokenExpiresAt: expiresAt,
+		Scopes:         scopes,
+		SyncState:      domain.SyncStateOK,
+		ConnectedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("connect spotify account with custom scopes: %v", err)
+	}
+}
+
+// topSnapshotRow is one row read back from spotify_top_snapshots, in position
+// order, for asserting a captured ranking against what the fake returned.
+type topSnapshotRow struct {
+	entityID   string
+	capturedAt time.Time
+}
+
+func topSnapshotRows(t *testing.T, env *harness.Env, userID uuid.UUID, kind, timeRange string) []topSnapshotRow {
+	t.Helper()
+	rows, err := env.Pool.Query(env.Ctx(),
+		`SELECT entity_id, captured_at FROM spotify_top_snapshots
+		 WHERE user_id = $1 AND kind = $2 AND time_range = $3 ORDER BY position`,
+		userID.String(), kind, timeRange)
+	if err != nil {
+		t.Fatalf("read top snapshot rows: %v", err)
+	}
+	defer rows.Close()
+	var out []topSnapshotRow
+	for rows.Next() {
+		var r topSnapshotRow
+		if err := rows.Scan(&r.entityID, &r.capturedAt); err != nil {
+			t.Fatalf("scan top snapshot row: %v", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read top snapshot rows: %v", err)
+	}
+	return out
 }
 
 func TestLibraryWorkerSyncsAllThreeTablesAndAdvancesTheWatermark(t *testing.T) {
@@ -172,6 +241,191 @@ func TestLibraryWorkerSyncsAllThreeTablesAndAdvancesTheWatermark(t *testing.T) {
 
 	if at := librarySyncedAt(t, env, user.ID); at == nil {
 		t.Fatal("library_synced_at was never set")
+	}
+}
+
+// TestLibraryWorkerCapturesAllSixTopSnapshotsAndAdvancesTheWatermark is the
+// happy path for the six top-item enumerations added alongside the three
+// library ones: every (kind, time range) set lands in spotify_top_snapshots,
+// in rank order, in the same transaction as the library reconciliation and
+// the watermark.
+func TestLibraryWorkerCapturesAllSixTopSnapshotsAndAdvancesTheWatermark(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-topsix")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	api := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-top-track-0", Name: "Saved Track"}}},
+		topArtists: map[spotify.TopTimeRange][]spotify.Artist{
+			spotify.TopShortTerm:  {{ID: "libw-ta-1", Name: "Short Artist"}},
+			spotify.TopMediumTerm: {{ID: "libw-ta-2", Name: "Medium Artist"}, {ID: "libw-ta-1", Name: "Short Artist"}},
+			spotify.TopLongTerm:   {{ID: "libw-ta-3", Name: "Long Artist"}},
+		},
+		topTracks: map[spotify.TopTimeRange][]spotify.Track{
+			spotify.TopShortTerm:  {{ID: "libw-tt-1", Name: "Short Track"}},
+			spotify.TopMediumTerm: {{ID: "libw-tt-2", Name: "Medium Track"}},
+			spotify.TopLongTerm:   {{ID: "libw-tt-3", Name: "Long Track"}, {ID: "libw-tt-1", Name: "Short Track"}},
+		},
+	}
+	w := newLibraryWorker(t, env, api)
+
+	if err := w.SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+
+	if api.topArtistCalls != 3 || api.topTrackCalls != 3 {
+		t.Fatalf("top calls = %d/%d, want 3/3", api.topArtistCalls, api.topTrackCalls)
+	}
+
+	// Rank order is preserved for a set with more than one entry.
+	medium := topSnapshotRows(t, env, user.ID, "artist", "medium_term")
+	if len(medium) != 2 || medium[0].entityID != "libw-ta-2" || medium[1].entityID != "libw-ta-1" {
+		t.Fatalf("medium-term top artists = %+v, want [libw-ta-2 libw-ta-1] in that rank order", medium)
+	}
+	long := topSnapshotRows(t, env, user.ID, "track", "long_term")
+	if len(long) != 2 || long[0].entityID != "libw-tt-3" || long[1].entityID != "libw-tt-1" {
+		t.Fatalf("long-term top tracks = %+v, want [libw-tt-3 libw-tt-1] in that rank order", long)
+	}
+	// All six sets exist, including the two single-entry ones.
+	if got := topSnapshotRows(t, env, user.ID, "artist", "short_term"); len(got) != 1 || got[0].entityID != "libw-ta-1" {
+		t.Fatalf("short-term top artists = %+v, want [libw-ta-1]", got)
+	}
+	if got := topSnapshotRows(t, env, user.ID, "artist", "long_term"); len(got) != 1 || got[0].entityID != "libw-ta-3" {
+		t.Fatalf("long-term top artists = %+v, want [libw-ta-3]", got)
+	}
+	if got := topSnapshotRows(t, env, user.ID, "track", "short_term"); len(got) != 1 || got[0].entityID != "libw-tt-1" {
+		t.Fatalf("short-term top tracks = %+v, want [libw-tt-1]", got)
+	}
+	if got := topSnapshotRows(t, env, user.ID, "track", "medium_term"); len(got) != 1 || got[0].entityID != "libw-tt-2" {
+		t.Fatalf("medium-term top tracks = %+v, want [libw-tt-2]", got)
+	}
+
+	// Every one of the six top-item entities was minted into the catalogue,
+	// resolved since the fake returned full detail — the same path a
+	// followed artist or saved track already takes.
+	for _, id := range []string{"libw-ta-1", "libw-ta-2", "libw-ta-3"} {
+		if got := env.ScalarInt(`SELECT count(*) FROM artists WHERE id = $1 AND metadata_state = 'resolved'`, id); got != 1 {
+			t.Fatalf("top artist %s must be minted resolved, got count %d", id, got)
+		}
+	}
+	// libw-ta-1 is a top artist in two ranges but must not have been marked
+	// as followed by that alone.
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_followed_artists WHERE user_id = $1 AND artist_id = 'libw-ta-1'`,
+		user.ID.String()); got != 0 {
+		t.Fatal("a top artist must not be recorded as followed merely for appearing in a top-artists ranking")
+	}
+	for _, id := range []string{"libw-tt-1", "libw-tt-2", "libw-tt-3"} {
+		if got := env.ScalarInt(`SELECT count(*) FROM tracks WHERE id = $1 AND metadata_state = 'resolved'`, id); got != 1 {
+			t.Fatalf("top track %s must be minted resolved, got count %d", id, got)
+		}
+	}
+	// The saved track from the library enumeration still landed too — the
+	// six top requests must not have displaced it.
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-top-track-0'`,
+		user.ID.String()); got != 1 {
+		t.Fatal("the library enumeration's own saved track must still have been reconciled")
+	}
+
+	if at := librarySyncedAt(t, env, user.ID); at == nil {
+		t.Fatal("library_synced_at was never set")
+	}
+}
+
+// TestLibraryWorkerWithoutTopReadStillSyncsLibraryWithZeroTopRequests pins
+// the separation the brief calls out specifically: an account that granted
+// the library scopes but not user-top-read must still get its library fully
+// enumerated and reconciled, spending zero requests on the six top-item
+// calls. The naive reading — fold scopeTopRead into the check that already
+// gates the library three — would instead skip this account's library sync
+// entirely, which this test would catch.
+func TestLibraryWorkerWithoutTopReadStillSyncsLibraryWithZeroTopRequests(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-notopread")
+	connectWithScopes(t, env, user.ID, time.Now().Add(time.Hour),
+		[]string{"user-library-read", "user-follow-read"})
+
+	api := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-notop-track-1", Name: "Track"}}},
+		// Present but must never be read: proof positive is api.topArtistCalls
+		// and api.topTrackCalls below, not merely an empty result.
+		topArtists: map[spotify.TopTimeRange][]spotify.Artist{
+			spotify.TopShortTerm: {{ID: "libw-notop-artist-1", Name: "Should Not Be Fetched"}},
+		},
+	}
+	w := newLibraryWorker(t, env, api)
+
+	if err := w.SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account = %v, want nil", err)
+	}
+
+	if api.topArtistCalls != 0 || api.topTrackCalls != 0 {
+		t.Fatalf("top calls = %d/%d, want 0/0: an account without user-top-read must spend zero "+
+			"requests on top items", api.topArtistCalls, api.topTrackCalls)
+	}
+	if got := env.ScalarInt(`SELECT count(*) FROM spotify_top_snapshots WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("top snapshot rows = %d, want 0", got)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-notop-track-1'`,
+		user.ID.String()); got != 1 {
+		t.Fatal("the library enumeration must still have run and reconciled in full, " +
+			"despite the account lacking user-top-read")
+	}
+	if at := librarySyncedAt(t, env, user.ID); at == nil {
+		t.Fatal("library_synced_at must still be set: the library half of the run is independent of scopeTopRead")
+	}
+}
+
+// TestLibraryWorkerForbiddenOnTopCallLeavesEverythingUntouched mirrors
+// TestLibraryWorkerForbiddenLeavesTheAccountNeverSyncedAndSyncStateUntouched
+// for a 403 on one of the six top-item calls: per the brief, a failure on
+// any of the six abandons the whole run exactly as a library failure does,
+// so nothing — not even the library three, which already succeeded before
+// this one failed — may reach the database.
+func TestLibraryWorkerForbiddenOnTopCallLeavesEverythingUntouched(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-topforbidden")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	api := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-topforbid-track-1", Name: "Track"}}},
+		topArtistsErr: map[spotify.TopTimeRange]error{
+			spotify.TopMediumTerm: &spotify.APIError{StatusCode: http.StatusForbidden},
+		},
+	}
+	w := newLibraryWorker(t, env, api)
+
+	if err := w.SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account = %v, want nil: an optional scope Spotify still refuses is not a failure to report", err)
+	}
+
+	if at := librarySyncedAt(t, env, user.ID); at != nil {
+		t.Fatalf("library_synced_at = %v, want nil: the account must read as never synced", at)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("saved tracks = %d, want 0: the library three must not commit even though they "+
+			"already succeeded before the top-item call that failed", got)
+	}
+	if got := env.ScalarInt(`SELECT count(*) FROM spotify_top_snapshots WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("top snapshot rows = %d, want 0", got)
+	}
+	if api.topArtistCalls != 2 {
+		t.Fatalf("top artist calls = %d, want 2 (short term, then the failing medium term)", api.topArtistCalls)
+	}
+	if api.topTrackCalls != 0 {
+		t.Fatalf("top track calls = %d, want 0: never reached after the top-artist failure", api.topTrackCalls)
+	}
+
+	creds, err := env.Accounts.Credentials.Get(env.Ctx(), env.Store.DB(), user.ID)
+	if err != nil {
+		t.Fatalf("read credentials: %v", err)
+	}
+	if creds.SyncState != domain.SyncStateOK {
+		t.Fatalf("sync state = %q, want ok: a 403 from an optional scope must not touch "+
+			"recently-played sync's own state", creds.SyncState)
 	}
 }
 
