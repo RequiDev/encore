@@ -666,7 +666,8 @@ type AlbumTrackRef struct {
 // State is one of:
 //
 //	"ready"       — a listing is stored; Coverage and Missing mean something
-//	"pending"     — no listing yet, and one is being read from Spotify now
+//	"pending"     — no listing yet, and nothing has recorded a reason there
+//	                should not be one
 //	"unavailable" — no listing, and none is being read: the last attempt failed
 //	"disabled"    — no listing, and this instance does not fetch them at all
 //	                (ENCORE_ALBUM_TRACKS_ENABLED=false)
@@ -675,6 +676,19 @@ type AlbumTrackRef struct {
 // "ready" as "you have played everything". Missing is empty in three of the
 // four, which is exactly why State exists. Only "ready" with
 // Coverage.Covered == Coverage.Total means the album was played in full.
+//
+// "pending" is deliberately not phrased as "a fetch is running": it also
+// covers a lease another replica holds, no free local slot on this one, a
+// shutdown in progress, and — the one that matters here — a claim against
+// album_track_fetches that errored, after which nothing was read and nothing
+// was recorded, so the very next request re-enters this same branch. Nothing
+// in the payload bounds how long that can go on: a listing only reaches
+// "pending" before anything has ever been stored, so FetchedAt is always
+// absent here, and every "pending" response for one album is byte-identical
+// regardless of how long the state has held. A client MUST cap how long it
+// keeps polling on "pending" and render the "unavailable" copy once that cap
+// is reached, rather than polling an instance whose writes are failing for as
+// long as the page stays open.
 //
 // "disabled" is deliberately distinct from "unavailable". The first is the
 // operator's choice and the second is Spotify failing to answer; a client that

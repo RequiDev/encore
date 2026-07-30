@@ -351,17 +351,23 @@ func (s *Server) handleAlbumTracklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Two independent round trips rather than one transaction. The listing is
-	// global catalogue data with its own TTL and the heard set is one user's
-	// history; nothing here writes, and a snapshot would still be stale the
-	// instant a new listen lands, transaction or not. A concurrent write
-	// between these two calls can make Coverage and Missing disagree for one
-	// response — "9 of 12 heard" beside a list of four — which is a known,
-	// accepted staleness window rather than an oversight: the client polls this
-	// endpoint, so a momentary disagreement self-corrects on the next tick, and
-	// wrapping two independently-scoped reads in one transaction to avoid it
-	// would buy consistency at the cost of pinning a connection across a call
-	// this package otherwise never has to hold one for.
+	// Two independent round trips rather than one transaction, and deliberately
+	// so: the listing is global catalogue data with its own TTL and the heard
+	// set is one user's history, and there is no snapshot to lose by reading
+	// them separately. toAlbumTrackList derives Coverage and Missing from one
+	// (listing, heard) pair in a single pass — every listed track increments
+	// Covered or is appended to Missing, never neither and never both — so
+	// Covered + len(Missing) == Total always, for whatever heard happens to be.
+	// A listen landing between these two calls is simply included or not; it
+	// cannot make the response internally disagree with itself, because
+	// nothing here compares this listing against any other read of it. What a
+	// transaction could not fix anyway: album.totalTracks on GET
+	// /api/albums/{id} and coverage.total here come from two separate HTTP
+	// requests, are allowed to disagree by design (see AlbumTrackList's own
+	// doc), and no transaction inside this handler reaches the other request.
+	// The only real exposure is ordinary read staleness of a few milliseconds,
+	// which is not a reason to pin a pool connection across a call this
+	// package otherwise never has to hold one for.
 	listing, err := s.albumTracks.Listing(ctx, s.querier, id)
 	if err != nil {
 		writeError(w, r, err)
