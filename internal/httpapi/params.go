@@ -238,6 +238,37 @@ func parseExportFormat(r *http.Request) (string, error) {
 	}
 }
 
+// parseTopDiffKind reads ?kind= for GET /api/stats/top-diff: one of the two
+// entity kinds Spotify's own top-items endpoint knows. Spotify has no
+// top-albums endpoint (see stats.topDiffKind), so "album" is refused here, at
+// the edge, rather than reaching stats.TopDiff's own validation and coming
+// back as the same domain.ErrValidation a genuine typo would produce.
+func parseTopDiffKind(r *http.Request) (string, error) {
+	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+	switch kind {
+	case "track", "artist":
+		return kind, nil
+	default:
+		return "", ErrFieldInvalid("kind", `"kind" must be track or artist.`)
+	}
+}
+
+// parseTopDiffRange reads ?range= for GET /api/stats/top-diff: one of
+// Spotify's own three top-items time ranges (see stats.topDiffWindow).
+// Deliberately not the ?from=&to= pair every other statistic takes - this
+// endpoint's window comes from Spotify's own time range rather than a caller
+// picked one, and giving it a different parameter name keeps that from being
+// an easy mistake to make silently.
+func parseTopDiffRange(r *http.Request) (string, error) {
+	timeRange := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("range")))
+	switch timeRange {
+	case "short_term", "medium_term", "long_term":
+		return timeRange, nil
+	default:
+		return "", ErrFieldInvalid("range", `"range" must be short_term, medium_term or long_term.`)
+	}
+}
+
 // validateRedirect decides whether a caller-supplied redirect target may be used.
 //
 // This is the guard that stops the login journey being turned into an open

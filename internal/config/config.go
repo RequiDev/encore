@@ -154,10 +154,13 @@ type Sync struct {
 // metadata fallback, both of which default off. The difference is cost: this
 // runs once a day rather than on every tick, and one run costs roughly
 //
-//	ceil(saved_tracks/50) + ceil(saved_albums/50) + ceil(followed/50)
+//	ceil(saved_tracks/50) + ceil(saved_albums/50) + ceil(followed/50) + 6
 //
 // requests per account — a few hundred for a large library, against a quota
-// that a single import can exhaust on its own. That is affordable, and a
+// that a single import can exhaust on its own. The +6 is Spotify's own top
+// artists and top tracks, one request per (kind, time range): a single page
+// of 50 is the whole picture by design, so unlike the other three that count
+// never grows with the size of the library. That is affordable, and a
 // feature that defaults off is one most instances never turn on and so never
 // see. Set ENCORE_LIBRARY_SYNC_ENABLED=false to disable it.
 type Library struct {

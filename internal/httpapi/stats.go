@@ -796,6 +796,74 @@ func toLibraryStats(l stats.LibraryStats, refs *catalogRefs) LibraryStatsRespons
 	}
 }
 
+// handleTopDiff answers GET /api/stats/top-diff.
+//
+// kind and range are both checked against a fixed set before reaching
+// stats.TopDiff (see parseTopDiffKind and parseTopDiffRange), so neither ever
+// reaches SQL as a bare caller-supplied string. The endpoint takes no ?limit=
+// of its own: passing zero lets stats.TopDiff's own clampLimit apply its
+// default of stats.DefaultPageSize (50), which is deliberately the same "one
+// page is the whole ranking" size a top-items capture itself uses (see
+// topSourceSQL's doc comment in internal/stats/top.go).
+func (s *Server) handleTopDiff(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	kind, err := parseTopDiffKind(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	timeRange, err := parseTopDiffRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+
+	diff, err := s.stats.TopDiff(ctx, s.querier, user.ID, kind, timeRange, user.Timezone, 0)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	ids := make([]string, 0, len(diff.Entries))
+	for _, e := range diff.Entries {
+		ids = append(ids, e.EntityID)
+	}
+
+	// The entity kind decides which side of resolveRefs' three buckets the ids
+	// belong in, and therefore which instantiation of the generic response this
+	// request answers with - exactly the branch handleTopTracks/handleTopArtists
+	// make for the same reason.
+	if kind == "track" {
+		refs, err := s.resolveRefs(ctx, ids, nil, nil)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, TopDiffResponse[TrackRef]{
+			CapturedAt: tsPtr(diff.CapturedAt),
+			TimeRange:  diff.TimeRange,
+			Entries:    toTopDiffEntries(diff.Entries, refs.trackEntity),
+		})
+		return
+	}
+
+	refs, err := s.resolveRefs(ctx, nil, nil, ids)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, TopDiffResponse[ArtistRef]{
+		CapturedAt: tsPtr(diff.CapturedAt),
+		TimeRange:  diff.TimeRange,
+		Entries:    toTopDiffEntries(diff.Entries, refs.artistEntity),
+	})
+}
+
 // handleListUsers answers GET /api/users: who else is on this instance.
 //
 // Deactivated accounts and the caller are left out, and each entry carries only

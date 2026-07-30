@@ -162,6 +162,7 @@ var truncatedTables = []string{
 	"user_saved_tracks",
 	"user_saved_albums",
 	"user_followed_artists",
+	"spotify_top_snapshots",
 	"track_aliases",
 	"track_artists",
 	"album_artists",

@@ -200,6 +200,44 @@ func TestParseYear(t *testing.T) {
 	}
 }
 
+// TestParseTopDiffKind checks the two entity kinds top-diff accepts. Spotify
+// has no top-albums endpoint, so "album" must be refused here exactly as
+// stats.TopDiff itself refuses it.
+func TestParseTopDiffKind(t *testing.T) {
+	for query, want := range map[string]string{"kind=track": "track", "kind=ARTIST": "artist"} {
+		got, err := parseTopDiffKind(request(query))
+		if err != nil || got != want {
+			t.Errorf("parseTopDiffKind(%q) = %q, %v; want %q", query, got, err, want)
+		}
+	}
+	for _, query := range []string{"", "kind=album", "kind=tracks", "kind=nonsense"} {
+		if _, err := parseTopDiffKind(request(query)); err == nil {
+			t.Errorf("parseTopDiffKind(%q) was accepted", query)
+		}
+	}
+}
+
+// TestParseTopDiffRange checks the three time ranges Spotify's own top-items
+// endpoint offers, and that nothing else - including the ?from=&to= shape
+// every other statistic takes - is mistaken for one of them.
+func TestParseTopDiffRange(t *testing.T) {
+	for query, want := range map[string]string{
+		"range=short_term":  "short_term",
+		"range=MEDIUM_TERM": "medium_term",
+		"range=long_term":   "long_term",
+	} {
+		got, err := parseTopDiffRange(request(query))
+		if err != nil || got != want {
+			t.Errorf("parseTopDiffRange(%q) = %q, %v; want %q", query, got, err, want)
+		}
+	}
+	for _, query := range []string{"", "range=this_year", "range=long-term", "from=2026-01-01T00:00:00Z"} {
+		if _, err := parseTopDiffRange(request(query)); err == nil {
+			t.Errorf("parseTopDiffRange(%q) was accepted", query)
+		}
+	}
+}
+
 // TestValidateRedirect is the open-redirect guard.
 //
 // Everything the login flow will follow has to resolve inside ENCORE_WEB_URL;

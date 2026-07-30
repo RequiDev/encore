@@ -1,19 +1,24 @@
-// Package library enumerates what a listener has saved and who they follow,
-// and reconciles each against a local table, once a day rather than on every
-// tick.
+// Package library enumerates what a listener has saved, who they follow, and
+// Spotify's own ranking of their top artists and tracks, and reconciles or
+// captures each against a local table, once a day rather than on every tick.
 //
 // Spotify exposes no "what changed" feed for saved tracks, saved albums or
 // followed artists — only a full listing — so every run reads all three
 // endpoints and reconciles the whole set against what is already stored. The
-// tables read by the reconciliation are internal/store/library's; the writing
-// half lives here, alongside the scheduling that decides which account runs
-// when and the scope check that keeps an account which predates Phase 2a's
-// consent change from spending a request it will only be refused.
+// same run also captures Spotify's own top-artists and top-tracks rankings,
+// one call per (kind, time range) for six more requests total, as a latest-
+// capture snapshot rather than a reconciliation — see
+// internal/store/library/topsnapshots.go for why "absent" means past the end
+// of a rank-ordered list there rather than "id not in this set." The tables
+// both write to are internal/store/library's; the writing half lives here,
+// alongside the scheduling that decides which account runs when and the scope
+// checks that keep an account from spending a request on an endpoint it never
+// granted.
 //
 // Nothing in this package is read by anything user-facing yet. The statistics
-// and the page that surface saved-but-never-played tracks and followed-but-
-// dormant artists are a later phase; this one only has to get the tables
-// right.
+// and the page that surface saved-but-never-played tracks, followed-but-
+// dormant artists, and how Spotify's own top rankings differ from Encore's
+// are a later phase; this one only has to get the tables right.
 package library
 
 import (
@@ -41,14 +46,26 @@ import (
 	libstore "github.com/RequiDev/encore/internal/store/library"
 )
 
-// Scopes the three endpoints this worker reads require. Both were added to
-// DefaultScopes() in Phase 2a; an account connected before that shipped
-// carries neither, and that is the ordinary case this worker has to expect
-// forever, not a fault to repair.
+// Scopes the three library endpoints this worker reads require. Both were
+// added to DefaultScopes() in Phase 2a; an account connected before that
+// shipped carries neither, and that is the ordinary case this worker has to
+// expect forever, not a fault to repair.
 const (
 	scopeLibraryRead = "user-library-read"
 	scopeFollowRead  = "user-follow-read"
 )
+
+// scopeTopRead is user-top-read, required by the six top-items enumerations
+// this worker also runs. It was added to DefaultScopes() alongside
+// scopeLibraryRead and scopeFollowRead, but it is checked on its own,
+// immediately before those six requests rather than folded into the check
+// above, because the two halves of one account's run are independent: a
+// grant carrying the library scopes but not this one must still get its
+// library enumerated, spending zero requests on top items, and the check
+// above must keep gating the library three on its own two scopes regardless
+// of whether this one is present. Nothing about the library reconciliation
+// should ever depend on a scope it does not read.
+const scopeTopRead = "user-top-read"
 
 // ErrNotConnected reports that the user has no Spotify grant at all, so there
 // is nothing to enumerate. It mirrors internal/sync's sentinel of the same
@@ -88,7 +105,23 @@ type SpotifyAPI interface {
 	SavedTracks(ctx context.Context, accessToken string, maxPages int) ([]spotify.SavedTrack, error)
 	SavedAlbums(ctx context.Context, accessToken string, maxPages int) ([]spotify.SavedAlbum, error)
 	FollowedArtists(ctx context.Context, accessToken string, maxPages int) ([]spotify.Artist, error)
+	TopArtists(ctx context.Context, accessToken string, tr spotify.TopTimeRange, limit int) ([]spotify.Artist, error)
+	TopTracks(ctx context.Context, accessToken string, tr spotify.TopTimeRange, limit int) ([]spotify.Track, error)
 }
+
+// topLimit asks TopArtists/TopTracks for the largest page they will ever
+// return. Unlike maxPages above, there is no cap to configure here: one page
+// of 50 is the whole picture these two calls exist to capture, by Spotify's
+// own design — see topitems.go's comment on why pagination was deliberately
+// left out of that client method.
+const topLimit = 50
+
+// topTimeRanges is every rolling window this worker captures, for both
+// top-item kinds: three ranges times two kinds is the six extra requests one
+// account's run costs. sync walks it once per kind, in this order, so a 403
+// or a failure on any one of the six stops exactly there — the same
+// abandon-the-run contract the three library endpoints already keep.
+var topTimeRanges = []spotify.TopTimeRange{spotify.TopShortTerm, spotify.TopMediumTerm, spotify.TopLongTerm}
 
 // Tokens supplies a usable Spotify access token for one account, refreshing
 // and persisting it when necessary.
@@ -117,9 +150,9 @@ type Deps struct {
 	Now func() time.Time
 }
 
-// Worker enumerates the saved tracks, saved albums and followed artists of
-// every connected account, once an interval, and reconciles each against its
-// local table.
+// Worker enumerates the saved tracks, saved albums, followed artists, and
+// (scope permitting) top artists and top tracks of every connected account,
+// once an interval, and reconciles or captures each against its local table.
 //
 // It holds no durable state: which accounts are due lives in
 // spotify_credentials.library_synced_at, so a Worker can be killed at any
@@ -323,6 +356,20 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 	// scope, and that is every account that connected before this shipped —
 	// discovering it by a 403 would waste one request per account per day, for
 	// ever, rather than the one check below.
+	//
+	// Known limitation: everything below this point, including the six
+	// top-item calls further down, sits behind this gate and behind all three
+	// library enumerations succeeding. A truncated or failed saved-tracks,
+	// saved-albums or followed-artists call returns before the top snapshot is
+	// ever captured (see the early `return nil`s below), so an account whose
+	// library exceeds MaxPages never gets a top snapshot either — on every
+	// tick, permanently, not just until the library catches up. The fix is to
+	// run the six top-item calls before the three library enumerations, so a
+	// cheap, independent capture is not hostage to an expensive one; that is
+	// real restructuring, deferred rather than done here, because it also
+	// requires commit (below) to tolerate a library-less batch — a top-only
+	// run must still be able to write its snapshot without a reconciled
+	// library alongside it.
 	if !creds.HasScope(scopeLibraryRead) || !creds.HasScope(scopeFollowRead) {
 		log.Debug("account has not granted the library or follow scope; skipping")
 		return nil
@@ -376,22 +423,76 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 		return fmt.Errorf("enumerate followed artists: %w", err)
 	}
 
-	b := build(tracks, albums, artists)
+	// The six top-item requests are gated on their own scope, separately from
+	// the library check above: an account that granted the library scopes but
+	// not this one must still reach the commit below with its library fully
+	// enumerated, having spent zero requests here. Nothing accumulated is
+	// reported as a snapshot in that case — snapshots stay nil, and commit's
+	// loop over them simply runs zero times.
+	var (
+		topSnapshots  []topSnapshot
+		topArtistsAll []spotify.Artist
+		topTracksAll  []spotify.Track
+	)
+	if creds.HasScope(scopeTopRead) {
+		for _, tr := range topTimeRanges {
+			got, err := w.dep.Spotify.TopArtists(ctx, token, tr, topLimit)
+			if forbidden(err) {
+				log.Warn("spotify refused top artists despite the granted scope",
+					"time_range", string(tr), logging.Err(err))
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("enumerate top artists (%s): %w", tr, err)
+			}
+			topSnapshots = append(topSnapshots, topSnapshot{
+				kind: topKindArtist, timeRange: string(tr), entityIDs: topArtistIDs(got),
+			})
+			topArtistsAll = append(topArtistsAll, got...)
+		}
+		for _, tr := range topTimeRanges {
+			got, err := w.dep.Spotify.TopTracks(ctx, token, tr, topLimit)
+			if forbidden(err) {
+				log.Warn("spotify refused top tracks despite the granted scope",
+					"time_range", string(tr), logging.Err(err))
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("enumerate top tracks (%s): %w", tr, err)
+			}
+			topSnapshots = append(topSnapshots, topSnapshot{
+				kind: topKindTrack, timeRange: string(tr), entityIDs: topTrackIDs(got),
+			})
+			topTracksAll = append(topTracksAll, got...)
+		}
+	} else {
+		log.Debug("account has not granted the top-items scope; skipping the six top-item requests")
+	}
+
+	b := build(tracks, albums, artists, topTracksAll, topArtistsAll)
+	b.topSnapshots = topSnapshots
 	if err := w.commit(ctx, userID, b); err != nil {
 		return fmt.Errorf("commit library sync: %w", err)
 	}
 	return nil
 }
 
-// commit writes one account's reconciled library in a single transaction and
-// advances its watermark.
+// commit writes one account's reconciled library and captured top snapshots
+// in a single transaction and advances its watermark.
 //
 // Everything here is in one Store.InTx: the catalogue rows the enumeration
-// referenced, all three Replace* calls, and the library_synced_at update. If
-// any step fails the whole run commits nothing, so a partial reconciliation
-// never presents a half-empty library as fact and never advances the
+// referenced, the three library Replace* calls, up to six ReplaceTopSnapshot
+// calls, and the library_synced_at update. If any step fails the whole run
+// commits nothing, so a partial reconciliation never presents a half-empty
+// library — or a half-written top ranking — as fact, and never advances the
 // watermark past data that was not actually stored.
 func (w *Worker) commit(ctx context.Context, userID uuid.UUID, b batch) error {
+	// Read once and reused for both the six snapshots and the watermark below,
+	// so a single run reports one consistent instant for "when this was
+	// captured" and "when this account was last synced", rather than two
+	// clock reads that could straddle a tick boundary.
+	now := w.now()
+
 	return w.dep.Store.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		// Catalogue detail first, exactly as internal/sync/ingest.go's commit
 		// does: the tracks and albums this run already has full metadata for
@@ -430,7 +531,19 @@ func (w *Worker) commit(ctx context.Context, userID uuid.UUID, b batch) error {
 			return err
 		}
 
-		return w.dep.Accounts.Credentials.MarkLibrarySynced(ctx, tx, userID, w.now())
+		// Zero, when the account's grant lacks scopeTopRead: b.topSnapshots is
+		// only ever populated alongside the six requests in sync, never on its
+		// own, so an account skipped for top items writes none of these and
+		// still reaches the watermark update below.
+		for _, snap := range b.topSnapshots {
+			if err := w.dep.Library.ReplaceTopSnapshot(
+				ctx, tx, userID, snap.kind, snap.timeRange, snap.entityIDs, now,
+			); err != nil {
+				return err
+			}
+		}
+
+		return w.dep.Accounts.Credentials.MarkLibrarySynced(ctx, tx, userID, now)
 	})
 }
 
@@ -467,12 +580,13 @@ func (w *Worker) nextDelay() time.Duration {
 //
 // Unlike recently-played sync's forbidden (internal/sync/account.go), which
 // parks the account because that endpoint's scope is one Encore cannot
-// function without, a 403 from any of these three endpoints means only that
-// the listener never granted an optional read scope — the ordinary state of
-// every account connected before Phase 2a added user-library-read and
-// user-follow-read to DefaultScopes(). It must not reach MarkNeedsReauth,
-// which would stop ingesting a listening history that still reads perfectly,
-// and it must not be retried, because a scope failure spends quota to fail
+// function without, a 403 from any of these endpoints — the three library
+// ones or the six top-item ones — means only that the listener never granted
+// an optional read scope, the ordinary state of every account connected
+// before Phase 2a added user-library-read, user-follow-read and
+// user-top-read to DefaultScopes(). It must not reach MarkNeedsReauth, which
+// would stop ingesting a listening history that still reads perfectly, and it
+// must not be retried, because a scope failure spends quota to fail
 // identically every time.
 func forbidden(err error) bool {
 	apiErr, ok := spotify.AsAPIError(err)
@@ -509,20 +623,50 @@ func (w *Worker) warnTruncated(log *slog.Logger, endpoint string) {
 		"endpoint", endpoint, "max_pages", w.cfg.MaxPages)
 }
 
-// batch is one account's enumerated library, converted and ready to
-// reconcile.
+// topSnapshot is one (kind, time range) ranking ready to write with
+// libstore.Repo.ReplaceTopSnapshot, kept ready-to-write rather than raw
+// Spotify types so commit's loop over the six of them needs no further
+// conversion.
+type topSnapshot struct {
+	// kind and timeRange are ReplaceTopSnapshot's own literal parameters:
+	// libstore has no typed constants for them, so these come from
+	// topKindArtist/topKindTrack below and spotify.TopTimeRange stringified.
+	kind, timeRange string
+	// entityIDs is in Spotify's own rank order: index 0 is rank 1.
+	entityIDs []string
+}
+
+// topKindArtist and topKindTrack are the only two values
+// libstore.Repo.ReplaceTopSnapshot's kind parameter accepts (see the CHECK
+// constraint in migrations/00011_top_snapshots.sql); declared here, next to
+// where they are used, since the store package exports no typed constants of
+// its own for them.
+const (
+	topKindArtist = "artist"
+	topKindTrack  = "track"
+)
+
+// batch is one account's enumerated library and captured top rankings,
+// converted and ready to reconcile or write.
 type batch struct {
 	// trackItems, albumItems and artistIDs are what the library repository
-	// reconciles the three tables against.
+	// reconciles the three library tables against.
 	trackItems []libstore.SavedItem
 	albumItems []libstore.SavedItem
 	artistIDs  []string
 
 	// tracks, albums and artists are the catalogue detail this run already
-	// carries, upserted so enrichment does not have to fetch it again.
+	// carries — from the library enumeration and, when the account granted
+	// scopeTopRead, the six top-item calls too — upserted so enrichment does
+	// not have to fetch it again.
 	tracks  []domain.Track
 	albums  []domain.Album
 	artists []domain.Artist
+
+	// topSnapshots is the up-to-six rankings this run captured, empty when
+	// the account's grant lacks scopeTopRead. commit writes each with
+	// ReplaceTopSnapshot in the same transaction as everything else here.
+	topSnapshots []topSnapshot
 }
 
 // build converts one account's raw enumeration into a batch.
@@ -531,10 +675,22 @@ type batch struct {
 // which items get full catalogue detail and which are merely registered —
 // are testable without a database or a network, the same reason
 // internal/sync/ingest.go's prepare is.
-func build(tracks []spotify.SavedTrack, albums []spotify.SavedAlbum, artists []spotify.Artist) batch {
+//
+// topTracks and topArtists are the flattened results of all three top-item
+// time ranges for each kind — order does not matter here, unlike the rank
+// order sync itself extracts into each topSnapshot.entityIDs before calling
+// build, because this function's only job for them is to mint catalogue
+// detail, the exact path a saved track or a followed artist already takes.
+// Passing nil for both leaves that behaviour exactly as it was before this
+// worker read top items at all.
+func build(
+	tracks []spotify.SavedTrack, albums []spotify.SavedAlbum, artists []spotify.Artist,
+	topTracks []spotify.Track, topArtists []spotify.Artist,
+) batch {
 	var b batch
-	seenTrack := make(map[string]struct{}, len(tracks))
+	seenTrack := make(map[string]struct{}, len(tracks)+len(topTracks))
 	seenAlbum := make(map[string]struct{}, len(tracks)+len(albums))
+	seenArtist := make(map[string]struct{}, len(artists)+len(topArtists))
 
 	b.trackItems = make([]libstore.SavedItem, 0, len(tracks))
 	for _, st := range tracks {
@@ -555,6 +711,31 @@ func build(tracks []spotify.SavedTrack, albums []spotify.SavedAlbum, artists []s
 		}
 
 		album := st.Track.Album
+		if album.ID == "" || album.Name == "" {
+			continue
+		}
+		if _, dup := seenAlbum[album.ID]; !dup {
+			seenAlbum[album.ID] = struct{}{}
+			b.albums = append(b.albums, album.ToDomainAlbum())
+		}
+	}
+
+	// Top tracks carry no saved-item concept of their own — appearing in a
+	// listener's top fifty says nothing about whether it is still saved — so
+	// this loop only ever feeds catalogue detail, never b.trackItems. It is
+	// otherwise the same object shape (a full spotify.Track, embedded album
+	// and all) that a saved track's own Track field already is, so the same
+	// name-presence and dedup rules apply unchanged.
+	for _, t := range topTracks {
+		if t.ID == "" || t.Name == "" {
+			continue
+		}
+		if _, dup := seenTrack[t.ID]; !dup {
+			seenTrack[t.ID] = struct{}{}
+			b.tracks = append(b.tracks, t.ToDomainTrack())
+		}
+
+		album := t.Album
 		if album.ID == "" || album.Name == "" {
 			continue
 		}
@@ -590,7 +771,29 @@ func build(tracks []spotify.SavedTrack, albums []spotify.SavedAlbum, artists []s
 		// genres, popularity, followers, images — unlike the simplified form
 		// embedded in a track or album, so these are upserted as resolved
 		// rather than merely registered.
-		if a.Name != "" {
+		if a.Name == "" {
+			continue
+		}
+		if _, dup := seenArtist[a.ID]; !dup {
+			seenArtist[a.ID] = struct{}{}
+			b.artists = append(b.artists, a.ToDomainArtist())
+		}
+	}
+
+	// Top artists are, like followed artists, the full object rather than the
+	// simplified form embedded in a track or album — but being a listener's
+	// top artist says nothing about whether they follow them, so unlike the
+	// loop above this one never touches b.artistIDs. seenArtist is shared
+	// with that loop purely to avoid upserting the same artist twice in one
+	// batch when a listener's top artist is also one they follow; the SQL
+	// itself (upsertArtistsSQL's DISTINCT ON) would tolerate the duplicate
+	// either way, so this is a cleanliness choice, not a correctness one.
+	for _, a := range topArtists {
+		if a.ID == "" || a.Name == "" {
+			continue
+		}
+		if _, dup := seenArtist[a.ID]; !dup {
+			seenArtist[a.ID] = struct{}{}
 			b.artists = append(b.artists, a.ToDomainArtist())
 		}
 	}
@@ -618,4 +821,52 @@ func savedItem(id string, addedAt time.Time) libstore.SavedItem {
 	}
 	at := addedAt.UTC()
 	return libstore.SavedItem{ID: id, AddedAt: &at}
+}
+
+// topArtistIDs extracts one top-artists response's ids in the rank order
+// Spotify returned them, for a topSnapshot's entityIDs: index 0 is rank 1.
+// Unlike build's catalogue-detail merge above, a blank name does not exclude
+// an id here — the ranking still has to say what Spotify put at that
+// position even when this run cannot yet mint its detail — only a blank id
+// is dropped, since ReplaceTopSnapshot has no row to place it at otherwise.
+//
+// A repeated id is also dropped, keeping its first (best-ranked) occurrence:
+// unlike the library tables, ReplaceTopSnapshot's primary key is
+// (user, kind, time_range, position), not entity id, so a duplicate id at two
+// positions is not collapsed by ON CONFLICT the way a duplicate saved-track id
+// is — it would instead write two rows for the same entity, which
+// internal/stats/topdiff.go's FULL OUTER JOIN would then read back as two
+// entries for one entity (a duplicate React key and the same play count shown
+// twice on the top-diff page).
+func topArtistIDs(artists []spotify.Artist) []string {
+	seen := make(map[string]struct{}, len(artists))
+	ids := make([]string, 0, len(artists))
+	for _, a := range artists {
+		if a.ID == "" {
+			continue
+		}
+		if _, dup := seen[a.ID]; dup {
+			continue
+		}
+		seen[a.ID] = struct{}{}
+		ids = append(ids, a.ID)
+	}
+	return ids
+}
+
+// topTrackIDs is topArtistIDs for a top-tracks response.
+func topTrackIDs(tracks []spotify.Track) []string {
+	seen := make(map[string]struct{}, len(tracks))
+	ids := make([]string, 0, len(tracks))
+	for _, t := range tracks {
+		if t.ID == "" {
+			continue
+		}
+		if _, dup := seen[t.ID]; dup {
+			continue
+		}
+		seen[t.ID] = struct{}{}
+		ids = append(ids, t.ID)
+	}
+	return ids
 }
