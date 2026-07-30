@@ -621,6 +621,58 @@ func TestAlbumDetailReportsCompletion(t *testing.T) {
 	}
 }
 
+// TestAlbumCompletionIgnoresTheRange pins the property the whole album-
+// completion feature rests on at the one layer that can actually break it.
+// stats.Service.AlbumCompletion takes no range argument, so a test that calls
+// it directly can never show its answer is independent of a range — it can
+// only call it the same way twice. The real risk is in handleAlbum
+// (internal/httpapi/entities.go), which has a domain.TimeRange in scope from
+// callerAndRange and simply chooses not to pass it to AlbumCompletion; a
+// future edit that "tidies up" that inconsistent-looking call by threading the
+// range through would pass every existing test in this repo. This fetches the
+// same album under two disjoint from/to windows — one containing the plays,
+// one well before them — and requires the completion payload to come back
+// identical either way.
+func TestAlbumCompletionIgnoresTheRange(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	albumID := "e2ealbumcompletionrng"
+	at := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{
+		samePlayItem("e2etrkcompletionrng1a", albumID, at),
+		samePlayItem("e2etrkcompletionrng1b", albumID, at.Add(5*time.Minute)),
+	}
+	syncResult := decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != 2 {
+		t.Fatalf("sync reported %v imported, want 2", syncResult["imported"])
+	}
+	inst.env.Exec(`UPDATE albums SET total_tracks = 2 WHERE id = $1`, albumID)
+
+	albumPath := func(from, to time.Time) string {
+		return fmt.Sprintf("/api/albums/%s?from=%s&to=%s", albumID,
+			url.QueryEscape(from.Format(time.RFC3339)), url.QueryEscape(to.Format(time.RFC3339)))
+	}
+	// A window containing both plays, and one well before either of them.
+	containing := albumPath(at.Add(-24*time.Hour), time.Now().Add(24*time.Hour))
+	excluding := albumPath(at.Add(-240*time.Hour), at.Add(-192*time.Hour))
+
+	within := decode[httpapi.AlbumDetail](t, b.get(containing), http.StatusOK)
+	outside := decode[httpapi.AlbumDetail](t, b.get(excluding), http.StatusOK)
+
+	if within.Completion == nil || outside.Completion == nil {
+		t.Fatal("album detail carries no completion field at all")
+	}
+	if *within.Completion != *outside.Completion {
+		t.Fatalf("completion moved with the range: %+v (plays inside) vs %+v (plays outside)",
+			within.Completion, outside.Completion)
+	}
+	if !within.Completion.Known || within.Completion.Heard != 2 || within.Completion.Total != 2 {
+		t.Fatalf("completion = %+v, want {Heard:2 Total:2 Known:true}", within.Completion)
+	}
+}
+
 // TestStatsExtrasReportsAlbumsCompleted is the same wiring check for the
 // range-scoped aggregate. The arithmetic is covered by
 // TestCompletedAlbumsIsRangeScoped in the integration suite; this pins that the

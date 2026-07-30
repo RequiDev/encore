@@ -28,27 +28,20 @@ func TestAlbumCompletionCountsDistinctTracks(t *testing.T) {
 	}
 }
 
-// TestAlbumCompletionIsAllTime is the design decision this statistic rests on.
-//
-// Completion is a property of a listening lifetime, not of whatever range the
-// page happens to be showing. A range-scoped completion would tell somebody
-// opening an album with a seven-day window that they had heard one of twelve
-// tracks, which is false.
-func TestAlbumCompletionIsAllTime(t *testing.T) {
-	f := seedStats(t)
-	f.env.Exec(`UPDATE albums SET total_tracks = 12 WHERE id = 'alb-1'`)
-
-	// AlbumCompletion takes no range at all — this test exists to pin that its
-	// answer does not move when the fixture's plays fall outside any window a
-	// caller might have been looking at.
-	got, err := f.svc.AlbumCompletion(f.env.Ctx(), f.env.Store.DB(), f.user.ID, "alb-1")
-	if err != nil {
-		t.Fatalf("album completion: %v", err)
-	}
-	if got.Heard != 2 {
-		t.Errorf("heard = %d, want 2 regardless of any range", got.Heard)
-	}
-}
+// The design decision that completion is a property of a listening lifetime,
+// not of whatever range the page happens to be showing, used to have a test
+// here named TestAlbumCompletionIsAllTime. It called AlbumCompletion the same
+// way TestAlbumCompletionCountsDistinctTracks above does — same fixture, same
+// UPDATE, same assertion on got.Heard — because AlbumCompletion takes no range
+// argument at all. A test that cannot vary the range cannot show the answer is
+// independent of it; it can only ever re-run the same call and get the same
+// number, which the neighbouring test already does. That test has been removed
+// rather than kept for its name's sake. The property it claimed to pin is now
+// actually exercised end-to-end by TestAlbumCompletionIgnoresTheRange in
+// test/e2e/e2e_test.go, which fetches GET /api/albums/{id} under two disjoint
+// from/to windows and asserts the completion payload is identical — the layer
+// where a range is actually in scope and could accidentally get threaded
+// through (see the comment on handleAlbum in internal/httpapi/entities.go).
 
 // TestAlbumCompletionUnknownWhenUnresolved guards the state a freshly imported
 // instance is in for almost every album: total_tracks defaults to 0 because
