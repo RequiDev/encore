@@ -82,8 +82,17 @@ CREATE TABLE spotify_top_snapshots (
 ```
 
 Only the **latest** capture per `(user, kind, time_range)` is retained; a refresh replaces the set
-in one transaction. Refreshed on demand when the stored capture is older than six hours, so opening
-the page repeatedly costs nothing.
+in one transaction. **Refreshed on the daily library worker tick, not on demand** — this diverges
+from the on-demand, six-hour-staleness refresh originally planned here, for the same reason §3.1
+rules out an on-demand refresh for the library sync: six sequential calls made synchronously from a
+page load would add 1-2 seconds to opening it, and a person opening a page must never trigger that.
+`internal/library` already carries the reviewed scope-check, 403-classification and
+single-transaction commit machinery a second on-demand path would have had to duplicate, so the six
+top-item calls run inside that same daily worker pass instead, alongside the library enumeration.
+Spotify itself computes these rankings over four weeks to a year, so a capture that is up to a day
+old is ample freshness for a number that already moves that slowly — the cost, stated plainly on the
+page rather than implied away, is that the snapshot shown can be up to a day stale, the same as the
+library.
 
 Retaining history — which would enable a "how Spotify's view of you drifted" view — is deliberately
 not built. The table is shaped so that adding it later is a primary-key migration rather than a
