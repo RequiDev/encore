@@ -46,8 +46,12 @@ type fakeSpotify struct {
 	topTracks     map[spotify.TopTimeRange][]spotify.Track
 	topTracksErr  map[spotify.TopTimeRange]error
 
+	playlists    []spotify.UserPlaylist
+	playlistsErr error
+
 	trackCalls, albumCalls, artistCalls int
 	topArtistCalls, topTrackCalls       int
+	playlistCalls                       int
 	// topArtistRanges and topTrackRanges record every range actually
 	// requested, in call order, so a test can pin both which of the six ran
 	// and in what order, not merely how many.
@@ -81,8 +85,13 @@ func (f *fakeSpotify) TopTracks(_ context.Context, _ string, tr spotify.TopTimeR
 	return f.topTracks[tr], f.topTracksErr[tr]
 }
 
+func (f *fakeSpotify) UserPlaylists(context.Context, string, int) ([]spotify.UserPlaylist, error) {
+	f.playlistCalls++
+	return f.playlists, f.playlistsErr
+}
+
 func (f *fakeSpotify) calls() int {
-	return f.trackCalls + f.albumCalls + f.artistCalls + f.topArtistCalls + f.topTrackCalls
+	return f.trackCalls + f.albumCalls + f.artistCalls + f.topArtistCalls + f.topTrackCalls + f.playlistCalls
 }
 
 // fakeTokens satisfies Tokens without a network or a database.
@@ -296,17 +305,17 @@ func reachesCommit(t *testing.T, fn func() error) (reached bool, err error) {
 // TestSyncSkipsAccountsMissingEitherScope pins the library-and-follow scope
 // check unchanged: neither test case here grants both required scopes, so
 // every one of them must be skipped before any request at all — including
-// the six top-item ones.
+// the six top-item ones and the playlist one.
 //
-// The "only top-read" case is the one this task added: it proves what the
-// library-and-follow check actually does now that a third, independent scope
-// exists. That check was never extended to know about scopeTopRead (see its
-// own comment), so an account carrying only user-top-read still fails it and
-// the whole account is skipped — the existing skip is all-or-nothing on its
-// own two scopes, and granting the new one does not carve out an exception.
-// This is "whatever the existing behaviour is", not a new feature: nothing
-// in this task makes top items enumerable independently of the library
-// scopes.
+// The "only top-read" and "only playlist-read" cases prove what the
+// library-and-follow check actually does now that two further, independent
+// scopes exist. That check was never extended to know about scopeTopRead or
+// scopePlaylistRead (see their own comments), so an account carrying only
+// one of them still fails it and the whole account is skipped — the existing
+// skip is all-or-nothing on its own two scopes, and granting either new one
+// does not carve out an exception. This is "whatever the existing behaviour
+// is", not a new feature: nothing in this task makes top items or playlists
+// enumerable independently of the library scopes.
 func TestSyncSkipsAccountsMissingEitherScope(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -317,7 +326,10 @@ func TestSyncSkipsAccountsMissingEitherScope(t *testing.T) {
 		{"only follow-read", []string{scopeFollowRead}},
 		{"an unrelated scope", []string{"user-read-email"}},
 		{"only top-read", []string{scopeTopRead}},
+		{"only playlist-read", []string{scopePlaylistRead}},
 		{"library-read and top-read but not follow-read", []string{scopeLibraryRead, scopeTopRead}},
+		{"library-read, top-read and playlist-read but not follow-read",
+			[]string{scopeLibraryRead, scopeTopRead, scopePlaylistRead}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -336,7 +348,8 @@ func TestSyncSkipsAccountsMissingEitherScope(t *testing.T) {
 			}
 			if got := fake.calls(); got != 0 {
 				t.Fatalf("spotify calls = %d, want 0: discovering a missing scope by asking must never happen "+
-					"(including the six top-item calls, even when scopeTopRead is present)", got)
+					"(including the six top-item calls and the playlist call, even when scopeTopRead or "+
+					"scopePlaylistRead is present)", got)
 			}
 		})
 	}
@@ -359,17 +372,22 @@ func TestSyncReachesCommitWhenBothScopesArePresentAndEnumerationSucceeds(t *test
 		t.Fatalf("calls = %d/%d/%d, want exactly one to each endpoint",
 			fake.trackCalls, fake.albumCalls, fake.artistCalls)
 	}
-	// This grant carries the library scopes but not scopeTopRead: the six
-	// top-item calls must not happen at all, and — this is the separation the
-	// brief calls out specifically — that must not stop the library three
-	// above from running and reaching commit. Folding scopeTopRead into the
-	// check above, or gating the whole function on all three scopes, would
-	// silently stop library sync for every account that granted less than
-	// all three; this assertion is what would catch that regression.
+	// This grant carries the library scopes but neither scopeTopRead nor
+	// scopePlaylistRead: the six top-item calls and the playlist call must not
+	// happen at all, and — this is the separation the brief calls out
+	// specifically — that must not stop the library three above from running
+	// and reaching commit. Folding either scope into the check above, or
+	// gating the whole function on all scopes at once, would silently stop
+	// library sync for every account that granted less than all of them; this
+	// assertion is what would catch that regression.
 	if fake.topArtistCalls != 0 || fake.topTrackCalls != 0 {
 		t.Fatalf("top calls = %d/%d, want 0/0: an account without scopeTopRead must spend zero "+
 			"requests on top items while still getting its library enumerated",
 			fake.topArtistCalls, fake.topTrackCalls)
+	}
+	if fake.playlistCalls != 0 {
+		t.Fatalf("playlist calls = %d, want 0: an account without scopePlaylistRead must spend zero "+
+			"requests on playlists while still getting its library enumerated", fake.playlistCalls)
 	}
 }
 
@@ -418,6 +436,185 @@ func TestSyncEnumeratesAllSixTopRequestsAndReachesCommitWhenTopReadIsGranted(t *
 	}
 	if !slices.Equal(fake.topTrackRanges, wantRanges) {
 		t.Fatalf("top track ranges = %v, want %v in that order", fake.topTrackRanges, wantRanges)
+	}
+}
+
+// TestSyncEnumeratesUserPlaylistsAndReachesCommitWhenPlaylistReadIsGranted is
+// the happy path for the playlist enumeration this task adds: exactly one
+// request, alongside the library three, and the whole run still reaches
+// commit.
+func TestSyncEnumeratesUserPlaylistsAndReachesCommitWhenPlaylistReadIsGranted(t *testing.T) {
+	w := testWorker(t, config.Library{})
+	fake := &fakeSpotify{
+		tracks: []spotify.SavedTrack{savedTrack("t1", "Song", now)},
+		playlists: []spotify.UserPlaylist{
+			{ID: "pl1", Name: "Road Trip", OwnerID: "owner1", SnapshotID: "snap1", TotalTracks: 12},
+		},
+	}
+	w.dep.Spotify = fake
+	creds := domain.SpotifyCredentials{Scopes: []string{scopeLibraryRead, scopeFollowRead, scopePlaylistRead}}
+
+	reached, err := reachesCommit(t, func() error {
+		return w.sync(context.Background(), uuid.New(), creds)
+	})
+	if err != nil {
+		t.Fatalf("sync = %v, want nil for a fully successful run", err)
+	}
+	if !reached {
+		t.Fatal("a full, successful run — library and the playlist request — must reach commit")
+	}
+	if fake.trackCalls != 1 || fake.albumCalls != 1 || fake.artistCalls != 1 {
+		t.Fatalf("library calls = %d/%d/%d, want 1/1/1", fake.trackCalls, fake.albumCalls, fake.artistCalls)
+	}
+	if fake.playlistCalls != 1 {
+		t.Fatalf("playlist calls = %d, want 1", fake.playlistCalls)
+	}
+	// No top-read grant here: the six top-item calls must not run merely
+	// because the playlist scope is present — the two scopes are independent.
+	if fake.topArtistCalls != 0 || fake.topTrackCalls != 0 {
+		t.Fatalf("top calls = %d/%d, want 0/0: scopePlaylistRead does not imply scopeTopRead",
+			fake.topArtistCalls, fake.topTrackCalls)
+	}
+}
+
+// TestSyncSkipsThePlaylistRequestButStillSyncsLibraryAndTopWhenPlaylistScopeIsAbsent
+// pins the separation the brief calls out specifically for this third scope:
+// an account that granted the library scopes and scopeTopRead but not
+// scopePlaylistRead must still reach commit with its library and all six
+// top-item requests intact, spending zero requests on playlists. The naive
+// reading — fold scopePlaylistRead into either existing check — would
+// instead skip either the library sync or the top snapshots for this
+// account, which this test would catch.
+func TestSyncSkipsThePlaylistRequestButStillSyncsLibraryAndTopWhenPlaylistScopeIsAbsent(t *testing.T) {
+	w := testWorker(t, config.Library{})
+	fake := &fakeSpotify{
+		tracks: []spotify.SavedTrack{savedTrack("t1", "Song", now)},
+		topArtists: map[spotify.TopTimeRange][]spotify.Artist{
+			spotify.TopShortTerm:  {{ID: "ta-short", Name: "Short Artist"}},
+			spotify.TopMediumTerm: {{ID: "ta-medium", Name: "Medium Artist"}},
+			spotify.TopLongTerm:   {{ID: "ta-long", Name: "Long Artist"}},
+		},
+		topTracks: map[spotify.TopTimeRange][]spotify.Track{
+			spotify.TopShortTerm:  {{ID: "tt-short", Name: "Short Track"}},
+			spotify.TopMediumTerm: {{ID: "tt-medium", Name: "Medium Track"}},
+			spotify.TopLongTerm:   {{ID: "tt-long", Name: "Long Track"}},
+		},
+		// Present but must never be read: proof positive is fake.playlistCalls
+		// below, not merely an empty result.
+		playlists: []spotify.UserPlaylist{{ID: "should-not-be-fetched"}},
+	}
+	w.dep.Spotify = fake
+	creds := domain.SpotifyCredentials{Scopes: []string{scopeLibraryRead, scopeFollowRead, scopeTopRead}}
+
+	reached, err := reachesCommit(t, func() error {
+		return w.sync(context.Background(), uuid.New(), creds)
+	})
+	if err != nil {
+		t.Fatalf("sync = %v, want nil for a fully successful run", err)
+	}
+	if !reached {
+		t.Fatal("a run missing only scopePlaylistRead must still reach commit")
+	}
+	if fake.playlistCalls != 0 {
+		t.Fatalf("playlist calls = %d, want 0: an account without scopePlaylistRead must spend zero "+
+			"requests on playlists while still getting its library and top items", fake.playlistCalls)
+	}
+	if fake.trackCalls != 1 || fake.albumCalls != 1 || fake.artistCalls != 1 {
+		t.Fatalf("library calls = %d/%d/%d, want 1/1/1", fake.trackCalls, fake.albumCalls, fake.artistCalls)
+	}
+	if fake.topArtistCalls != 3 || fake.topTrackCalls != 3 {
+		t.Fatalf("top calls = %d/%d, want 3/3: an absent playlist scope must not affect the six top-item calls",
+			fake.topArtistCalls, fake.topTrackCalls)
+	}
+}
+
+// TestSyncStopsAtAForbiddenPlaylistCallWithoutTouchingTheAccount mirrors
+// TestSyncStopsAtAForbiddenTopCallWithoutTouchingTheAccount for the playlist
+// request: a 403 must abandon the whole run — nothing the library three
+// already enumerated may reach commit — exactly as the brief's rule requires
+// for every one of the five enumerations.
+func TestSyncStopsAtAForbiddenPlaylistCallWithoutTouchingTheAccount(t *testing.T) {
+	w := testWorker(t, config.Library{})
+	fake := &fakeSpotify{
+		tracks:       []spotify.SavedTrack{savedTrack("t1", "Song", now)},
+		playlistsErr: &spotify.APIError{StatusCode: http.StatusForbidden},
+	}
+	w.dep.Spotify = fake
+	creds := domain.SpotifyCredentials{Scopes: []string{scopeLibraryRead, scopeFollowRead, scopePlaylistRead}}
+
+	reached, err := reachesCommit(t, func() error {
+		return w.sync(context.Background(), uuid.New(), creds)
+	})
+	if reached {
+		t.Fatal("a 403 on the playlist call must not reach the database write, even though the " +
+			"three library endpoints before it already succeeded")
+	}
+	if err != nil {
+		t.Fatalf("sync = %v, want nil: an optional scope Spotify still refuses is not a failure to report", err)
+	}
+	if fake.trackCalls != 1 || fake.albumCalls != 1 || fake.artistCalls != 1 {
+		t.Fatalf("library calls = %d/%d/%d, want 1/1/1: the library three must still have run in full",
+			fake.trackCalls, fake.albumCalls, fake.artistCalls)
+	}
+	if fake.playlistCalls != 1 {
+		t.Fatalf("playlist calls = %d, want 1: a 403 must not be retried", fake.playlistCalls)
+	}
+}
+
+// TestSyncStopsAtATruncatedPlaylistCallWithoutTouchingTheAccount mirrors
+// TestSyncStopsAtATruncatedEndpointWithoutTouchingTheAccount for the playlist
+// request: this is the rule the brief calls out as mattering most of all — a
+// partial playlist list must never reach the delete-absent reconciliation,
+// or a listener with many playlists would lose the tail on every run.
+func TestSyncStopsAtATruncatedPlaylistCallWithoutTouchingTheAccount(t *testing.T) {
+	w := testWorker(t, config.Library{})
+	fake := &fakeSpotify{
+		tracks:       []spotify.SavedTrack{savedTrack("t1", "Song", now)},
+		playlists:    []spotify.UserPlaylist{{ID: "pl-partial"}},
+		playlistsErr: fmt.Errorf("spotify: user playlists: %w", spotify.ErrTruncated),
+	}
+	w.dep.Spotify = fake
+	creds := domain.SpotifyCredentials{Scopes: []string{scopeLibraryRead, scopeFollowRead, scopePlaylistRead}}
+
+	reached, err := reachesCommit(t, func() error {
+		return w.sync(context.Background(), uuid.New(), creds)
+	})
+	if reached {
+		t.Fatal("a truncated playlist enumeration must not reach the database write: " +
+			"library_synced_at and user_playlists must stay untouched")
+	}
+	if err != nil {
+		t.Fatalf("sync = %v, want nil: a truncated run is skipped, not reported as a failure", err)
+	}
+	if fake.playlistCalls != 1 {
+		t.Fatalf("playlist calls = %d, want 1: truncation must not be retried", fake.playlistCalls)
+	}
+}
+
+// TestSyncStopsOnAGenericPlaylistCallErrorWithoutReachingCommit is
+// TestSyncStopsOnAGenericTopCallErrorWithoutReachingCommit for the playlist
+// call: an ordinary error must be reported, not swallowed, and must still
+// abandon the whole run.
+func TestSyncStopsOnAGenericPlaylistCallErrorWithoutReachingCommit(t *testing.T) {
+	w := testWorker(t, config.Library{})
+	fake := &fakeSpotify{
+		tracks:       []spotify.SavedTrack{savedTrack("t1", "Song", now)},
+		playlistsErr: errors.New("connection reset by peer"),
+	}
+	w.dep.Spotify = fake
+	creds := domain.SpotifyCredentials{Scopes: []string{scopeLibraryRead, scopeFollowRead, scopePlaylistRead}}
+
+	reached, err := reachesCommit(t, func() error {
+		return w.sync(context.Background(), uuid.New(), creds)
+	})
+	if reached {
+		t.Fatal("a failed playlist call must not reach the database write")
+	}
+	if err == nil {
+		t.Fatal("a non-scope playlist failure must be reported, not treated like a 403")
+	}
+	if fake.playlistCalls != 1 {
+		t.Fatalf("playlist calls = %d, want 1", fake.playlistCalls)
 	}
 }
 
@@ -1035,6 +1232,44 @@ func TestTopTrackIDsDropsARepeatedIDKeepingItsFirstBestRankedOccurrence(t *testi
 		t.Fatalf("topTrackIDs = %v, want %v: a repeated id must collapse to its first, "+
 			"best-ranked position rather than produce a second row ReplaceTopSnapshot's "+
 			"position-keyed primary key would not otherwise deduplicate", got, want)
+	}
+}
+
+// TestPlaylistRowsConvertsEveryFieldAndDropsBlankIDs pins playlistRows'
+// conversion: every field UserPlaylistRow carries is copied straight across,
+// and an entry with a blank id — which ReplaceUserPlaylists has no row to
+// place at all — is dropped rather than written as a broken key.
+func TestPlaylistRowsConvertsEveryFieldAndDropsBlankIDs(t *testing.T) {
+	got := playlistRows([]spotify.UserPlaylist{
+		{ID: "pl1", Name: "Road Trip", OwnerID: "owner1", SnapshotID: "snap1", TotalTracks: 12},
+		{ID: "", Name: "No Id", OwnerID: "owner2", SnapshotID: "snap2", TotalTracks: 3},
+		{ID: "pl2", Name: "", OwnerID: "owner3", SnapshotID: "snap3", TotalTracks: 0},
+	})
+	if len(got) != 2 {
+		t.Fatalf("playlistRows = %+v, want 2 (the blank id dropped)", got)
+	}
+	if got[0] != (libstore.UserPlaylistRow{ID: "pl1", Name: "Road Trip", OwnerID: "owner1", SnapshotID: "snap1", TotalTracks: 12}) {
+		t.Fatalf("playlistRows[0] = %+v, want the first playlist's fields copied straight across", got[0])
+	}
+	// A blank name is not excluded, unlike build's catalogue-detail merge: it
+	// is a legitimate playlist name Spotify itself reported, not a signal that
+	// the object is partial.
+	if got[1] != (libstore.UserPlaylistRow{ID: "pl2", Name: "", OwnerID: "owner3", SnapshotID: "snap3", TotalTracks: 0}) {
+		t.Fatalf("playlistRows[1] = %+v, want the blank-named playlist kept", got[1])
+	}
+}
+
+// TestPlaylistRowsOfEmptyIsEmptyNotNil mirrors TestTopArtistIDsOfAnEmptyRankingIsEmptyNotNil:
+// ReplaceUserPlaylists treats an empty batch as "the listener genuinely has no
+// playlists right now", a real, capturable state, so a nil slice must not
+// encode differently than an empty one.
+func TestPlaylistRowsOfEmptyIsEmptyNotNil(t *testing.T) {
+	got := playlistRows(nil)
+	if got == nil {
+		t.Fatal("playlistRows(nil) = nil, want a non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("playlistRows(nil) = %v, want empty", got)
 	}
 }
 

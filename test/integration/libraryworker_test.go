@@ -47,8 +47,12 @@ type fakeLibraryAPI struct {
 	topTracks     map[spotify.TopTimeRange][]spotify.Track
 	topTracksErr  map[spotify.TopTimeRange]error
 
+	playlists    []spotify.UserPlaylist
+	playlistsErr error
+
 	trackCalls, albumCalls, artistCalls int
 	topArtistCalls, topTrackCalls       int
+	playlistCalls                       int
 }
 
 func (f *fakeLibraryAPI) SavedTracks(context.Context, string, int) ([]spotify.SavedTrack, error) {
@@ -74,6 +78,11 @@ func (f *fakeLibraryAPI) TopArtists(_ context.Context, _ string, tr spotify.TopT
 func (f *fakeLibraryAPI) TopTracks(_ context.Context, _ string, tr spotify.TopTimeRange, _ int) ([]spotify.Track, error) {
 	f.topTrackCalls++
 	return f.topTracks[tr], f.topTracksErr[tr]
+}
+
+func (f *fakeLibraryAPI) UserPlaylists(context.Context, string, int) ([]spotify.UserPlaylist, error) {
+	f.playlistCalls++
+	return f.playlists, f.playlistsErr
 }
 
 // fakeLibraryTokens satisfies library.Tokens with a fixed token. The real
@@ -613,6 +622,308 @@ func TestLibraryWorkerReplacingWithASmallerSetDeletesAbsentRows(t *testing.T) {
 		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-shrink-2'`,
 		user.ID.String()); got != 0 {
 		t.Fatal("libw-shrink-2 survived even though the second sync omitted it")
+	}
+}
+
+// userPlaylistRow reads one row back from user_playlists for the field-level
+// assertions the playlist happy-path test needs beyond a plain count.
+type userPlaylistRow struct {
+	name        string
+	ownerID     string
+	snapshotID  string
+	totalTracks int
+	fetchedAt   time.Time
+}
+
+func readUserPlaylist(t *testing.T, env *harness.Env, userID uuid.UUID, playlistID string) userPlaylistRow {
+	t.Helper()
+	var r userPlaylistRow
+	if err := env.Pool.QueryRow(env.Ctx(),
+		`SELECT name, owner_id, snapshot_id, total_tracks, fetched_at
+		 FROM user_playlists WHERE user_id = $1 AND playlist_id = $2`,
+		userID.String(), playlistID,
+	).Scan(&r.name, &r.ownerID, &r.snapshotID, &r.totalTracks, &r.fetchedAt); err != nil {
+		t.Fatalf("read user playlist %s: %v", playlistID, err)
+	}
+	return r
+}
+
+// TestLibraryWorkerPlaylistsSyncAndAdvanceTheWatermark is the happy path for
+// the playlist enumeration: the fetched detail lands in user_playlists in the
+// same run as the library three, and library_synced_at advances.
+func TestLibraryWorkerPlaylistsSyncAndAdvanceTheWatermark(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-playlists-happy")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	api := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-pl-track-1", Name: "Track"}}},
+		playlists: []spotify.UserPlaylist{
+			{ID: "libw-pl-1", Name: "Road Trip", OwnerID: "libw-pl-owner-1", SnapshotID: "libw-pl-snap-1", TotalTracks: 42},
+		},
+	}
+	w := newLibraryWorker(t, env, api)
+
+	if err := w.SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+
+	if api.playlistCalls != 1 {
+		t.Fatalf("playlist calls = %d, want 1", api.playlistCalls)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 1 {
+		t.Fatalf("playlists = %d, want 1", got)
+	}
+	row := readUserPlaylist(t, env, user.ID, "libw-pl-1")
+	if row.name != "Road Trip" || row.ownerID != "libw-pl-owner-1" || row.snapshotID != "libw-pl-snap-1" || row.totalTracks != 42 {
+		t.Fatalf("playlist row = %+v, want name/owner/snapshot/total from the fake's response", row)
+	}
+	// The library enumeration must still have landed too — the playlist
+	// request must not have displaced it.
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1`, user.ID.String()); got != 1 {
+		t.Fatal("the library enumeration's own saved track must still have been reconciled")
+	}
+	if at := librarySyncedAt(t, env, user.ID); at == nil {
+		t.Fatal("library_synced_at was never set")
+	}
+}
+
+// TestLibraryWorkerWithoutPlaylistReadStillSyncsLibraryAndTopWithZeroPlaylistRequests
+// pins the separation the brief calls out specifically for the third scope:
+// an account that granted the library scopes and user-top-read but not
+// playlist-read-private must still get its library and top items fully
+// synced, spending zero requests on playlists.
+func TestLibraryWorkerWithoutPlaylistReadStillSyncsLibraryAndTopWithZeroPlaylistRequests(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-noplaylistread")
+	connectWithScopes(t, env, user.ID, time.Now().Add(time.Hour),
+		[]string{"user-library-read", "user-follow-read", "user-top-read"})
+
+	api := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-noplread-track-1", Name: "Track"}}},
+		topArtists: map[spotify.TopTimeRange][]spotify.Artist{
+			spotify.TopShortTerm: {{ID: "libw-noplread-artist-1", Name: "Top Artist"}},
+		},
+		// Present but must never be read: proof positive is api.playlistCalls
+		// below, not merely an empty result.
+		playlists: []spotify.UserPlaylist{{ID: "libw-noplread-playlist-1", Name: "Should Not Be Fetched"}},
+	}
+	w := newLibraryWorker(t, env, api)
+
+	if err := w.SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account = %v, want nil", err)
+	}
+
+	if api.playlistCalls != 0 {
+		t.Fatalf("playlist calls = %d, want 0: an account without playlist-read-private must spend zero "+
+			"requests on playlists", api.playlistCalls)
+	}
+	if got := env.ScalarInt(`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("playlist rows = %d, want 0", got)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-noplread-track-1'`,
+		user.ID.String()); got != 1 {
+		t.Fatal("the library enumeration must still have run and reconciled in full")
+	}
+	if api.topArtistCalls != 3 || api.topTrackCalls != 3 {
+		t.Fatalf("top calls = %d/%d, want 3/3: the six top-item requests must still have run "+
+			"despite the missing playlist scope", api.topArtistCalls, api.topTrackCalls)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM spotify_top_snapshots WHERE user_id = $1 AND kind = 'artist' AND time_range = 'short_term'`,
+		user.ID.String()); got != 1 {
+		t.Fatalf("short-term top artist rows = %d, want 1", got)
+	}
+	if at := librarySyncedAt(t, env, user.ID); at == nil {
+		t.Fatal("library_synced_at must still be set: the library half of the run is independent of playlist-read-private")
+	}
+}
+
+// TestLibraryWorkerForbiddenOnPlaylistCallLeavesEverythingUntouched mirrors
+// TestLibraryWorkerForbiddenOnTopCallLeavesEverythingUntouched for the
+// playlist request: a 403 abandons the whole run, so nothing — not even the
+// library three, which already succeeded before this call failed — may reach
+// the database.
+func TestLibraryWorkerForbiddenOnPlaylistCallLeavesEverythingUntouched(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-plforbidden")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	api := &fakeLibraryAPI{
+		tracks:       []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-plforbid-track-1", Name: "Track"}}},
+		playlistsErr: &spotify.APIError{StatusCode: http.StatusForbidden},
+	}
+	w := newLibraryWorker(t, env, api)
+
+	if err := w.SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account = %v, want nil: an optional scope Spotify still refuses is not a failure to report", err)
+	}
+
+	if at := librarySyncedAt(t, env, user.ID); at != nil {
+		t.Fatalf("library_synced_at = %v, want nil: the account must read as never synced", at)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("saved tracks = %d, want 0: the library three must not commit even though they "+
+			"already succeeded before the playlist call that failed", got)
+	}
+	if got := env.ScalarInt(`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("playlist rows = %d, want 0", got)
+	}
+	if api.playlistCalls != 1 {
+		t.Fatalf("playlist calls = %d, want 1: a 403 must not be retried", api.playlistCalls)
+	}
+
+	creds, err := env.Accounts.Credentials.Get(env.Ctx(), env.Store.DB(), user.ID)
+	if err != nil {
+		t.Fatalf("read credentials: %v", err)
+	}
+	if creds.SyncState != domain.SyncStateOK {
+		t.Fatalf("sync state = %q, want ok: a 403 from an optional scope must not touch "+
+			"recently-played sync's own state", creds.SyncState)
+	}
+}
+
+// TestLibraryWorkerTruncatedPlaylistEnumerationDeletesNothingAndLeavesTheWatermark
+// pins the rule the brief calls out as mattering most of all: a playlist
+// enumeration that hits its page cap while Spotify still had more to return
+// must not reach the delete-absent reconciliation, or a listener with many
+// playlists would lose the tail on every run. Committing the partial set
+// fakeLibraryAPI returns here would call ReplaceUserPlaylists against a
+// one-item prefix of what the account actually has, deleting the row the
+// first sync stored.
+func TestLibraryWorkerTruncatedPlaylistEnumerationDeletesNothingAndLeavesTheWatermark(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-pltruncated")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	// A first, successful sync seeds the table and the watermark.
+	first := &fakeLibraryAPI{
+		tracks:    []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-pltrunc-track-1", Name: "Track"}}},
+		playlists: []spotify.UserPlaylist{{ID: "libw-pltrunc-playlist-1", Name: "Kept"}},
+	}
+	if err := newLibraryWorker(t, env, first).SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("seed sync: %v", err)
+	}
+	before := librarySyncedAt(t, env, user.ID)
+	if before == nil {
+		t.Fatal("the seeding sync did not set library_synced_at")
+	}
+	beforeCount := env.ScalarInt(`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String())
+
+	// A second run's playlist enumeration hit its page cap: it still carries
+	// the page it did read (a different playlist than before, to prove it did
+	// not merely no-op), wrapped in ErrTruncated.
+	truncated := &fakeLibraryAPI{
+		tracks:       []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-pltrunc-track-2", Name: "Track Two"}}},
+		playlists:    []spotify.UserPlaylist{{ID: "libw-pltrunc-playlist-2", Name: "Should Not Land"}},
+		playlistsErr: fmt.Errorf("spotify: user playlists: %w", spotify.ErrTruncated),
+	}
+	if err := newLibraryWorker(t, env, truncated).SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account = %v, want nil: a truncated enumeration is skipped, not reported as a failure", err)
+	}
+
+	after := librarySyncedAt(t, env, user.ID)
+	if after == nil || !after.Equal(*before) {
+		t.Fatalf("library_synced_at moved from %v to %v; a truncated run must not advance it", before, after)
+	}
+	if afterCount := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); afterCount != beforeCount {
+		t.Fatalf("playlists changed from %d to %d rows on a truncated run", beforeCount, afterCount)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1 AND playlist_id = 'libw-pltrunc-playlist-1'`,
+		user.ID.String()); got != 1 {
+		t.Fatal("the first sync's playlist was deleted by a truncated second run that never actually saw it go missing")
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1 AND playlist_id = 'libw-pltrunc-playlist-2'`,
+		user.ID.String()); got != 0 {
+		t.Fatal("the truncated run's partial result leaked into the table despite being skipped")
+	}
+	// The library three ran normally — only the playlist call, which comes
+	// after them, was truncated — but none of it may commit either, since the
+	// whole run is abandoned rather than just the playlist reconciliation.
+	if truncated.albumCalls != 1 || truncated.artistCalls != 1 {
+		t.Fatalf("album calls = %d, artist calls = %d, want 1/1: they run before the playlist "+
+			"request and must still have completed normally", truncated.albumCalls, truncated.artistCalls)
+	}
+	if truncated.playlistCalls != 1 {
+		t.Fatalf("playlist calls = %d, want 1: truncation must not be retried", truncated.playlistCalls)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-pltrunc-track-2'`,
+		user.ID.String()); got != 0 {
+		t.Fatal("the truncated run's own saved track leaked into the table despite the whole run being abandoned")
+	}
+}
+
+// TestLibraryWorkerPlaylistScopeRevokedLeavesPreviouslyStoredPlaylistsUntouched
+// covers the guard in commit that distinguishes "the grant lacks
+// playlist-read-private, so nothing about playlists is known this run" from
+// "the scope is present and the listener genuinely has none": a listener who
+// revokes only that scope after playlists were already captured must keep
+// reading the last known set, not have it silently reconciled down to zero
+// the next time the library half of their account still syncs successfully.
+func TestLibraryWorkerPlaylistScopeRevokedLeavesPreviouslyStoredPlaylistsUntouched(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-plrevoked")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	first := &fakeLibraryAPI{
+		tracks:    []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-plrevoked-track-1", Name: "Track"}}},
+		playlists: []spotify.UserPlaylist{{ID: "libw-plrevoked-playlist-1", Name: "Still Here"}},
+	}
+	if err := newLibraryWorker(t, env, first).SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("seed sync: %v", err)
+	}
+	before := librarySyncedAt(t, env, user.ID)
+	if before == nil {
+		t.Fatal("the seeding sync did not set library_synced_at")
+	}
+
+	// The listener revokes playlist-read-private but keeps the library scopes,
+	// so the account is still connected and still due for library sync — this
+	// is not connectWithScopes seeding a brand new grant, it is the same
+	// account's row being overwritten with a narrower one, exactly what a
+	// Spotify re-consent narrowing an existing grant looks like.
+	connectWithScopes(t, env, user.ID, time.Now().Add(time.Hour),
+		[]string{"user-library-read", "user-follow-read"})
+
+	second := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-plrevoked-track-2", Name: "Track Two"}}},
+		// Present but must never be read now that the scope is gone.
+		playlists: []spotify.UserPlaylist{{ID: "libw-plrevoked-playlist-2", Name: "Should Not Be Fetched"}},
+	}
+	if err := newLibraryWorker(t, env, second).SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("second sync = %v, want nil", err)
+	}
+
+	if second.playlistCalls != 0 {
+		t.Fatalf("playlist calls = %d, want 0: the scope is gone, so the request must never be made", second.playlistCalls)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1 AND playlist_id = 'libw-plrevoked-playlist-1'`,
+		user.ID.String()); got != 1 {
+		t.Fatal("the previously captured playlist was deleted merely because the scope was later revoked; " +
+			"a run that never asked Spotify about playlists must not reconcile that table at all")
+	}
+	if got := env.ScalarInt(`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 1 {
+		t.Fatalf("playlist rows = %d, want exactly the one row the first, scoped sync stored", got)
+	}
+	// The library half of the run is unaffected by the revoked playlist scope:
+	// it must still have run and advanced the watermark past the seed.
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-plrevoked-track-2'`,
+		user.ID.String()); got != 1 {
+		t.Fatal("the second sync's own library enumeration must still have run and reconciled")
+	}
+	after := librarySyncedAt(t, env, user.ID)
+	if after == nil || !after.After(*before) {
+		t.Fatalf("library_synced_at = %v, want an instant after the seed %v: the second sync must still have committed", after, before)
 	}
 }
 
