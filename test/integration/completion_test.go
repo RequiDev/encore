@@ -3,10 +3,16 @@
 package integration
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store/listens"
+	"github.com/RequiDev/encore/test/harness"
 )
 
 // TestAlbumCompletionCountsDistinctTracks is the core arithmetic. Playing one
@@ -136,3 +142,149 @@ func TestCompletedAlbumsEmptyRangeIsNotAnError(t *testing.T) {
 		t.Errorf("expected zeroes, got %+v", got)
 	}
 }
+
+// seedAlbumWithPlays inserts one artist (artist00000000000000001), one album
+// with total_tracks = total, that many tracks linked to the album and credited
+// to the artist, and one 2019 play for the first `played` of them — except the
+// very first played track, which gets two plays two days apart. That repeat is
+// deliberate: with only ever one listen per track, dropping DISTINCT from
+// albumHeardTracksSQL would return exactly as many ids as there are tracks
+// heard, and the mutation this fixture exists to catch would pass silently.
+//
+// It deliberately never writes to album_tracks: that cache belongs to a
+// different task (the fetched Spotify listing), and AlbumHeardTracks must give
+// the right answer whether or not that cache has ever been populated for this
+// album. A helper that populated it "for realism" would quietly stop testing
+// that, since a query that joined through album_tracks by mistake could still
+// find matching rows there and pass.
+func seedAlbumWithPlays(t *testing.T, env *harness.Env, userID uuid.UUID, albumID string, total, played int) {
+	t.Helper()
+	if played > total {
+		t.Fatalf("seedAlbumWithPlays: played (%d) exceeds total (%d)", played, total)
+	}
+	const artistID = "artist00000000000000001"
+
+	env.Exec(`INSERT INTO artists (id, name, name_norm, metadata_state) VALUES ($1, 'Artist', 'artist', 'resolved')`,
+		artistID)
+	env.Exec(`INSERT INTO albums (id, name, name_norm, album_type, metadata_state, total_tracks)
+	          VALUES ($1, 'Album', 'album', 'album', 'resolved', $2)`, albumID, total)
+
+	stage := func(trackID string, at time.Time) listens.StagedListen {
+		return listens.Stage(domain.Listen{
+			UserID:    userID,
+			PlayedAt:  at,
+			Precision: domain.PrecisionSecond,
+			Identity:  domain.TrackIdentityFromID(trackID),
+			MsPlayed:  200_000,
+			Source:    domain.SourceExtended,
+		}, nil)
+	}
+
+	wantListens := 0
+	batch := make([]listens.StagedListen, 0, played+1)
+	for i := 0; i < total; i++ {
+		trackID := fmt.Sprintf("%s-track-%02d", albumID, i)
+		env.Exec(`INSERT INTO tracks (id, name, name_norm, album_id, metadata_state)
+		          VALUES ($1, 'Track', 'track', $2, 'resolved')`, trackID, albumID)
+		env.Exec(`INSERT INTO track_artists (track_id, artist_id, position) VALUES ($1, $2, 0)`,
+			trackID, artistID)
+
+		if i < played {
+			at := time.Date(2019, time.January, 1, 12, 0, 0, 0, time.UTC).Add(time.Duration(i) * 24 * time.Hour)
+			batch = append(batch, stage(trackID, at))
+			wantListens++
+			if i == 0 {
+				batch = append(batch, stage(trackID, at.Add(48*time.Hour)))
+				wantListens++
+			}
+		}
+	}
+
+	n, err := env.Listens.InsertListens(env.Ctx(), env.Store.DB(), batch, "UTC")
+	if err != nil {
+		t.Fatalf("seed album plays: %v", err)
+	}
+	if int(n) != wantListens {
+		t.Fatalf("seeded %d of %d listens; the fixture has an accidental duplicate", n, wantListens)
+	}
+}
+
+// TestAlbumHeardTracksMatchesTheCompletionNumerator is the consistency property
+// the album page depends on. The count and the set are two readings of the same
+// question, and a page that shows "9 of 12 heard" beside four tracks it calls
+// unheard is worse than one that shows neither.
+func TestAlbumHeardTracksMatchesTheCompletionNumerator(t *testing.T) {
+	env := harness.New(t)
+	ctx := env.Ctx()
+	user := env.NewUser("heardtracksuser")
+
+	// Nine of the album's twelve tracks played, at various times.
+	seedAlbumWithPlays(t, env, user.ID, "album000000000000000001", 12, 9)
+
+	svc := stats.New(env.Store)
+	completion, err := svc.AlbumCompletion(ctx, env.Store.DB(), user.ID, "album000000000000000001")
+	if err != nil {
+		t.Fatalf("AlbumCompletion: %v", err)
+	}
+	heard, err := svc.AlbumHeardTracks(ctx, env.Store.DB(), user.ID, "album000000000000000001")
+	if err != nil {
+		t.Fatalf("AlbumHeardTracks: %v", err)
+	}
+	if int64(len(heard)) != completion.Heard {
+		t.Fatalf("AlbumHeardTracks returned %d ids but AlbumCompletion counted %d; "+
+			"the page would contradict itself", len(heard), completion.Heard)
+	}
+	if completion.Heard != 9 {
+		t.Fatalf("completion.Heard = %d, want 9", completion.Heard)
+	}
+}
+
+// TestAlbumHeardTracksRespectsTheBlacklist keeps an excluded artist excluded
+// here too. Without it the album page would name tracks by an artist the
+// listener has told Encore to forget.
+func TestAlbumHeardTracksRespectsTheBlacklist(t *testing.T) {
+	env := harness.New(t)
+	ctx := env.Ctx()
+	user := env.NewUser("heardtracksblacklistuser")
+	seedAlbumWithPlays(t, env, user.ID, "album000000000000000001", 12, 9)
+
+	svc := stats.New(env.Store)
+	before, err := svc.AlbumHeardTracks(ctx, env.Store.DB(), user.ID, "album000000000000000001")
+	if err != nil {
+		t.Fatalf("AlbumHeardTracks: %v", err)
+	}
+	if len(before) == 0 {
+		t.Fatal("no tracks were heard before blacklisting; the fixture is wrong")
+	}
+
+	if err := env.Catalog.Blacklist(ctx, env.Store.DB(), user.ID, "artist00000000000000001"); err != nil {
+		t.Fatalf("Blacklist: %v", err)
+	}
+	after, err := svc.AlbumHeardTracks(ctx, env.Store.DB(), user.ID, "album000000000000000001")
+	if err != nil {
+		t.Fatalf("AlbumHeardTracks after blacklisting: %v", err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("%d tracks still counted as heard after the artist was blacklisted, want 0", len(after))
+	}
+}
+
+// There is deliberately no TestAlbumHeardTracksIgnoresTheRange here. The plan
+// this task comes from asked for one shaped like the two tests above: seed
+// plays in 2019, call AlbumHeardTracks, assert 9 came back. AlbumHeardTracks
+// takes no range argument at all — the same reason AlbumCompletion has none
+// (see the removed-test comment above, between
+// TestAlbumCompletionCountsDistinctTracks and
+// TestAlbumCompletionUnknownWhenUnresolved) — so that test could only ever
+// re-run the exact call TestAlbumHeardTracksMatchesTheCompletionNumerator
+// above already makes, against the same fixture, and check the same number.
+// A test that cannot vary the range cannot show the answer is independent of
+// one; it would have been the identical defect this file already removed a
+// test for once, under a new name.
+//
+// What actually pins "not range-filtered" is
+// TestAlbumHeardTracksSQLIsNotRangeScoped in internal/stats/stats_test.go,
+// which reads the composed statement and fails if it ever mentions
+// played_at — the only column a range predicate could be written against.
+// That fails on a bad edit without needing a fixture or a database, which a
+// test built from this function's signature never could.

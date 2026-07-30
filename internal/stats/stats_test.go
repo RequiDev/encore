@@ -74,6 +74,7 @@ func statements() []statement {
 		{name: "playlistContext", sql: playlistContextSQL, params: 4},
 		{name: "playlistContextCoverage", sql: playlistContextCoverageSQL, params: 3},
 		{name: "albumCompletion", sql: albumCompletionSQL, params: 2},
+		{name: "albumHeardTracks", sql: albumHeardTracksSQL, params: 2},
 		{name: "completedAlbums", sql: completedAlbumsSQL, params: 3},
 		{name: "librarySnapshot", sql: librarySnapshotSQL, params: 1},
 		{name: "savedNeverPlayed", sql: savedNeverPlayedSQL, params: 2},
@@ -163,6 +164,29 @@ func TestRangeFilterComposition(t *testing.T) {
 	}
 	if strings.Count(got, "(") != strings.Count(got, ")") {
 		t.Errorf("unbalanced parentheses:\n%s", got)
+	}
+}
+
+// TestAlbumHeardTracksSQLIsNotRangeScoped pins a property no integration test
+// can: AlbumHeardTracks (like AlbumCompletion beside it) takes no range
+// argument at all, so a test that only ever calls it can never vary the range
+// and show the answer is independent of one — it could only re-run the same
+// call against the same fixture and get the same number, which is exactly the
+// kind of test test/integration/completion_test.go already removed once for
+// AlbumCompletion (see the comment there). What can actually be pinned is the
+// composed statement itself: neither query may reference played_at, the only
+// column a range predicate could be written against. This fails immediately if
+// a future edit threads rangeFilter through "for consistency", without needing
+// a fixture or a database at all.
+func TestAlbumHeardTracksSQLIsNotRangeScoped(t *testing.T) {
+	for _, st := range []struct{ name, sql string }{
+		{"albumHeardTracks", albumHeardTracksSQL},
+		{"albumCompletion", albumCompletionSQL},
+	} {
+		if strings.Contains(st.sql, "played_at") {
+			t.Errorf("%s references played_at; completion is a property of a listening "+
+				"lifetime, not of whatever window a page happens to be showing", st.name)
+		}
 	}
 }
 
