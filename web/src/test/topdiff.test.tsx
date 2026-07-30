@@ -194,4 +194,54 @@ describe('the top-diff page', () => {
     if (!spotifyOnlyRow) throw new Error('row not found')
     expect(within(spotifyOnlyRow).getByTitle(/outside encore's ranking/i)).toBeInTheDocument()
   })
+
+  it('shows the delta between Spotify and Encore ranks, and a dash rather than a number when only one side ranks the entity', async () => {
+    const capturedAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/top-diff': topDiffPayload({
+        capturedAt,
+        entries: [
+          {
+            entity: artist({ id: 'big-gap', name: 'A Big Disagreement' }),
+            spotifyRank: 2,
+            encoreRank: 17,
+            plays: 4,
+          },
+          {
+            entity: artist({ id: 'tied', name: 'Tied Exactly' }),
+            spotifyRank: 5,
+            encoreRank: 5,
+            plays: 9,
+          },
+          {
+            entity: artist({ id: 'encore-only', name: 'Only Encore Ranks This' }),
+            spotifyRank: null,
+            encoreRank: 3,
+            plays: 20,
+          },
+        ],
+      }),
+    })
+
+    render(mountAt('/top-diff'))
+    await waitForPage()
+
+    const bigGapRow = (await screen.findByText('A Big Disagreement')).closest('tr')
+    if (!bigGapRow) throw new Error('row not found')
+    expect(within(bigGapRow).getByText('+15')).toBeInTheDocument()
+
+    const tiedRow = (await screen.findByText('Tied Exactly')).closest('tr')
+    if (!tiedRow) throw new Error('row not found')
+    expect(within(tiedRow).getByText('=')).toBeInTheDocument()
+
+    const encoreOnlyRow = (await screen.findByText('Only Encore Ranks This')).closest('tr')
+    if (!encoreOnlyRow) throw new Error('row not found')
+    // No delta can be computed against an absent side: a dash, never a
+    // number that would misread as a real rank change.
+    expect(
+      within(encoreOnlyRow).getByTitle(/nothing on the other side to take a delta against/i),
+    ).toBeInTheDocument()
+    expect(within(encoreOnlyRow).queryByText(/^[+-]\d+$/)).not.toBeInTheDocument()
+  })
 })

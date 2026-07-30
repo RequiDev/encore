@@ -35,7 +35,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { qk } from '../lib/query'
 import { useSession } from '../lib/session'
-import { EMPTY, formatCount, formatPlural, formatRelative } from '../lib/format'
+import { EMPTY, formatCount, formatPlural, formatRelative, rankChange } from '../lib/format'
 import type {
   ArtistRef,
   SpotifyTimeRange,
@@ -228,7 +228,7 @@ export default function TopDiff(): ReactElement {
         <ScopeGate />
       ) : query.isPending ? (
         <Panel padded={false}>
-          <SkeletonLedger rows={10} columns={4} />
+          <SkeletonLedger rows={10} columns={5} />
         </Panel>
       ) : query.isError ? (
         <Panel padded={false}>
@@ -316,6 +316,9 @@ function DiffTable({ kind, column, entries }: DiffTableProps): ReactElement {
           <LedgerHeaderCell numeric className="w-16">
             Encore
           </LedgerHeaderCell>
+          <LedgerHeaderCell numeric className="w-16">
+            Delta
+          </LedgerHeaderCell>
           <LedgerHeaderCell numeric>Plays</LedgerHeaderCell>
         </LedgerRow>
       </LedgerHead>
@@ -350,6 +353,9 @@ function DiffTable({ kind, column, entries }: DiffTableProps): ReactElement {
                 absentTitle="Outside Encore's ranking for this window"
               />
             </LedgerCell>
+            <LedgerCell numeric>
+              <Delta spotifyRank={entry.spotifyRank} encoreRank={entry.encoreRank} />
+            </LedgerCell>
             <LedgerCell numeric>{entry.encoreRank === null ? EMPTY : formatCount(entry.plays)}</LedgerCell>
           </LedgerRow>
         ))}
@@ -368,4 +374,65 @@ function RankCell({ rank, absentTitle }: { rank: number | null; absentTitle: str
     )
   }
   return <span className="tabular">{rank}</span>
+}
+
+/**
+ * How Spotify's rank differs from Encore's rank for the same entity and
+ * window — the delta the design doc asks for beside the two ranks
+ * themselves, so "Spotify 2 / Encore 17" reads as the disagreement it is
+ * without the reader doing the subtraction across the table.
+ *
+ * Reuses `rankChange` (`lib/format.ts`) for the arithmetic and its `+N` /
+ * `-N` / `=` label, the same convention `Dashboard.tsx`'s period-over-period
+ * `Movement` cell renders for rank change over time. There is no "new" case
+ * here the way there is for `Movement`, though: `rankChange` reports one
+ * when its second argument is null, but "new" means "absent in the
+ * *previous period*", and there is no previous period in this comparison,
+ * only two independent sides ranking the same one. An entity ranked on only
+ * one side has nothing on the other side to take a delta against — treating
+ * that as a rank change of however many places the present side's rank
+ * happens to be would read as a real disagreement (e.g. "+17") when the
+ * truth is "this side does not rank it at all" — so that case is handled
+ * before `rankChange` is ever called, rendering the same dash `RankCell`
+ * already uses for an absent rank rather than a number computed against
+ * zero.
+ *
+ * Spotify is the baseline: the page frames the whole comparison as how
+ * Spotify's own ranking compares with Encore's (see the page title and
+ * description above), so a positive delta means Spotify ranks the entity
+ * that many places higher — a better, lower position number — than Encore
+ * does, matching the "up" `Movement` shows when a rank improves on its
+ * reference.
+ */
+function Delta({
+  spotifyRank,
+  encoreRank,
+}: {
+  spotifyRank: number | null
+  encoreRank: number | null
+}): ReactElement {
+  if (spotifyRank === null || encoreRank === null) {
+    return (
+      <span
+        className="text-ink-faint"
+        title="Ranked by only one side; there is nothing on the other side to take a delta against"
+      >
+        {EMPTY}
+      </span>
+    )
+  }
+  const change = rankChange(spotifyRank, encoreRank)
+  if (change.direction === 'flat') {
+    return <span className="text-ink-faint">{change.label}</span>
+  }
+  const description =
+    change.direction === 'up'
+      ? `Spotify ranks this ${formatPlural(change.places, 'place')} higher than Encore does`
+      : `Spotify ranks this ${formatPlural(change.places, 'place')} lower than Encore does`
+  return (
+    <>
+      <span aria-hidden="true">{change.label}</span>
+      <span className="sr-only">{description}</span>
+    </>
+  )
 }
