@@ -35,6 +35,7 @@ import {
 import type {
   ArtistRef,
   CompareResponse,
+  CompletedAlbums,
   GenresResponse,
   HistoryItem,
   HistoryResponse,
@@ -753,8 +754,8 @@ export default function Dashboard(): ReactElement {
 
       <Panel title="Also worth knowing" description="Odds and ends about this range" padded={false}>
         {extras.isPending ? (
-          <div className="grid gap-px bg-seam sm:grid-cols-3 [&>*]:bg-panel">
-            {Array.from({ length: 3 }, (_, i) => (
+          <div className="grid gap-px bg-seam sm:grid-cols-2 lg:grid-cols-4 [&>*]:bg-panel">
+            {Array.from({ length: 4 }, (_, i) => (
               <div key={i} className="p-4">
                 <Skeleton className="h-3 w-24" />
                 <Skeleton className="mt-3 h-9 w-20" />
@@ -772,7 +773,7 @@ export default function Dashboard(): ReactElement {
         ) : (
           // `StatGrid` would draw a second panel border inside this one, so the
           // seamed grid it is built from is repeated here without the frame.
-          <div className="grid gap-px bg-seam sm:grid-cols-3 [&>*]:bg-panel">
+          <div className="grid gap-px bg-seam sm:grid-cols-2 lg:grid-cols-4 [&>*]:bg-panel">
             <Stat
               label="Different artists"
               value={formatCount(extras.data?.differentArtists ?? 0)}
@@ -788,6 +789,12 @@ export default function Dashboard(): ReactElement {
               value={formatAverage(extras.data?.averageArtistsPerTrack ?? 0)}
               hint="Collaborations push this above one"
             />
+            <div className="min-w-0 p-4">
+              <p className="eyebrow">Albums completed</p>
+              <p className="mt-2 text-sm text-ink">
+                {completedAlbumsSentence(extras.data?.albumsCompleted)}
+              </p>
+            </div>
           </div>
         )}
       </Panel>
@@ -900,6 +907,20 @@ function formatYear(value: number | null): string {
 function formatAverage(value: number): string {
   if (!Number.isFinite(value)) return EMPTY
   return value.toFixed(1)
+}
+
+/**
+ * The album-completion aggregate, spelled out as a full sentence rather than a
+ * bare count. A number alone — "12" — cannot say what it is out of, and this
+ * figure's denominator is not the same one the album page's own completion
+ * stat uses: this one is the range's albums, that one is a lifetime of plays
+ * on a single record. Naming it in the sentence is what keeps the two apart.
+ */
+function completedAlbumsSentence(data: CompletedAlbums | undefined): string {
+  if (!data || data.albums <= 0) {
+    return 'No albums with a known track count were played in this range.'
+  }
+  return `Heard every track on ${formatCount(data.complete)} of the ${formatPlural(data.albums, 'album')} with a known track count you played in this range.`
 }
 
 /**

@@ -124,7 +124,7 @@ All accept `from` and `to`.
 | `GET` | `/api/stats/streaks` | Current and longest runs of consecutive listening days. |
 | `GET` | `/api/stats/compare` | `?aFrom=&aTo=&bFrom=&bTo=`. Two summaries plus deltas. |
 | `GET` | `/api/stats/year-in-review?year=2026` | Wrapped-style yearly summary. |
-| `GET` | `/api/stats/extras` | Different artists per period, average album release year, average artists per track. |
+| `GET` | `/api/stats/extras` | Different artists per period, average album release year, average artists per track, albums completed in the range. |
 | `GET` | `/api/stats/affinity/{userId}` | Shared artists, albums and tracks with another user, and a similarity score. |
 | `GET` | `/api/stats/genres` | `?limit=&offset=`. Ranked genres of the artists behind the range's listening, with each genre's `plays` and `msPlayed`. Genre plays sum to more than the range's total plays, because a track counts toward every genre of every credited artist. Carries `coverage`: how many of the range's listens resolved to at least one genred artist. |
 | `GET` | `/api/stats/genres/timeline` | `?interval=&genre=`, with `genre` **repeated** (`?genre=rock&genre=jazz`), never comma-joined. Buckets the named genres across the range — one point per bucket per genre, zeroes included. Omitting `genre` charts the range's current top eight; at most **eight** genres may be requested in one call, matching what a stacked area chart can still show as distinct series. |
@@ -146,13 +146,43 @@ actually compute from. A ranking or breakdown carries the pair as a `coverage`/`
 alongside its list; a single figure carries it inline next to `value`. Nothing divides a partial
 count by the whole range and calls the result complete.
 
+### Album completion
+
+`/api/albums/{id}` and `/api/stats/extras` both report album completion, and they deliberately
+answer different questions.
+
+`completion` on the album payload is **all-time**: how much of this one album the caller has ever
+heard, ignoring `from`/`to` entirely, because completion is a property of a listening lifetime, not
+of whichever window the page happens to be showing.
+
+```json
+{ "heard": 9, "total": 12, "known": true }
+```
+
+`albumsCompleted` on `/api/stats/extras` is the ordinary **range-scoped** aggregate: of the albums
+played inside `from`/`to`, how many were heard in full.
+
+```json
+{ "complete": 41, "albums": 63 }
+```
+
+The two are expected to disagree. A listener who finished an album years before the selected range
+still reports `completion` as complete (`known: true`, `heard` at least `total`), while
+`albumsCompleted` only credits that album if the plays that completed it fall inside the range.
+
+`known` is false when the album's `total_tracks` is still 0 — enrichment has not resolved the track
+count yet, not that the album has no tracks. A client renders "track count not known yet" rather
+than a ratio or `0%` in that case, and `albumsCompleted` excludes such albums from both `complete`
+and `albums` for the same reason: crediting or penalising a listener for a number Spotify has not
+supplied yet would not describe their listening.
+
 ## Entities
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/tracks/{id}` | Track, its album and artists, plus the caller's stats for it over the range. |
 | `GET` | `/api/artists/{id}` | Artist, the caller's stats, top tracks, top albums, day repartition, first and last listen, share of total listening. |
-| `GET` | `/api/albums/{id}` | Album, its artists and tracks, plus the caller's stats. |
+| `GET` | `/api/albums/{id}` | Album, its artists and tracks, plus the caller's stats and how much of it has ever been heard. |
 | `GET` | `/api/search?q=&limit=` | Catalogue search across artists, albums and tracks. |
 
 ## Listening history

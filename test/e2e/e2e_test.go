@@ -569,6 +569,144 @@ func playItem(trackID string, at time.Time) map[string]any {
 	}
 }
 
+// samePlayItem is playItem with the album id pinned rather than derived from
+// the track id, so two plays can be made to land on the same album. That is
+// the one shape the completion statistics need and playItem cannot produce.
+func samePlayItem(trackID, albumID string, at time.Time) map[string]any {
+	return map[string]any{
+		"played_at": at.Format(time.RFC3339),
+		"track": map[string]any{
+			"id": trackID, "name": "Track " + trackID, "duration_ms": 210000,
+			"album": map[string]any{
+				"id": albumID, "name": "Album", "album_type": "album",
+				"release_date": "2019-06-01", "release_date_precision": "day",
+				"artists": []any{map[string]any{"id": "art" + albumID, "name": "Artist"}},
+			},
+			"artists": []any{map[string]any{"id": "art" + albumID, "name": "Artist"}},
+		},
+	}
+}
+
+// TestAlbumDetailReportsCompletion pins the one thing a service-level test of
+// stats.Service.AlbumCompletion cannot see: that the figure actually reaches the
+// album detail response as JSON. The arithmetic itself is covered exhaustively
+// in test/integration/completion_test.go; this is the wiring.
+func TestAlbumDetailReportsCompletion(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	albumID := "e2ealbumcomplete0001"
+	at := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{
+		samePlayItem("e2etrackcomplete001a", albumID, at),
+		samePlayItem("e2etrackcomplete001b", albumID, at.Add(5*time.Minute)),
+	}
+	syncResult := decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != 2 {
+		t.Fatalf("sync reported %v imported, want 2", syncResult["imported"])
+	}
+
+	// Import leaves total_tracks at its unenriched default of 0; set it as if
+	// enrichment had already resolved it, exactly as completion_test.go does at
+	// the service level.
+	inst.env.Exec(`UPDATE albums SET total_tracks = 2 WHERE id = $1`, albumID)
+
+	detail := decode[httpapi.AlbumDetail](t, b.get("/api/albums/"+albumID), http.StatusOK)
+	if detail.Completion == nil {
+		t.Fatal("album detail carries no completion field at all")
+	}
+	if !detail.Completion.Known || detail.Completion.Heard != 2 || detail.Completion.Total != 2 {
+		t.Fatalf("completion = %+v, want {Heard:2 Total:2 Known:true}", detail.Completion)
+	}
+}
+
+// TestAlbumCompletionIgnoresTheRange pins the property the whole album-
+// completion feature rests on at the one layer that can actually break it.
+// stats.Service.AlbumCompletion takes no range argument, so a test that calls
+// it directly can never show its answer is independent of a range — it can
+// only call it the same way twice. The real risk is in handleAlbum
+// (internal/httpapi/entities.go), which has a domain.TimeRange in scope from
+// callerAndRange and simply chooses not to pass it to AlbumCompletion; a
+// future edit that "tidies up" that inconsistent-looking call by threading the
+// range through would pass every existing test in this repo. This fetches the
+// same album under two disjoint from/to windows — one containing the plays,
+// one well before them — and requires the completion payload to come back
+// identical either way.
+func TestAlbumCompletionIgnoresTheRange(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	albumID := "e2ealbumcompletionrng"
+	at := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{
+		samePlayItem("e2etrkcompletionrng1a", albumID, at),
+		samePlayItem("e2etrkcompletionrng1b", albumID, at.Add(5*time.Minute)),
+	}
+	syncResult := decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != 2 {
+		t.Fatalf("sync reported %v imported, want 2", syncResult["imported"])
+	}
+	inst.env.Exec(`UPDATE albums SET total_tracks = 2 WHERE id = $1`, albumID)
+
+	albumPath := func(from, to time.Time) string {
+		return fmt.Sprintf("/api/albums/%s?from=%s&to=%s", albumID,
+			url.QueryEscape(from.Format(time.RFC3339)), url.QueryEscape(to.Format(time.RFC3339)))
+	}
+	// A window containing both plays, and one well before either of them.
+	containing := albumPath(at.Add(-24*time.Hour), time.Now().Add(24*time.Hour))
+	excluding := albumPath(at.Add(-240*time.Hour), at.Add(-192*time.Hour))
+
+	within := decode[httpapi.AlbumDetail](t, b.get(containing), http.StatusOK)
+	outside := decode[httpapi.AlbumDetail](t, b.get(excluding), http.StatusOK)
+
+	if within.Completion == nil || outside.Completion == nil {
+		t.Fatal("album detail carries no completion field at all")
+	}
+	if *within.Completion != *outside.Completion {
+		t.Fatalf("completion moved with the range: %+v (plays inside) vs %+v (plays outside)",
+			within.Completion, outside.Completion)
+	}
+	if !within.Completion.Known || within.Completion.Heard != 2 || within.Completion.Total != 2 {
+		t.Fatalf("completion = %+v, want {Heard:2 Total:2 Known:true}", within.Completion)
+	}
+}
+
+// TestStatsExtrasReportsAlbumsCompleted is the same wiring check for the
+// range-scoped aggregate. The arithmetic is covered by
+// TestCompletedAlbumsIsRangeScoped in the integration suite; this pins that the
+// extras endpoint actually serialises what the service computes.
+func TestStatsExtrasReportsAlbumsCompleted(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	albumID := "e2ealbumcompleted002"
+	at := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{
+		samePlayItem("e2etrackcompleted02a", albumID, at),
+	}
+	syncResult := decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != 1 {
+		t.Fatalf("sync reported %v imported, want 1", syncResult["imported"])
+	}
+	// One track played, and Spotify says the album has exactly one: complete.
+	inst.env.Exec(`UPDATE albums SET total_tracks = 1 WHERE id = $1`, albumID)
+
+	from := at.Add(-24 * time.Hour).Format(time.RFC3339)
+	to := time.Now().Add(24 * time.Hour).Format(time.RFC3339)
+	extras := decode[httpapi.StatsExtras](t, b.get(
+		fmt.Sprintf("/api/stats/extras?from=%s&to=%s", url.QueryEscape(from), url.QueryEscape(to))),
+		http.StatusOK)
+	if extras.AlbumsCompleted == nil {
+		t.Fatal("extras carries no albumsCompleted field at all")
+	}
+	if extras.AlbumsCompleted.Albums != 1 || extras.AlbumsCompleted.Complete != 1 {
+		t.Fatalf("albumsCompleted = %+v, want {Complete:1 Albums:1}", extras.AlbumsCompleted)
+	}
+}
+
 func TestImportFlowThroughTheAPI(t *testing.T) {
 	inst := newInstance(t)
 	b := inst.browser()

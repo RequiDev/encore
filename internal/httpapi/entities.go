@@ -300,11 +300,22 @@ func (s *Server) handleAlbum(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// Deliberately not passed tr, even though it is right there in scope above:
+	// completion is all-time by design (see stats.AlbumCompletion), so threading
+	// the range through here would silently make it range-scoped instead. Pinned
+	// end-to-end by TestAlbumCompletionIgnoresTheRange in test/e2e/e2e_test.go.
+	completion, err := s.stats.AlbumCompletion(ctx, s.querier, user.ID, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	c := toAlbumCompletion(completion)
 
 	writeJSON(w, r, http.StatusOK, AlbumDetail{
-		Album:     refs.fullAlbum(album),
-		Stats:     toEntityStats(st.EntityStats),
-		TopTracks: countEntries(st.TopTracks, refs.trackEntity),
+		Album:      refs.fullAlbum(album),
+		Stats:      toEntityStats(st.EntityStats),
+		TopTracks:  countEntries(st.TopTracks, refs.trackEntity),
+		Completion: &c,
 	})
 }
 
