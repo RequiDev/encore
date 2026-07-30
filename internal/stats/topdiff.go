@@ -16,13 +16,14 @@ import (
 // and Encore's ranking of the same kind and window.
 //
 // SpotifyRank and EncoreRank are each 1-based and independent: 0 means the
-// entity is absent from that side rather than tied for last place. An entity
-// can be absent from a side either because it fell outside that side's own
-// top page (see TopDiff's limit) or, on Encore's side specifically, because
-// every one of its plays is invisible to the blacklist (see TopDiff's doc
-// comment on that case). An entry with both ranks set is where the two
-// sides agree an entity belongs; an entry with only one set is the
-// disagreement this statistic exists to surface.
+// entity is absent from that side rather than tied for last place, because it
+// fell outside that side's own top page (see TopDiff's limit). A blacklisted
+// artist - or, for the track kind, a track credited to one - never produces
+// an entry at all: the blacklist means "don't show me this artist", so it is
+// removed from both sides rather than surfaced with one rank zeroed. An entry
+// with both ranks set is where the two sides agree an entity belongs; an
+// entry with only one set is the disagreement this statistic exists to
+// surface.
 type TopDiffEntry struct {
 	EntityID    string
 	SpotifyRank int
@@ -113,6 +114,47 @@ const topDiffCapturedAtSQL = `
 SELECT max(captured_at) FROM spotify_top_snapshots
 WHERE user_id = $1 AND kind = $2 AND time_range = $3`
 
+// topDiffSpotifyBlacklistFilter excludes a Spotify-captured entity from the
+// comparison entirely when the owner has blacklisted the artist behind it.
+// Without this, the blacklist would reach only Encore's side of the join
+// (via topSourceSQL below) and a blacklisted artist Spotify still ranks
+// would survive with its Spotify rank intact - which is exactly the
+// behaviour the project reversed: a blacklist means "don't show me this
+// artist", full stop, not "don't show me Encore's numbers for this artist."
+//
+// The shape differs by kind for the same reason topSourceSQL's does. An
+// artist id is its own subject and is checked directly against
+// user_blacklisted_artists - the same direct-EXISTS shape dormantFollowsSQL
+// (library.go) uses to remove a blacklisted followed artist rather than let
+// it read as merely dormant. A track id has no artist of its own, so it is
+// checked through track_artists instead, the same join blacklistFilter uses
+// everywhere else in this package.
+//
+// A snapshot track not yet in the catalogue - minted pending by the library
+// worker, with no track_artists rows written for it yet - cannot be
+// resolved against the blacklist at all: there is nothing to join against,
+// so NOT EXISTS is vacuously true and the track is not excluded. This is not
+// a new judgement call invented for this statement; it is the identical
+// behaviour blacklistFilter itself already has everywhere else in this
+// package (an unresolved track's absence of credits reads as "not
+// blacklisted", never as "blacklisted"), so a track can still appear here
+// until enrichment finishes filling in its credits, exactly as it can in
+// every other statistic that reads track_artists. Hiding it instead would
+// require treating "unknown" as "blacklisted", which would drop a
+// legitimate row on nothing more than an enrichment race.
+func topDiffSpotifyBlacklistFilter(kind topKind, alias string) string {
+	if kind == topArtists {
+		return fmt.Sprintf(`NOT EXISTS (
+            SELECT 1 FROM user_blacklisted_artists bl
+            WHERE bl.user_id = $1 AND bl.artist_id = %[1]s.entity_id)`, alias)
+	}
+	return fmt.Sprintf(`NOT EXISTS (
+            SELECT 1 FROM track_artists bta
+            JOIN user_blacklisted_artists bl
+              ON bl.artist_id = bta.artist_id AND bl.user_id = $1
+            WHERE bta.track_id = %[1]s.entity_id)`, alias)
+}
+
 // topDiffSQL is the full outer join in spirit described on TopDiff: Spotify's
 // captured ranking and Encore's own, each independently capped to the
 // requested page size, joined on entity id so a row present on only one side
@@ -121,15 +163,19 @@ WHERE user_id = $1 AND kind = $2 AND time_range = $3`
 // encore_ranked reuses topSourceSQL's shape (internal/stats/top.go) rather
 // than a third definition of "top", and therefore also its blacklist rule:
 // topSourceSQL's non-rollup branch runs every request through rangeFilter,
-// which composes blacklistFilter. That is what decides the case a later
-// reader will otherwise wonder about - an entity Spotify ranks that the
-// listener has since blacklisted locally: Spotify's own snapshot is read
-// unfiltered below, because Spotify does not know about a rule that lives
-// only in Encore's database, but that entity's plays are invisible to
-// encore_ranked exactly as they are to every other statistic in this
-// package. The row therefore still appears, with its SpotifyRank intact and
-// its EncoreRank and Plays both zero - which is arguably the most
-// interesting disagreement this page can show, not a case to hide.
+// which composes blacklistFilter, so a blacklisted artist's plays are
+// invisible to encore_ranked before row_number() ever runs over it.
+//
+// spotify_ranked applies topDiffSpotifyBlacklistFilter before its own
+// row_number(), for the same reason: a blacklisted entity must be gone
+// before ranking happens, not filtered out afterward with its original
+// position left showing through a gap. That ordering is what makes the
+// surviving ranks close up - the entity after a removed one moves up to
+// take its place - rather than leaving Spotify's raw position numbers with a
+// hole where the blacklisted entry used to be. encore_ranked already closes
+// up the same way, because blacklistFilter excludes a blacklisted artist's
+// plays before that CTE's own row_number() runs; spotify_ranked simply does
+// the equivalent for a table read instead of an aggregate.
 //
 // The rollup variant of topSourceSQL is deliberately not used here: it would
 // need its own dirty-day check keyed to this statistic's own window rather
@@ -149,10 +195,17 @@ WITH encore_ranked AS (
 encore_top AS (
     SELECT id, plays, rank FROM encore_ranked WHERE rank <= $6
 ),
+spotify_ranked AS (
+    SELECT entity_id, row_number() OVER (ORDER BY position) AS rank
+    FROM (
+        SELECT entity_id, position
+        FROM spotify_top_snapshots
+        WHERE user_id = $1 AND kind = $2 AND time_range = $3
+    ) raw
+    WHERE %s
+),
 spotify_top AS (
-    SELECT entity_id, position AS rank
-    FROM spotify_top_snapshots
-    WHERE user_id = $1 AND kind = $2 AND time_range = $3 AND position <= $6
+    SELECT entity_id, rank FROM spotify_ranked WHERE rank <= $6
 )
 SELECT coalesce(s.entity_id, e.id) AS entity_id,
        coalesce(s.rank, 0) AS spotify_rank,
@@ -160,9 +213,10 @@ SELECT coalesce(s.entity_id, e.id) AS entity_id,
        coalesce(e.plays, 0) AS plays
 FROM spotify_top s
 FULL OUTER JOIN encore_top e ON e.id = s.entity_id
-ORDER BY least(coalesce(s.rank::bigint, 999999999), coalesce(e.rank, 999999999)),
+ORDER BY least(coalesce(s.rank, 999999999), coalesce(e.rank, 999999999)),
          coalesce(s.entity_id, e.id)`,
-		topSourceSQL(kind, "$1", "$4", "$5", "", false))
+		topSourceSQL(kind, "$1", "$4", "$5", "", false),
+		topDiffSpotifyBlacklistFilter(kind, "raw"))
 }
 
 // The two statements are built once at start-up, exactly as the six in top.go

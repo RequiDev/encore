@@ -171,44 +171,120 @@ func TestTopDiffReturnsNoEntriesWhenNeverCaptured(t *testing.T) {
 	}
 }
 
-// TestTopDiffBlacklistedArtistKeepsSpotifyRankButZerosEncoreRank is the
-// blacklist decision this task had to make explicit.
+// TestTopDiffBlacklistedArtistIsAbsentFromBothSidesWithRanksClosingUp is the
+// blacklist decision this task had to make explicit, reversed from an
+// earlier round: the project's owner ruled that a blacklist means "don't
+// show me this artist," full stop, so a blacklisted artist must be gone from
+// *both* sides of the comparison, not surfaced with one rank zeroed.
 //
-// Spotify's capture is a snapshot of what Spotify's own backend believes,
-// taken independently of Encore's local blacklist - Spotify has no idea the
-// listener has asked Encore to hide this artist. Encore's own ranking, on
-// the other hand, must obey the blacklist exactly as every other statistic
-// in this package does: a blacklisted artist's plays are invisible to
-// encore_ranked, so the artist cannot appear in Encore's top page at all.
+// It must also not leave a gap: with art-x (Spotify position 1) blacklisted,
+// art-y (position 2) and art-z (position 3) must close up to Spotify ranks 1
+// and 2, not keep displaying their original positions with a hole where
+// art-x used to be. Encore's side already closes up for the same reason it
+// always has - blacklistFilter excludes a blacklisted artist's plays before
+// encore_ranked's own row_number() runs - so this test also checks that
+// Encore's ranks for art-y/art-z reflect art-x's removal.
 //
-// The decision: the row still appears in the diff, with SpotifyRank intact
-// and EncoreRank (and Plays) forced to zero by the entity's simple absence
-// from Encore's side - not removed from the result altogether. Hiding the
-// row would bury exactly the disagreement this page exists to surface: "you
-// blacklisted this locally, and Spotify still doesn't know."
-func TestTopDiffBlacklistedArtistKeepsSpotifyRankButZerosEncoreRank(t *testing.T) {
+// art-y's expected play count is 2, not the 6 it has with nobody blacklisted
+// (see TestTopListsRankAndPaginate in stats_test.go): trk-a is credited to
+// *both* art-x and art-y, and the package-wide blacklist rule (stats.go)
+// operates at the track level - "a listen whose track has an artist the user
+// has blacklisted is invisible to every statistic here" - so blacklisting
+// art-x makes every listen of trk-a invisible too, including to art-y's own
+// count. That is pre-existing behaviour this task did not change; only
+// art-y's own trk-c plays (2) survive.
+func TestTopDiffBlacklistedArtistIsAbsentFromBothSidesWithRanksClosingUp(t *testing.T) {
 	f := seedStats(t)
 	pinNow(f, topDiffNow)
 	ctx, db := f.env.Ctx(), f.env.Store.DB()
 
-	if err := f.env.Catalog.Blacklist(ctx, db, f.user.ID, "art-z"); err != nil {
+	if err := f.env.Catalog.Blacklist(ctx, db, f.user.ID, "art-x"); err != nil {
 		t.Fatalf("blacklist: %v", err)
 	}
-	seedTopSnapshot(t, f, "artist", "short_term", []string{"art-z"}, topDiffNow)
+	seedTopSnapshot(t, f, "artist", "short_term", []string{"art-x", "art-y", "art-z"}, topDiffNow)
 
 	got, err := f.svc.TopDiff(ctx, db, f.user.ID, "artist", "short_term", "UTC", 10)
 	if err != nil {
 		t.Fatalf("top diff: %v", err)
 	}
+	if hasEntry(got, "art-x") {
+		t.Fatal("art-x is blacklisted and must not appear at all, on either side")
+	}
+	y := entry(t, got, "art-y")
+	if y.SpotifyRank != 1 || y.EncoreRank != 1 || y.Plays != 2 {
+		t.Fatalf("art-y = %+v, want spotify=1 (closed up from 2) encore=1 plays=2 "+
+			"(trk-a's plays are gone too - it shares art-x's blacklisted credit)", y)
+	}
 	z := entry(t, got, "art-z")
-	if z.SpotifyRank != 1 {
-		t.Fatalf("spotify rank = %d, want 1 (Spotify does not know about the local blacklist)", z.SpotifyRank)
+	if z.SpotifyRank != 2 || z.EncoreRank != 2 || z.Plays != 1 {
+		t.Fatalf("art-z = %+v, want spotify=2 (closed up from 3) encore=2 plays=1", z)
 	}
-	if z.EncoreRank != 0 {
-		t.Fatalf("encore rank = %d, want 0 (the blacklist hides it from Encore's own ranking)", z.EncoreRank)
+}
+
+// TestTopDiffTrackBlacklistedByCreditedArtistIsAbsentFromBothSides checks the
+// track-kind half of the same rule: a track has no artist of its own, so
+// exclusion has to go through track_artists exactly as blacklistFilter does
+// everywhere else. Blacklisting art-x must remove both trk-a (credited to
+// art-x and art-y) and trk-b (credited to art-x alone) from Spotify's
+// captured ranking, while trk-c (credited only to art-y) survives.
+func TestTopDiffTrackBlacklistedByCreditedArtistIsAbsentFromBothSides(t *testing.T) {
+	f := seedStats(t)
+	pinNow(f, topDiffNow)
+	ctx, db := f.env.Ctx(), f.env.Store.DB()
+
+	if err := f.env.Catalog.Blacklist(ctx, db, f.user.ID, "art-x"); err != nil {
+		t.Fatalf("blacklist: %v", err)
 	}
-	if z.Plays != 0 {
-		t.Fatalf("plays = %d, want 0", z.Plays)
+	seedTopSnapshot(t, f, "track", "short_term", []string{"trk-a", "trk-b", "trk-c"}, topDiffNow)
+
+	got, err := f.svc.TopDiff(ctx, db, f.user.ID, "track", "short_term", "UTC", 10)
+	if err != nil {
+		t.Fatalf("top diff: %v", err)
+	}
+	if hasEntry(got, "trk-a") {
+		t.Fatal("trk-a is credited to a blacklisted artist and must not appear")
+	}
+	if hasEntry(got, "trk-b") {
+		t.Fatal("trk-b is credited to a blacklisted artist and must not appear")
+	}
+	c := entry(t, got, "trk-c")
+	if c.SpotifyRank != 1 || c.EncoreRank != 1 || c.Plays != 2 {
+		t.Fatalf("trk-c = %+v, want spotify=1 (closed up from 3) encore=1 plays=2", c)
+	}
+}
+
+// TestTopDiffUnenrichedTrackIsNotHiddenByAnUnresolvableBlacklistCheck covers
+// the one honest limitation of excluding a track by its credited artist: a
+// snapshot track not yet in the catalogue (minted pending, no track_artists
+// rows written for it yet) cannot be checked against the blacklist at all.
+//
+// The decision, matching how blacklistFilter itself already treats this
+// exact shape everywhere else in this package (an unresolved track's absence
+// of credits reads as "not blacklisted," never as "blacklisted"): the track
+// is shown, not hidden. Hiding it would need treating "unknown" as
+// "blacklisted," which would drop a legitimate row on nothing more than an
+// enrichment race.
+func TestTopDiffUnenrichedTrackIsNotHiddenByAnUnresolvableBlacklistCheck(t *testing.T) {
+	f := seedStats(t)
+	pinNow(f, topDiffNow)
+	ctx, db := f.env.Ctx(), f.env.Store.DB()
+
+	if err := f.env.Catalog.Blacklist(ctx, db, f.user.ID, "art-x"); err != nil {
+		t.Fatalf("blacklist: %v", err)
+	}
+	// trk-unenriched is not in the tracks table at all - spotify_top_snapshots
+	// is not foreign-keyed to the catalogue, exactly so a fresh capture can
+	// name an entity the library worker has not minted yet.
+	seedTopSnapshot(t, f, "track", "short_term", []string{"trk-unenriched"}, topDiffNow)
+
+	got, err := f.svc.TopDiff(ctx, db, f.user.ID, "track", "short_term", "UTC", 10)
+	if err != nil {
+		t.Fatalf("top diff: %v", err)
+	}
+	u := entry(t, got, "trk-unenriched")
+	if u.SpotifyRank != 1 {
+		t.Fatalf("spotify rank = %d, want 1: an unresolved track must not be excluded "+
+			"just because its credits (and therefore any blacklist match) are unknown", u.SpotifyRank)
 	}
 }
 
