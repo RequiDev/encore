@@ -207,7 +207,7 @@ describe('the dashboard\'s "albums completed" aggregate', () => {
 
     expect(
       await within(section).findByText(
-        'Heard every track on 12 of the 87 albums you played in this range.',
+        'Heard every track on 12 of the 87 albums with a known track count you played in this range.',
       ),
     ).toBeInTheDocument()
   })

@@ -920,7 +920,7 @@ function completedAlbumsSentence(data: CompletedAlbums | undefined): string {
   if (!data || data.albums <= 0) {
     return 'No albums with a known track count were played in this range.'
   }
-  return `Heard every track on ${formatCount(data.complete)} of the ${formatPlural(data.albums, 'album')} you played in this range.`
+  return `Heard every track on ${formatCount(data.complete)} of the ${formatPlural(data.albums, 'album')} with a known track count you played in this range.`
 }
 
 /**
