@@ -3,6 +3,7 @@ package spotify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -150,6 +151,11 @@ func TestSavedTracksPagination(t *testing.T) {
 // request identically, so a missing (or broken) maxPages guard would not fail
 // the test — it would loop until the process runs out of memory or the test
 // binary's own timeout kills it.
+//
+// It also pins that stopping at the cap is reported, not silent: the pages
+// already read are still returned, but wrapped in ErrTruncated, so a caller
+// that reconciles this against a local table (internal/library) can tell the
+// difference between "that was everything" and "the budget ran out first."
 func TestSavedTracksStopsAtMaxPages(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -161,11 +167,11 @@ func TestSavedTracksStopsAtMaxPages(t *testing.T) {
 
 	c := newTestClient(t, srv, newFakeClock())
 	items, err := c.SavedTracks(context.Background(), "user-token", 3)
-	if err != nil {
-		t.Fatalf("SavedTracks: %v", err)
+	if !errors.Is(err, ErrTruncated) {
+		t.Fatalf("SavedTracks err = %v, want ErrTruncated: the page budget ran out with more remaining", err)
 	}
 	if len(items) != 150 {
-		t.Fatalf("got %d items, want 150 (3 pages of 50)", len(items))
+		t.Fatalf("got %d items, want 150 (3 pages of 50) even though the enumeration was truncated", len(items))
 	}
 	if got := calls.Load(); got != 3 {
 		t.Fatalf("server calls = %d, want 3: maxPages must terminate the loop", got)
@@ -329,7 +335,8 @@ func TestSavedAlbumsPagination(t *testing.T) {
 }
 
 // TestSavedAlbumsStopsAtMaxPages mirrors TestSavedTracksStopsAtMaxPages: a stub
-// that always claims another page exists, bounded only by the page budget.
+// that always claims another page exists, bounded only by the page budget,
+// and the same ErrTruncated signal alongside the partial result.
 func TestSavedAlbumsStopsAtMaxPages(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -341,11 +348,11 @@ func TestSavedAlbumsStopsAtMaxPages(t *testing.T) {
 
 	c := newTestClient(t, srv, newFakeClock())
 	items, err := c.SavedAlbums(context.Background(), "user-token", 3)
-	if err != nil {
-		t.Fatalf("SavedAlbums: %v", err)
+	if !errors.Is(err, ErrTruncated) {
+		t.Fatalf("SavedAlbums err = %v, want ErrTruncated: the page budget ran out with more remaining", err)
 	}
 	if len(items) != 150 {
-		t.Fatalf("got %d items, want 150 (3 pages of 50)", len(items))
+		t.Fatalf("got %d items, want 150 (3 pages of 50) even though the enumeration was truncated", len(items))
 	}
 	if got := calls.Load(); got != 3 {
 		t.Fatalf("server calls = %d, want 3: maxPages must terminate the loop", got)
@@ -528,7 +535,10 @@ func TestFollowedArtistsIgnoresFlatTopLevelItems(t *testing.T) {
 // TestFollowedArtistsStopsAtMaxPages proves the page budget terminates a stub
 // whose cursor always advances, so there is no natural end to reach: only
 // maxPages stops it. Without the guard this would hang exactly like the saved
-// tracks and saved albums equivalents.
+// tracks and saved albums equivalents. Because the cursor was still advancing
+// when the budget ran out, this is truncation, not exhaustion — unlike
+// TestFollowedArtistsStopsOnRepeatedCursor below, where the cursor itself
+// says there is nothing more.
 func TestFollowedArtistsStopsAtMaxPages(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -540,11 +550,11 @@ func TestFollowedArtistsStopsAtMaxPages(t *testing.T) {
 
 	c := newTestClient(t, srv, newFakeClock())
 	artists, err := c.FollowedArtists(context.Background(), "user-token", 3)
-	if err != nil {
-		t.Fatalf("FollowedArtists: %v", err)
+	if !errors.Is(err, ErrTruncated) {
+		t.Fatalf("FollowedArtists err = %v, want ErrTruncated: the page budget ran out with more remaining", err)
 	}
 	if len(artists) != 150 {
-		t.Fatalf("got %d artists, want 150 (3 pages of 50)", len(artists))
+		t.Fatalf("got %d artists, want 150 (3 pages of 50) even though the enumeration was truncated", len(artists))
 	}
 	if got := calls.Load(); got != 3 {
 		t.Fatalf("server calls = %d, want 3: maxPages must terminate the loop", got)

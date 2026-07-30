@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -254,6 +255,76 @@ func TestLibraryWorkerEnumerationErrorPartWayLeavesThePreviousContentsIntact(t *
 		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-track-4'`,
 		user.ID.String()); got != 0 {
 		t.Fatal("the second run's track leaked into the table despite its enumeration failing")
+	}
+}
+
+// TestLibraryWorkerTruncatedEnumerationDeletesNothingAndLeavesTheWatermark
+// pins the fix for the whole-branch review's truncation finding: an
+// enumeration that hits its page cap while Spotify still had more to return
+// (spotify.ErrTruncated) must be treated the same as a failed enumeration for
+// the purposes of the database, not as a complete listing. Committing the
+// partial set that fakeLibraryAPI returns here would call ReplaceSavedTracks
+// against a two-item prefix of what libw-track-3's account actually has,
+// deleting the row the first sync stored.
+//
+// Unlike a generic enumeration error, this one is not reported as a failure —
+// SyncAccount returns nil, exactly as it does for a 403 on an optional scope —
+// because a truncated run is skipped by design (see warnTruncated), logged at
+// warn so an operator can raise ENCORE_LIBRARY_SYNC_MAX_PAGES, and retried
+// wholesale on the next tick rather than surfaced as an account-level error.
+func TestLibraryWorkerTruncatedEnumerationDeletesNothingAndLeavesTheWatermark(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("libworker-truncated")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	// A first, successful sync seeds the table and the watermark.
+	first := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{{Track: spotify.Track{ID: "libw-track-trunc-1", Name: "Track One"}}},
+	}
+	if err := newLibraryWorker(t, env, first).SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("seed sync: %v", err)
+	}
+	before := librarySyncedAt(t, env, user.ID)
+	if before == nil {
+		t.Fatal("the seeding sync did not set library_synced_at")
+	}
+	beforeCount := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1`, user.ID.String())
+
+	// A second run's saved-tracks enumeration hit its page cap: it still
+	// carries the pages it did read (a different track than before, to prove
+	// it did not merely no-op), wrapped in ErrTruncated.
+	truncated := &fakeLibraryAPI{
+		tracks: []spotify.SavedTrack{
+			{Track: spotify.Track{ID: "libw-track-trunc-2", Name: "Track Two"}},
+		},
+		tracksErr: fmt.Errorf("spotify: saved tracks: %w", spotify.ErrTruncated),
+	}
+	if err := newLibraryWorker(t, env, truncated).SyncAccount(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("sync account = %v, want nil: a truncated enumeration is skipped, not reported as a failure", err)
+	}
+
+	after := librarySyncedAt(t, env, user.ID)
+	if after == nil || !after.Equal(*before) {
+		t.Fatalf("library_synced_at moved from %v to %v; a truncated run must not advance it", before, after)
+	}
+	if afterCount := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1`, user.ID.String()); afterCount != beforeCount {
+		t.Fatalf("saved tracks changed from %d to %d rows on a truncated run", beforeCount, afterCount)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-track-trunc-1'`,
+		user.ID.String()); got != 1 {
+		t.Fatal("the first sync's track was deleted by a truncated second run that never actually saw it go missing")
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_saved_tracks WHERE user_id = $1 AND track_id = 'libw-track-trunc-2'`,
+		user.ID.String()); got != 0 {
+		t.Fatal("the truncated run's partial result leaked into the table despite being skipped")
+	}
+	if truncated.albumCalls != 0 || truncated.artistCalls != 0 {
+		t.Fatalf("album calls = %d, artist calls = %d, want 0/0: truncation must stop enumeration at the endpoint it hit",
+			truncated.albumCalls, truncated.artistCalls)
 	}
 }
 

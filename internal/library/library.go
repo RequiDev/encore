@@ -340,6 +340,10 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 		log.Warn("spotify refused saved tracks despite the granted scope", logging.Err(err))
 		return nil
 	}
+	if truncated(err) {
+		w.warnTruncated(log, "saved tracks")
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("enumerate saved tracks: %w", err)
 	}
@@ -349,6 +353,10 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 		log.Warn("spotify refused saved albums despite the granted scope", logging.Err(err))
 		return nil
 	}
+	if truncated(err) {
+		w.warnTruncated(log, "saved albums")
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("enumerate saved albums: %w", err)
 	}
@@ -356,6 +364,10 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 	artists, err := w.dep.Spotify.FollowedArtists(ctx, token, w.cfg.MaxPages)
 	if forbidden(err) {
 		log.Warn("spotify refused followed artists despite the granted scope", logging.Err(err))
+		return nil
+	}
+	if truncated(err) {
+		w.warnTruncated(log, "followed artists")
 		return nil
 	}
 	if err != nil {
@@ -463,6 +475,36 @@ func (w *Worker) nextDelay() time.Duration {
 func forbidden(err error) bool {
 	apiErr, ok := spotify.AsAPIError(err)
 	return ok && apiErr.IsForbidden()
+}
+
+// truncated reports that an enumeration stopped at its page cap while
+// Spotify still had more to return (spotify.ErrTruncated), rather than
+// exhausting the listing.
+//
+// Unlike forbidden, this says nothing about the account's grant: it means the
+// result just read is a prefix, not the whole of it, and reconciling it would
+// treat everything past the cap as removed. sync abandons the run instead —
+// see warnTruncated for why that, rather than upserting the prefix without
+// deleting, is the choice made here.
+func truncated(err error) bool {
+	return errors.Is(err, spotify.ErrTruncated)
+}
+
+// warnTruncated records that one endpoint's enumeration was truncated and the
+// run is being abandoned as a result.
+//
+// Skipping the whole run, rather than upserting the partial set without
+// deleting, is chosen because a library that large is already unusual enough
+// that raising ENCORE_LIBRARY_SYNC_MAX_PAGES once is simpler than reasoning
+// about a table that is correct on adds but stale on removals until some
+// future run finally clears the cap — and the account is not left worse off:
+// nothing here is deleted or advanced, so today's stored library keeps
+// reading exactly as it did before this run started, and tomorrow's run
+// tries again.
+func (w *Worker) warnTruncated(log *slog.Logger, endpoint string) {
+	log.Warn("library enumeration hit the page cap with more remaining; skipping this sync "+
+		"rather than deleting what the cap did not reach",
+		"endpoint", endpoint, "max_pages", w.cfg.MaxPages)
 }
 
 // batch is one account's enumerated library, converted and ready to

@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"runtime"
 	"testing"
@@ -403,6 +404,76 @@ func TestSyncStopsOnAGenericEnumerationErrorWithoutCallingLaterEndpoints(t *test
 	if fake.trackCalls != 1 || fake.albumCalls != 1 || fake.artistCalls != 0 {
 		t.Fatalf("calls = %d/%d/%d, want 1/1/0: an error part-way must not continue to the next endpoint",
 			fake.trackCalls, fake.albumCalls, fake.artistCalls)
+	}
+}
+
+// TestSyncStopsAtATruncatedEndpointWithoutTouchingTheAccount mirrors
+// TestSyncStopsAtAForbiddenEndpointWithoutTouchingTheAccount: a truncated
+// enumeration — the page cap reached while Spotify still had more to give —
+// must not reach the database write either. Committing a truncated result
+// would run ReplaceSavedTracks/ReplaceSavedAlbums/ReplaceFollowedArtists
+// against a prefix of the real set and delete every row past the cap that the
+// enumeration never actually reached.
+func TestSyncStopsAtATruncatedEndpointWithoutTouchingTheAccount(t *testing.T) {
+	truncatedErr := fmt.Errorf("spotify: saved tracks: %w", spotify.ErrTruncated)
+	tests := []struct {
+		name                                            string
+		mutate                                          func(*fakeSpotify)
+		wantTrackCalls, wantAlbumCalls, wantArtistCalls int
+	}{
+		// As with the forbidden case, each endpoint before the truncated one
+		// still ran, and nothing after it was ever reached.
+		{"saved tracks", func(f *fakeSpotify) { f.tracksErr = truncatedErr }, 1, 0, 0},
+		{"saved albums", func(f *fakeSpotify) { f.albumsErr = truncatedErr }, 1, 1, 0},
+		{"followed artists", func(f *fakeSpotify) { f.artistsErr = truncatedErr }, 1, 1, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := testWorker(t, config.Library{})
+			// A truncated enumeration still returns the pages it did read, per
+			// spotify.ErrTruncated's contract, so the fake carries both.
+			fake := &fakeSpotify{tracks: []spotify.SavedTrack{savedTrack("t1", "Song", now)}}
+			tc.mutate(fake)
+			w.dep.Spotify = fake
+			creds := domain.SpotifyCredentials{Scopes: []string{scopeLibraryRead, scopeFollowRead}}
+
+			reached, err := reachesCommit(t, func() error {
+				return w.sync(context.Background(), uuid.New(), creds)
+			})
+			if reached {
+				t.Fatal("a truncated enumeration must not reach the database write: " +
+					"library_synced_at and the three tables must stay untouched")
+			}
+			if err != nil {
+				t.Fatalf("sync = %v, want nil: a truncated run is skipped, not reported as a failure", err)
+			}
+			if fake.trackCalls != tc.wantTrackCalls || fake.albumCalls != tc.wantAlbumCalls || fake.artistCalls != tc.wantArtistCalls {
+				t.Fatalf("calls = %d/%d/%d, want %d/%d/%d: truncation must not be retried and must not reach a later endpoint",
+					fake.trackCalls, fake.albumCalls, fake.artistCalls,
+					tc.wantTrackCalls, tc.wantAlbumCalls, tc.wantArtistCalls)
+			}
+		})
+	}
+}
+
+func TestTruncatedClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"truncated", fmt.Errorf("spotify: saved tracks: %w", spotify.ErrTruncated), true},
+		{"wrapped", errors.Join(errors.New("enumerate"), spotify.ErrTruncated), true},
+		{"forbidden is not truncated", &spotify.APIError{StatusCode: http.StatusForbidden}, false},
+		{"not from spotify", errors.New("database is down"), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := truncated(tc.err); got != tc.want {
+				t.Errorf("truncated(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

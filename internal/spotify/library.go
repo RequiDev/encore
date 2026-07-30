@@ -2,6 +2,7 @@ package spotify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -18,6 +19,20 @@ const (
 	// cannot spend the whole quota here.
 	defaultLibraryPages = 200
 )
+
+// ErrTruncated reports that an enumeration stopped because its page budget
+// was spent while Spotify still had a next page to offer, not because the
+// listing was exhausted.
+//
+// It is returned wrapped alongside the partial result rather than in place of
+// it — unlike every other error these three functions return, where nothing
+// is returned at all — because the pages already read are still real data;
+// what is missing is the caller's guarantee that they are the whole of it. A
+// caller that reconciles this result against a local table (as
+// internal/library does) must treat that partial listing as unsafe to use as
+// the authoritative set: a shorter-than-actual result deletes rows that are
+// still saved, just never reached.
+var ErrTruncated = errors.New("spotify: enumeration stopped at the page budget with more remaining")
 
 // SavedTrack is one entry of a listener's saved tracks.
 type SavedTrack struct {
@@ -91,10 +106,12 @@ func (c *Client) SavedTracks(ctx context.Context, accessToken string, maxPages i
 			out = append(out, SavedTrack{Track: item.Track, AddedAt: item.AddedAt})
 		}
 		if len(p.Items) == 0 || strings.TrimSpace(p.Next) == "" {
-			break
+			return out, nil
 		}
 	}
-	return out, nil
+	// Every page read was full and still pointed at a next one: the budget ran
+	// out before the library did, so out is a prefix, not the whole thing.
+	return out, fmt.Errorf("spotify: saved tracks: %w", ErrTruncated)
 }
 
 // SavedAlbums reads every album in the listener's library. Offset paginated,
@@ -114,10 +131,12 @@ func (c *Client) SavedAlbums(ctx context.Context, accessToken string, maxPages i
 			out = append(out, SavedAlbum{Album: item.Album, AddedAt: item.AddedAt})
 		}
 		if len(p.Items) == 0 || strings.TrimSpace(p.Next) == "" {
-			break
+			return out, nil
 		}
 	}
-	return out, nil
+	// Every page read was full and still pointed at a next one: the budget ran
+	// out before the library did, so out is a prefix, not the whole thing.
+	return out, fmt.Errorf("spotify: saved albums: %w", ErrTruncated)
 }
 
 // FollowedArtists reads every artist the listener follows.
@@ -147,14 +166,20 @@ func (c *Client) FollowedArtists(ctx context.Context, accessToken string, maxPag
 		out = append(out, p.Artists.Items...)
 
 		next := strings.TrimSpace(p.Artists.Cursors.After)
+		// A cursor that stalls or repeats is exhaustion, not truncation: Spotify
+		// itself has stopped offering anything new, which is a different
+		// condition from the page budget cutting the walk short below.
 		if len(p.Artists.Items) == 0 || next == "" || next == cursor {
-			break
+			return out, nil
 		}
 		if _, repeat := seen[next]; repeat {
-			break
+			return out, nil
 		}
 		seen[next] = struct{}{}
 		cursor = next
 	}
-	return out, nil
+	// Every page read was full and the cursor still advanced to something new:
+	// the budget ran out before the follow list did, so out is a prefix, not
+	// the whole thing.
+	return out, fmt.Errorf("spotify: followed artists: %w", ErrTruncated)
 }
