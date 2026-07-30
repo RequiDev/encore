@@ -199,9 +199,13 @@ func TestAlbumTracksCanBeTurnedOff(t *testing.T) {
 	if cfg.AlbumTracks.Enabled {
 		t.Error("AlbumTracks.Enabled = true after ENCORE_ALBUM_TRACKS_ENABLED=false")
 	}
-	if _, ok := cfg.Redacted()["album_tracks_enabled"]; !ok {
+	redacted := cfg.Redacted()
+	if _, ok := redacted["album_tracks_enabled"]; !ok {
 		t.Error(`Redacted() has no "album_tracks_enabled"; the startup log is the ` +
 			`only place an operator can confirm the switch took effect`)
+	}
+	if got := redacted["album_tracks_ttl"]; got != cfg.AlbumTracks.TTL.String() {
+		t.Errorf(`Redacted()["album_tracks_ttl"] = %v, want %q`, got, cfg.AlbumTracks.TTL)
 	}
 }
 

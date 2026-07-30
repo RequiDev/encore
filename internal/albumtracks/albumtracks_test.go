@@ -37,6 +37,20 @@ type fakeCatalog struct {
 	// concurrency test built on claimOK alone would be asserting nothing.
 	claimOnce bool
 	claimsWon int
+	// claimErr makes the claim fail the way a database hiccup would.
+	claimErr error
+	// claimPanic makes the claim panic, which is what a nil store.Querier
+	// reaching q.QueryRow would do.
+	claimPanic bool
+	// heedCtx makes FailAlbumTrackFetch refuse a cancelled context, which is what
+	// pgx does. Opt-in for the same reason fakeFetcher's is: most tests use Close
+	// purely as a barrier, and a fake that noticed the cancellation would race
+	// them. The test that is *about* recording a failure during shutdown turns it
+	// on.
+	heedCtx bool
+	// failCtxErr is the state of the context record actually used, which is the
+	// only way to see whether it was detached from the one Close cancels.
+	failCtxErr error
 	// lastReason is what the service asked to be stored in last_error.
 	lastReason string
 	// txSeq numbers the transactions inlineWriter has opened and curTx is the
@@ -86,6 +100,12 @@ func (f *fakeCatalog) ClaimAlbumTrackFetch(_ context.Context, _ storeQuerier, _ 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claims++
+	if f.claimPanic {
+		panic("fakeCatalog: claim panicked")
+	}
+	if f.claimErr != nil {
+		return false, f.claimErr
+	}
 	if f.claimOnce {
 		if f.claimsWon > 0 {
 			return false, nil
@@ -113,9 +133,16 @@ func (f *fakeCatalog) MarkAlbumTracksFetched(_ context.Context, _ storeQuerier, 
 	return nil
 }
 
-func (f *fakeCatalog) FailAlbumTrackFetch(_ context.Context, _ storeQuerier, _ string, at time.Time, reason string) error {
+func (f *fakeCatalog) FailAlbumTrackFetch(ctx context.Context, _ storeQuerier, _ string, at time.Time, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.failCtxErr = ctx.Err()
+	if f.heedCtx && ctx.Err() != nil {
+		// What pgx does with a cancelled context: refuse. Recording the failure is
+		// the one write that must survive shutdown, so a context that carries the
+		// cancellation into it loses the record entirely.
+		return fmt.Errorf("fail album track fetch: %w", ctx.Err())
+	}
 	f.fails++
 	f.state.Status = catalog.AlbumTrackFailed
 	f.state.AttemptedAt = at
@@ -142,6 +169,20 @@ func (f *fakeCatalog) reason() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastReason
+}
+
+func (f *fakeCatalog) stopPanicking() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimPanic = false
+}
+
+// recordContextErr is the state of the context the service used to record a
+// failure, at the moment it tried.
+func (f *fakeCatalog) recordContextErr() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.failCtxErr
 }
 
 // fakeFetcher answers with whatever the test set, and counts calls.
@@ -452,14 +493,17 @@ func TestATruncatedFetchWritesNothing(t *testing.T) {
 
 	_, writes, fails := cat.counts()
 	if writes != 0 {
-		t.Fatalf("wrote %d times on a truncated fetch, want 0: the partial deleted the tail", writes)
+		// Errorf, not Fatalf: the listing below is the thing that actually
+		// matters, and a run that stops here never reports what became of it.
+		t.Errorf("wrote %d times on a truncated fetch, want 0: the partial deleted the tail", writes)
 	}
 	if fails != 1 {
-		t.Fatalf("recorded %d failures, want 1", fails)
+		t.Errorf("recorded %d failures, want 1", fails)
 	}
-	// Not just the count: the whole listing, field for field. A replace from the
-	// partial would leave exactly one of these two rows behind, and a length
-	// check alone would pass a replace that rewrote both.
+	// The listing itself, field for field rather than by length. This says the
+	// same thing as writes == 0 for the one implementation that can be wrong
+	// here; it is the direct statement of the property, which the write count is
+	// only a proxy for.
 	if got := cat.stored(); !reflect.DeepEqual(got, before) {
 		t.Fatalf("stored listing = %+v, want the %+v that was already correct", got, before)
 	}
@@ -518,7 +562,7 @@ func TestAnEmptyListingDoesNotWipeAStoredOne(t *testing.T) {
 	s.Close()
 
 	if _, writes, fails := cat.counts(); writes != 0 || fails != 1 {
-		t.Fatalf("writes=%d fails=%d for an empty listing over a stored one, want 0 and 1", writes, fails)
+		t.Errorf("writes=%d fails=%d for an empty listing over a stored one, want 0 and 1", writes, fails)
 	}
 	if got := cat.stored(); !reflect.DeepEqual(got, before) {
 		t.Fatalf("stored listing = %+v, want the %+v that was already correct", got, before)
@@ -650,6 +694,92 @@ func TestTwoConcurrentViewsProduceOneFetch(t *testing.T) {
 	}
 }
 
+// TestABusySlotIsPendingNotUnavailable is local backpressure told truthfully.
+//
+// Every slot being taken says nothing whatever about Spotify, and it records
+// nothing either: the row is untouched, so the listing is still due and the
+// very next view starts the fetch. That is pending. Reporting it as unavailable
+// would tell somebody Spotify would not answer when Spotify was never asked,
+// and would tell a page that stops polling on unavailable to give up on an
+// album one more poll would have fetched — with nothing in the row that will
+// ever prompt a retry.
+func TestABusySlotIsPendingNotUnavailable(t *testing.T) {
+	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
+	cat := &fakeCatalog{claimOK: true}
+	block := make(chan struct{})
+	// The blocked fetches succeed once released, so the only failure this test
+	// could count is one the refused view recorded.
+	fetch := &fakeFetcher{block: block, tracks: []spotify.AlbumTrack{
+		{ID: "t1", Name: "One", DiscNumber: 1, TrackNumber: 1},
+	}}
+	s := newService(t, cat, fetch, now)
+	// Registered after the service, so it runs before Cleanup's Close: an
+	// assertion below that fails must not leave Close waiting on a fetch this
+	// test is the only thing that can release.
+	var once sync.Once
+	release := func() { once.Do(func() { close(block) }) }
+	t.Cleanup(release)
+
+	// Fill every slot with a cold album whose fetch cannot finish. The slot is
+	// taken synchronously inside Listing, so this is deterministic — unlike the
+	// fetcher's call count, which the goroutine raises whenever it is scheduled.
+	for i := range concurrency {
+		if _, err := s.Listing(context.Background(), nil, fmt.Sprintf("albumbusy%013d", i)); err != nil {
+			t.Fatalf("Listing: %v", err)
+		}
+	}
+
+	got, err := s.Listing(context.Background(), nil, "album000000000000000009")
+	if err != nil {
+		t.Fatalf("Listing: %v", err)
+	}
+	if got.State != StatePending {
+		t.Fatalf("state = %q with every slot busy, want %q: nothing was recorded, so this "+
+			"album is still due and the next view fetches it", got.State, StatePending)
+	}
+
+	release()
+	s.Close()
+	// The refused view claimed nothing and recorded nothing, which is what makes
+	// polling free and the next attempt certain.
+	claims, writes, fails := cat.counts()
+	if claims != concurrency {
+		t.Errorf("attempted %d claims, want %d: the refused view reached the database", claims, concurrency)
+	}
+	if writes != concurrency {
+		t.Errorf("%d listings stored, want %d: the slots were not all held by real fetches", writes, concurrency)
+	}
+	if fails != 0 {
+		t.Errorf("recorded %d failures, want 0: local backpressure must leave the row untouched, "+
+			"or the album is marked failed for something Spotify was never asked", fails)
+	}
+}
+
+// TestAClaimErrorIsPendingNotUnavailable is the same distinction for a database
+// hiccup: a claim that errored has recorded nothing either, and saying
+// "unavailable" would turn one bad query into "Spotify is down".
+func TestAClaimErrorIsPendingNotUnavailable(t *testing.T) {
+	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
+	cat := &fakeCatalog{claimErr: errors.New("claim album track fetch: connection reset")}
+	fetch := &fakeFetcher{}
+	s := newService(t, cat, fetch, now)
+
+	got, err := s.Listing(context.Background(), nil, "album000000000000000001")
+	if err != nil {
+		t.Fatalf("Listing: %v", err)
+	}
+	if got.State != StatePending {
+		t.Fatalf("state = %q after a failed claim, want %q", got.State, StatePending)
+	}
+	s.Close()
+	if n := fetch.called(); n != 0 {
+		t.Fatalf("fetcher called %d times without a lease, want 0", n)
+	}
+	if _, _, fails := cat.counts(); fails != 0 {
+		t.Fatalf("recorded %d failures for a claim error, want 0: the album must stay due", fails)
+	}
+}
+
 // TestALiveLeaseIsNotEvenClaimed keeps the browser's poll from writing to the
 // database twice a second for as long as a fetch is running.
 func TestALiveLeaseIsNotEvenClaimed(t *testing.T) {
@@ -778,7 +908,7 @@ func TestTheFetchOutlivesTheRequestContext(t *testing.T) {
 // context nobody cancels is a leak, and a process that cannot shut down.
 func TestCloseEndsAFetchInFlight(t *testing.T) {
 	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
-	cat := &fakeCatalog{claimOK: true}
+	cat := &fakeCatalog{claimOK: true, heedCtx: true}
 	block := make(chan struct{}) // deliberately never closed by the test body
 	fetch := &fakeFetcher{block: block, heedCtx: true}
 	s := newService(t, cat, fetch, now)
@@ -808,11 +938,111 @@ func TestCloseEndsAFetchInFlight(t *testing.T) {
 	if err := fetch.ctxErr(); err == nil {
 		t.Fatal("the fetch's context was still live when Close returned")
 	}
-	// A cancelled fetch still records its outcome, on a context of its own, so
-	// the album is not left 'fetching' until the lease expires.
+	// The write that records the failure must NOT inherit the cancellation that
+	// just ended the fetch. Passing s.base straight to record looks like a
+	// tidy-up — it is already the fetch's parent — and every other assertion
+	// here survives it, because the fetch is cancelled either way. What does not
+	// survive is production: pgx refuses a cancelled context, so the failure is
+	// never written, the album stays 'fetching' from the claim, and after the
+	// restart every viewer polls uselessly for the full leaseTTL.
+	if err := cat.recordContextErr(); err != nil {
+		t.Errorf("the failure was recorded on a context already in error (%v); it must be "+
+			"detached from the one Close cancels, or nothing durable records the failure "+
+			"and the album stays 'fetching' until its lease expires", err)
+	}
+	// And it actually landed: the fake refuses a cancelled context the way pgx
+	// does, so this counts the write rather than the attempt.
 	if _, _, fails := cat.counts(); fails != 1 {
 		t.Fatalf("recorded %d failures for a cancelled fetch, want 1", fails)
 	}
+}
+
+// TestNothingIsStartedAfterClose is the shutdown race, asserted on the one
+// operation that must not run concurrently with Close.
+//
+// http.Server.Shutdown returns on timeout with handlers still running, so a
+// request can be inside Listing while Close is waiting. Registering a fetch
+// then is at best a goroutine nothing waits for — which is exactly what Close
+// promises cannot happen — and at worst raises the WaitGroup counter from zero
+// with a waiter already parked, which panics "Add called concurrently with
+// Wait" and takes the process down on its way out.
+func TestNothingIsStartedAfterClose(t *testing.T) {
+	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
+	cat := &fakeCatalog{claimOK: true}
+	fetch := &fakeFetcher{}
+	s := newService(t, cat, fetch, now)
+
+	if !s.track() {
+		t.Fatal("track refused a fetch before Close")
+	}
+	s.wg.Done() // hand the registration straight back
+
+	s.Close()
+
+	if s.track() {
+		s.wg.Done()
+		t.Error("track registered a fetch after Close; wg.Add can then run concurrently " +
+			"with wg.Wait, which panics at shutdown, and when it does not, leaves a " +
+			"goroutine nothing waits for")
+	}
+	// And the whole path declines, without so much as taking a lease it would
+	// only abandon.
+	if _, err := s.Listing(context.Background(), nil, "album000000000000000001"); err != nil {
+		t.Fatalf("Listing: %v", err)
+	}
+	if claims, _, _ := cat.counts(); claims != 0 {
+		t.Errorf("claimed %d leases after Close, want 0: the album would sit 'fetching' "+
+			"for the whole leaseTTL while this process exits", claims)
+	}
+	if n := fetch.called(); n != 0 {
+		t.Errorf("fetcher called %d times after Close, want 0", n)
+	}
+}
+
+// TestAPanicDoesNotLeakASlot is why the slot goes back on a defer.
+//
+// Released by explicit calls instead, a panic below the acquisition keeps the
+// slot for the life of the process — a nil store.Querier reaching q.QueryRow
+// is one line of a future caller away. Four of those and this instance never
+// fetches another listing, silently, because the recovery middleware keeps it
+// serving pages perfectly well.
+func TestAPanicDoesNotLeakASlot(t *testing.T) {
+	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
+	cat := &fakeCatalog{claimOK: true, claimPanic: true}
+	block := make(chan struct{})
+	fetch := &fakeFetcher{block: block, tracks: []spotify.AlbumTrack{
+		{ID: "t1", Name: "One", DiscNumber: 1, TrackNumber: 1},
+	}}
+	s := newService(t, cat, fetch, now)
+	var once sync.Once
+	release := func() { once.Do(func() { close(block) }) }
+	t.Cleanup(release)
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the claim did not panic; this test proves nothing")
+			}
+		}()
+		_, _ = s.Listing(context.Background(), nil, "albumpanic00000000000001")
+	}()
+	cat.stopPanicking()
+
+	// Every slot must still be free. The claim is synchronous, so a view that
+	// found no slot is one that never reached the database — which makes the
+	// claim count an exact measure of how many slots survived the panic.
+	for i := range concurrency {
+		if _, err := s.Listing(context.Background(), nil, fmt.Sprintf("albumafter%012d", i)); err != nil {
+			t.Fatalf("Listing: %v", err)
+		}
+	}
+	if claims, _, _ := cat.counts(); claims != concurrency+1 {
+		t.Errorf("%d claims, want %d: a slot was lost to the panic and never came back",
+			claims, concurrency+1)
+	}
+
+	release()
+	s.Close()
 }
 
 // --- the constructor -------------------------------------------------------

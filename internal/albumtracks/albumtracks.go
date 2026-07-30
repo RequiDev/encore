@@ -73,11 +73,23 @@ const (
 	// StateReady means a listing is stored and can be reasoned about. It may be
 	// older than the TTL, in which case a refresh is already running behind it.
 	StateReady State = "ready"
-	// StatePending means nothing is stored yet and a fetch is running.
+	// StatePending means nothing is stored yet and a fetch is running, or is due
+	// and will be started by the next view.
+	//
+	// Everything that merely *delays* a fetch reports this: a lease somebody else
+	// holds, no free local slot, a claim that errored, a shutdown in progress.
+	// None of them records an outcome, so the listing is still due and the very
+	// next view starts it — which is what makes "keep polling" the right advice.
 	StatePending State = "pending"
-	// StateUnavailable means nothing is stored and nothing is running: the last
-	// attempt failed, or this process could not start one. It is emphatically not
-	// "this album has no tracks".
+	// StateUnavailable means nothing is stored and the last attempt to read a
+	// listing failed, recently enough that no new one has been started.
+	//
+	// It is emphatically not "this album has no tracks", and it is deliberately
+	// not "this process was too busy to ask" either: only a *recorded* failure
+	// reaches here, which is what lets the page treat it as a reason to stop
+	// polling and say so. Reporting local backpressure as unavailable would tell
+	// somebody Spotify would not answer when Spotify was never asked — the same
+	// category error that keeps StateDisabled separate.
 	StateUnavailable State = "unavailable"
 	// StateDisabled means nothing is stored and this instance will not fetch it,
 	// because its operator turned that off.
@@ -174,9 +186,19 @@ type Service struct {
 	base   context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// mu guards closing, which is the only thing that may not race wg.Add
+	// against wg.Wait. See track.
+	mu      sync.Mutex
+	closing bool
 }
 
 // New validates the dependencies and builds the service.
+//
+// The caller owns Close and must call it during shutdown, before closing the
+// database pool: fetches run detached from any request, so nothing else will
+// ever wait for them, and a fetch cancelled at shutdown still needs the pool to
+// record that it failed. Constructing this after the pool and deferring Close
+// immediately puts both in the right order.
 func New(cfg config.AlbumTracks, deps Deps) (*Service, error) {
 	switch {
 	case deps.Catalog == nil:
@@ -250,15 +272,23 @@ func (s *Service) Listing(ctx context.Context, q store.Querier, albumID string) 
 	// write on every tick. It is checked even when this instance has fetching
 	// turned off: another replica may have started one before the switch was
 	// flipped, and reporting that accurately costs nothing.
-	running := st.Status == catalog.AlbumTrackFetching && now.Sub(st.AttemptedAt) < leaseTTL
+	pending := st.Status == catalog.AlbumTrackFetching && now.Sub(st.AttemptedAt) < leaseTTL
 
 	// s.enabled is checked *before* s.due, and that order is load-bearing: a
 	// switched-off instance must not resume making requests the moment its cache
 	// expires. Guarding here rather than inside start also means the claim — a
 	// write — is never even attempted, which is what an operator asking for no
 	// unattended traffic actually asked for.
-	if !running && s.enabled && s.due(st, now) {
-		running = s.start(ctx, q, albumID, now)
+	if !pending && s.enabled && s.due(st, now) {
+		s.start(ctx, q, albumID, now)
+		// Pending regardless of what start managed to do, and that is not
+		// optimism. Every way start can decline — no free slot, a lease somebody
+		// else holds, a claim that errored — leaves the row untouched, so this
+		// listing is still due and the next view starts it. Reporting those as
+		// unavailable would blame Spotify for local backpressure and, worse, would
+		// tell a page whose job is to stop polling on unavailable to give up on an
+		// album that one more poll would have fetched.
+		pending = true
 	}
 
 	out := Listing{Tracks: tracks, FetchedAt: st.FetchedAt}
@@ -271,7 +301,7 @@ func (s *Service) Listing(ctx context.Context, q store.Querier, albumID string) 
 		// FetchedAt travels with it so the page can say how old, which is the only
 		// honesty this case needs: a date claims nothing about freshness.
 		out.State = StateReady
-	case running:
+	case pending:
 		out.State = StatePending
 	case !s.enabled:
 		// Nothing stored, and this instance will not go and find out. That is the
@@ -279,8 +309,9 @@ func (s *Service) Listing(ctx context.Context, q store.Querier, albumID string) 
 		// own words rather than reporting an outage that never happened.
 		out.State = StateDisabled
 	default:
-		// Nothing stored and nothing running. The page must not read that as "this
-		// album has no tracks you have missed".
+		// Nothing stored, nothing running, and nothing due: the last attempt
+		// failed and its backoff has not elapsed. The page must not read that as
+		// "this album has no tracks you have missed".
 		out.State = StateUnavailable
 	}
 	return out, nil
@@ -309,38 +340,87 @@ func (s *Service) due(st catalog.AlbumTrackState, now time.Time) bool {
 	}
 }
 
-// start begins a detached fetch, reporting whether one is now running anywhere.
-func (s *Service) start(ctx context.Context, q store.Querier, albumID string, now time.Time) bool {
+// start begins a detached fetch if it can.
+//
+// It reports nothing, on purpose. Every way it can decline is a "not yet"
+// rather than a "no": none of them writes anything, so due is still true and
+// the next view tries again. There is no outcome here the page should be told
+// about beyond "keep polling", which its caller says unconditionally.
+func (s *Service) start(ctx context.Context, q store.Querier, albumID string, now time.Time) {
+	if s.base.Err() != nil {
+		// Close has already been called. Claiming a lease this process is about
+		// to abandon would strand the album for the whole leaseTTL for nothing.
+		// Not the guard that makes Close safe — track does that, atomically —
+		// just the one that keeps the common case from being wasteful.
+		return
+	}
 	select {
 	case s.slots <- struct{}{}:
 	default:
 		// Every slot is busy. Refusing is the point: queueing here would be
 		// queueing people behind a third party.
 		s.log.Debug("album track fetch not started; all slots busy", "album", albumID)
-		return false
+		return
 	}
-	release := func() { <-s.slots }
+	// The slot goes back unless the fetch goroutine takes ownership of it.
+	//
+	// A defer rather than a release() on each path: a panic anywhere below —
+	// a nil Querier reaching q.QueryRow would do it — would otherwise keep the
+	// slot for ever, and four of those stop this process fetching another
+	// listing for the rest of its life. Silently, because recovery middleware
+	// keeps serving pages.
+	started := false
+	defer func() {
+		if !started {
+			<-s.slots
+		}
+	}()
 
 	claimed, err := s.cat.ClaimAlbumTrackFetch(ctx, q, albumID, now, now.Add(-leaseTTL))
 	if err != nil {
-		release()
 		s.log.Warn("could not claim an album track fetch", "album", albumID, logging.Err(err))
-		return false
+		return
 	}
 	if !claimed {
 		// Somebody else holds the lease. A second request would be a wasted one
 		// against a quota the whole application shares — but a fetch *is* running,
 		// so the page is right to keep polling.
-		release()
-		return true
+		return
 	}
 
-	s.wg.Add(1)
+	if !s.track() {
+		// Close began between the claim and here. Nothing is stranded that the
+		// lease does not already cover: this is the same state a process killed
+		// mid-fetch leaves behind, and leaseTTL exists for exactly that.
+		s.log.Debug("album track fetch abandoned; shutting down", "album", albumID)
+		return
+	}
+	started = true
 	go func() {
 		defer s.wg.Done()
-		defer release()
+		defer func() { <-s.slots }()
 		s.fetch(albumID)
 	}()
+}
+
+// track registers a fetch with the WaitGroup unless Close has begun, reporting
+// whether the caller may now spawn it.
+//
+// The mutex is what makes Close correct rather than merely likely. Without it,
+// a handler still inside Listing when the process shuts down races Close two
+// ways: commonly Wait sees zero, returns, and the goroutine started a moment
+// later is one nothing waits for — which is precisely what Close promises not
+// to allow; and rarely the Add raising the counter from zero with a waiter
+// already registered panics with "WaitGroup misuse: Add called concurrently
+// with Wait", taking the process down on its way out. Both are reachable
+// because http.Server.Shutdown returns on timeout with handlers still running.
+func (s *Service) track() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.wg.Add(1)
 	return true
 }
 
@@ -418,11 +498,22 @@ func (s *Service) record(albumID string, cause error) {
 	}
 }
 
-// Close cancels every fetch in flight and waits for them.
+// Close cancels every fetch in flight and waits for them. It is safe to call
+// more than once, and safe to call while requests are still in Listing.
 //
 // Bounded by recordTimeout per fetch, because a cancelled fetch still records
-// its failure. The composition root defers this.
+// its failure — which is why the composition root must call this *before* it
+// closes the database pool. That write goes out on a context of its own
+// precisely so shutdown does not lose it, and a closed pool would lose it
+// anyway, leaving the album 'fetching' until its lease expires. Deferring
+// Close after the pool is opened gets the LIFO order right.
 func (s *Service) Close() {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+
 	s.cancel()
+	// Safe now: no wg.Add can follow, because track takes the same mutex and
+	// sees closing.
 	s.wg.Wait()
 }
