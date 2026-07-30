@@ -844,6 +844,130 @@ func TestLibraryStatsResolvesEntitiesAndSyncState(t *testing.T) {
 	}
 }
 
+// TestTopDiffNeverCapturedRendersNullCapturedAt pins the wire-level contract
+// for the state every (kind, range) set starts in until the daily worker
+// captures it: a struct-level assertion cannot tell "the server sent null"
+// apart from "the server omitted the field" - encoding/json unmarshals both
+// into the same nil pointer - so this checks the raw response text, exactly
+// as TestLibraryStatsNeverSyncedRendersNullSyncedAt does for the same reason.
+func TestTopDiffNeverCapturedRendersNullCapturedAt(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	resp := b.get("/api/stats/top-diff?kind=artist&range=short_term")
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/stats/top-diff = %d, want 200; body: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"capturedAt":null`) {
+		t.Errorf(`a never-captured (kind, range) must report "capturedAt":null verbatim, got: %s`, body)
+	}
+	if !strings.Contains(string(body), `"entries":[]`) {
+		t.Errorf("entries must serialise as [] and not null, got: %s", body)
+	}
+
+	var diff httpapi.TopDiffResponse[httpapi.ArtistRef]
+	if err := json.Unmarshal(body, &diff); err != nil {
+		t.Fatalf("decode top diff: %v; body: %s", err, body)
+	}
+	if diff.CapturedAt != nil {
+		t.Errorf("captured at = %v, want nil", *diff.CapturedAt)
+	}
+	if diff.TimeRange != "short_term" {
+		t.Errorf("time range = %q, want short_term", diff.TimeRange)
+	}
+}
+
+// TestTopDiffResolvesEntitiesAndValidatesParameters is the wiring check the
+// unit suite cannot make on its own: that the endpoint actually resolves a
+// captured entity id to a name through resolveRefs, exactly as handleLibrary
+// does, and that kind and range are both validated against their fixed sets
+// before ever reaching stats.TopDiff. The arithmetic behind the comparison
+// itself - both ranks present, one side only, the blacklist, the
+// per-time-range window - is covered exhaustively by
+// test/integration/topdiff_test.go; nothing here repeats it.
+func TestTopDiffResolvesEntitiesAndValidatesParameters(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	me := inst.signIn(b)
+	userID := uuid.MustParse(me["user"].(map[string]any)["id"].(string))
+
+	// A play, so Encore ranks this artist too: playItem derives the artist id
+	// from the track id, the same convention TestSyncFlowThroughTheAPI uses. A
+	// sync only mints the artist as an unnamed, pending catalogue row (see
+	// internal/sync/ingest.go: ingestion writes pending rows and nothing else,
+	// same as an import); UpsertArtists stands in for the enrichment worker
+	// this harness never starts, giving the row the name resolveRefs must
+	// then thread through to the response.
+	trackID := "e2etopdifftrack00001"
+	artistID := "art" + trackID[3:]
+	at := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{playItem(trackID, at)}
+	syncResult := decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != 1 {
+		t.Fatalf("sync reported %v imported, want 1", syncResult["imported"])
+	}
+	ctx, db := inst.env.Ctx(), inst.env.Store.DB()
+	if err := inst.env.Catalog.UpsertArtists(ctx, db, []domain.Artist{
+		{ID: artistID, Name: "Top Diff Artist"},
+	}); err != nil {
+		t.Fatalf("seed artist name: %v", err)
+	}
+
+	// Spotify's own captured ranking for the same artist, seeded directly the
+	// way the library worker would leave it after a real /me/top/artists call.
+	capturedAt := time.Now().UTC().Truncate(time.Second)
+	inst.env.Exec(`INSERT INTO spotify_top_snapshots (user_id, kind, time_range, position, entity_id, captured_at)
+		VALUES ($1, 'artist', 'short_term', 1, $2, $3)`, userID, artistID, capturedAt)
+
+	diff := decode[httpapi.TopDiffResponse[httpapi.ArtistRef]](t, b.get(
+		"/api/stats/top-diff?kind=artist&range=short_term"), http.StatusOK)
+
+	if diff.CapturedAt == nil || *diff.CapturedAt != capturedAt.Format(time.RFC3339) {
+		t.Fatalf("captured at = %v, want %v", diff.CapturedAt, capturedAt.Format(time.RFC3339))
+	}
+	if diff.TimeRange != "short_term" {
+		t.Fatalf("time range = %q, want short_term", diff.TimeRange)
+	}
+
+	var found *httpapi.TopDiffEntry[httpapi.ArtistRef]
+	for i := range diff.Entries {
+		if diff.Entries[i].Entity.ID == artistID {
+			found = &diff.Entries[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("entries = %+v, want an entry for %q", diff.Entries, artistID)
+	}
+	if found.Entity.Name != "Top Diff Artist" {
+		t.Fatalf("entity name = %q, want %q: the endpoint must resolve the id through resolveRefs",
+			found.Entity.Name, "Top Diff Artist")
+	}
+	if found.SpotifyRank == nil || *found.SpotifyRank != 1 {
+		t.Fatalf("spotify rank = %v, want 1", found.SpotifyRank)
+	}
+	if found.EncoreRank == nil || *found.EncoreRank != 1 {
+		t.Fatalf("encore rank = %v, want 1", found.EncoreRank)
+	}
+
+	// kind and range are both validated against their fixed sets: neither ever
+	// reaches stats.TopDiff, let alone SQL, as a bare caller-supplied string.
+	for _, path := range []string{
+		"/api/stats/top-diff?kind=album&range=short_term",
+		"/api/stats/top-diff?kind=artist&range=this_year",
+		"/api/stats/top-diff",
+	} {
+		resp := b.get(path)
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET %s = %d, want 400; body: %s", path, resp.StatusCode, respBody)
+		}
+	}
+}
+
 func TestImportFlowThroughTheAPI(t *testing.T) {
 	inst := newInstance(t)
 	b := inst.browser()

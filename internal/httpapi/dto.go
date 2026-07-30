@@ -504,6 +504,65 @@ type LibraryStatsResponse struct {
 	DormantFollows   []LibraryDormantArtist `json:"dormantFollows"`
 }
 
+// --- top diff ----------------------------------------------------------
+
+// TopDiffEntry is one entity in the comparison between Spotify's own top
+// ranking and Encore's, for one (kind, time range) pair.
+//
+// SpotifyRank and EncoreRank are null exactly when the entity is absent from
+// that side, never zero: see stats.TopDiffEntry's own doc comment for why
+// "absent from this side" and "tied for last place" must never collapse into
+// the same wire value. Plays is Encore's own play count for the window and is
+// meaningless when EncoreRank is null - Spotify's side of this comparison
+// carries no play count at all, only a rank.
+type TopDiffEntry[T any] struct {
+	Entity      T     `json:"entity"`
+	SpotifyRank *int  `json:"spotifyRank"`
+	EncoreRank  *int  `json:"encoreRank"`
+	Plays       int64 `json:"plays"`
+}
+
+// TopDiffResponse answers GET /api/stats/top-diff.
+//
+// CapturedAt is null exactly when nothing has ever been captured for this
+// (kind, time range) set - see stats.TopDiff's own doc comment for why - and
+// Entries is then always [], never Encore's ranking rendered on its own: a
+// one-sided list would look like a comparison without being one. TimeRange
+// echoes back the caller's own ?range=, which exists only so a response read
+// out of a stale client-side cache entry still names the window it describes.
+type TopDiffResponse[T any] struct {
+	CapturedAt *string           `json:"capturedAt"`
+	TimeRange  string            `json:"timeRange"`
+	Entries    []TopDiffEntry[T] `json:"entries"`
+}
+
+// rankOrNil maps the statistics layer's "zero means absent from this side"
+// onto the wire's explicit null, the same translation previousRank makes for
+// a previous-period rank.
+func rankOrNil(n int) *int {
+	if n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+// toTopDiffEntries renders one comparison's entries with their entities
+// resolved. Built with make and append rather than returned as a bare nil
+// slice, so Entries always serialises as [] per this file's own convention
+// even when the comparison has nothing to show.
+func toTopDiffEntries[T any](entries []stats.TopDiffEntry, entity func(string) T) []TopDiffEntry[T] {
+	out := make([]TopDiffEntry[T], 0, len(entries))
+	for _, e := range entries {
+		out = append(out, TopDiffEntry[T]{
+			Entity:      entity(e.EntityID),
+			SpotifyRank: rankOrNil(e.SpotifyRank),
+			EncoreRank:  rankOrNil(e.EncoreRank),
+			Plays:       e.Plays,
+		})
+	}
+	return out
+}
+
 // EntityStats is what every detail page shows about one track, artist or album.
 //
 // The two pairs of timestamps answer different questions and both are sent.

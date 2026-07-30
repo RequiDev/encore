@@ -309,6 +309,7 @@ func TestNewStatsRoutesRequireASession(t *testing.T) {
 		"/api/stats/taste",
 		"/api/stats/context",
 		"/api/stats/library",
+		"/api/stats/top-diff",
 	} {
 		rec := ts.do(httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusUnauthorized {
