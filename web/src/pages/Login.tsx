@@ -115,8 +115,8 @@ export default function Login(): ReactElement {
           </a>
 
           <p className="mt-4 text-center text-xs text-ink-faint">
-            Encore asks Spotify for read access to your listening history and library. It never
-            writes anything to your account.
+            Encore asks Spotify for read access to your profile, your listening history and
+            library, and what you&rsquo;re playing now. It never writes anything to your account.
           </p>
         </div>
       </div>
