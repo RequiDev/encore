@@ -490,10 +490,17 @@ func (s *Server) handleExtras(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	albums, err := s.stats.CompletedAlbums(ctx, s.querier, user.ID, tr)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	completed := toCompletedAlbums(albums)
 
 	out := StatsExtras{
 		DifferentArtists:       summary.DistinctArtists,
 		AverageArtistsPerTrack: perTrack.Average,
+		AlbumsCompleted:        &completed,
 	}
 	// A range with no album-attributed listening has no average release year at
 	// all, which is a different statement from an average of zero.

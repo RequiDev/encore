@@ -434,9 +434,10 @@ type YearInReview struct {
 
 // StatsExtras are the smaller dashboard figures that do not warrant a chart.
 type StatsExtras struct {
-	DifferentArtists        int64    `json:"differentArtists"`
-	AverageAlbumReleaseYear *float64 `json:"averageAlbumReleaseYear"`
-	AverageArtistsPerTrack  float64  `json:"averageArtistsPerTrack"`
+	DifferentArtists        int64                    `json:"differentArtists"`
+	AverageAlbumReleaseYear *float64                 `json:"averageAlbumReleaseYear"`
+	AverageArtistsPerTrack  float64                  `json:"averageArtistsPerTrack"`
+	AlbumsCompleted         *CompletedAlbumsResponse `json:"albumsCompleted,omitempty"`
 }
 
 // AffinityEntry is one entity two users share, with each side's play count.
@@ -506,9 +507,36 @@ type ArtistDetail struct {
 
 // AlbumDetail is the album page.
 type AlbumDetail struct {
-	Album     Album                `json:"album"`
-	Stats     EntityStats          `json:"stats"`
-	TopTracks []TopEntry[TrackRef] `json:"topTracks"`
+	Album      Album                    `json:"album"`
+	Stats      EntityStats              `json:"stats"`
+	TopTracks  []TopEntry[TrackRef]     `json:"topTracks"`
+	Completion *AlbumCompletionResponse `json:"completion,omitempty"`
+}
+
+// AlbumCompletionResponse is how much of an album somebody has heard, ever.
+//
+// Known is false when the album's track count has not been enriched yet. The
+// client must render "not known yet" rather than a ratio in that case — a
+// freshly imported instance is in it for nearly every album.
+type AlbumCompletionResponse struct {
+	Heard int64 `json:"heard"`
+	Total int64 `json:"total"`
+	Known bool  `json:"known"`
+}
+
+// CompletedAlbumsResponse is the range-scoped aggregate. Both numbers describe
+// albums played inside the range whose track count is known.
+type CompletedAlbumsResponse struct {
+	Complete int64 `json:"complete"`
+	Albums   int64 `json:"albums"`
+}
+
+func toAlbumCompletion(c stats.AlbumCompletion) AlbumCompletionResponse {
+	return AlbumCompletionResponse{Heard: c.Heard, Total: c.Total, Known: c.Known}
+}
+
+func toCompletedAlbums(c stats.CompletedAlbums) CompletedAlbumsResponse {
+	return CompletedAlbumsResponse{Complete: c.Complete, Albums: c.Albums}
 }
 
 // --- genres ----------------------------------------------------------------

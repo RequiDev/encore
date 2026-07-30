@@ -300,11 +300,18 @@ func (s *Server) handleAlbum(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	completion, err := s.stats.AlbumCompletion(ctx, s.querier, user.ID, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	c := toAlbumCompletion(completion)
 
 	writeJSON(w, r, http.StatusOK, AlbumDetail{
-		Album:     refs.fullAlbum(album),
-		Stats:     toEntityStats(st.EntityStats),
-		TopTracks: countEntries(st.TopTracks, refs.trackEntity),
+		Album:      refs.fullAlbum(album),
+		Stats:      toEntityStats(st.EntityStats),
+		TopTracks:  countEntries(st.TopTracks, refs.trackEntity),
+		Completion: &c,
 	})
 }
 
