@@ -316,7 +316,14 @@ function DiffTable({ kind, column, entries }: DiffTableProps): ReactElement {
           <LedgerHeaderCell numeric className="w-16">
             Encore
           </LedgerHeaderCell>
-          <LedgerHeaderCell numeric className="w-16">
+          {/*
+            Spotify is the baseline, so a positive delta means Spotify ranks the
+            entity higher than Encore does. The direction is inferable from the
+            two rank columns beside it, but only by arithmetic — the title says
+            it outright, because a reader who guesses the sign backwards reads
+            every disagreement on the page inverted.
+          */}
+          <LedgerHeaderCell numeric className="w-16" title="How much higher Spotify ranks it than Encore does. Positive means Spotify ranks it higher.">
             Delta
           </LedgerHeaderCell>
           <LedgerHeaderCell numeric>Plays</LedgerHeaderCell>
