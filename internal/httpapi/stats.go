@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/RequiDev/encore/internal/domain"
@@ -571,6 +572,139 @@ func sharedEntries[T any](shared []stats.SharedEntry, entity func(string) T) []A
 		out = append(out, AffinityEntry[T]{Entity: entity(e.ID), PlaysA: e.PlaysA, PlaysB: e.PlaysB})
 	}
 	return out
+}
+
+// genreTimelineMaxSeries bounds how many genres one timeline may carry. Eight is
+// where a stacked area chart stops being readable and the ninth series is noise.
+const genreTimelineMaxSeries = 8
+
+// handleGenres answers GET /api/stats/genres.
+func (s *Server) handleGenres(w http.ResponseWriter, r *http.Request) {
+	user, tr, err := s.callerAndRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	limit, offset, err := parsePage(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	page, err := s.stats.TopGenres(r.Context(), s.querier, user.ID, tr, user.Timezone, limit, offset)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toGenres(page))
+}
+
+// handleGenreTimeline answers GET /api/stats/genres/timeline.
+//
+// The genres are a repeated query parameter rather than the server picking them,
+// so a chart's series stay stable while the ranking beneath it is paged. Asking
+// for none means "the range's top ones", which is what a first page load wants.
+func (s *Server) handleGenreTimeline(w http.ResponseWriter, r *http.Request) {
+	user, tr, err := s.callerAndRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	interval, err := parseInterval(r, tr)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+
+	// A caller may repeat ?genre= (a re-submitted form, a hand-built link, or a
+	// bookmarked one), and genreTimelineSQL's series CTE cross-joins the list
+	// verbatim: a repeated genre would cross-join to a duplicate (bucket, genre)
+	// row, silently breaking the one-row-per-bucket-per-genre contract every
+	// timeline promises. Deduplicating here, before the cap and before the
+	// service call, is what keeps that contract regardless of what the query
+	// string contains.
+	genres := dedupeGenres(r.URL.Query()["genre"])
+	if len(genres) > genreTimelineMaxSeries {
+		writeError(w, r, fmt.Errorf("%w: at most %d genres may be charted at once",
+			domain.ErrValidation, genreTimelineMaxSeries))
+		return
+	}
+	if len(genres) == 0 {
+		page, err := s.stats.TopGenres(ctx, s.querier, user.ID, tr, user.Timezone, genreTimelineMaxSeries, 0)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		for _, g := range page.Genres {
+			genres = append(genres, g.Genre)
+		}
+	}
+
+	points, err := s.stats.GenreTimeline(ctx, s.querier, user.ID, tr, user.Timezone, interval, genres)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	out := GenreTimelineResponse{
+		Interval: string(interval),
+		Points:   make([]GenreTimelinePoint, 0, len(points)),
+	}
+	for _, p := range points {
+		out.Points = append(out.Points, GenreTimelinePoint{
+			Bucket: p.Bucket, Genre: p.Genre, Plays: p.Plays, MsPlayed: p.MsPlayed,
+		})
+	}
+	writeJSON(w, r, http.StatusOK, out)
+}
+
+// dedupeGenres drops repeats from a caller's genre list while preserving the
+// order they first appeared in, so the series in a chart lands in a stable,
+// predictable order rather than whatever a map would give back.
+func dedupeGenres(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, g := range in {
+		if _, dup := seen[g]; dup {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+	}
+	return out
+}
+
+// handleTaste answers GET /api/stats/taste.
+func (s *Server) handleTaste(w http.ResponseWriter, r *http.Request) {
+	user, tr, err := s.callerAndRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	t, err := s.stats.Taste(r.Context(), s.querier, user.ID, tr, user.Timezone)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toTaste(t))
+}
+
+// handlePlaybackContext answers GET /api/stats/context.
+func (s *Server) handlePlaybackContext(w http.ResponseWriter, r *http.Request) {
+	user, tr, err := s.callerAndRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	c, err := s.stats.PlaybackContext(r.Context(), s.querier, user.ID, tr, user.Timezone)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toPlaybackContext(c))
 }
 
 // handleListUsers answers GET /api/users: who else is on this instance.

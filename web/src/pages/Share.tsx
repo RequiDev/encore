@@ -17,7 +17,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { qk } from '../lib/query'
 import type { SharedStats } from '../lib/types'
-import { formatCount, formatDate, formatDurationShort, formatPlural } from '../lib/format'
+import { formatCount, formatDate, formatDurationShort, formatPlural, formatRatio } from '../lib/format'
 import { useDocumentTitle } from '../lib/hooks'
 import { ChartCard, HourChart, TimelineChart, WeekdayChart } from '../components/charts'
 import {
@@ -163,6 +163,52 @@ export default function Share(): ReactElement {
               plays: e.plays,
             }))}
           />
+
+          {/*
+           * Genres and taste: the same data class as the top lists above —
+           * what somebody listens to, not how or where — so they are on a
+           * share too, each with its own coverage sentence like every other
+           * partial statistic in Encore. Playback context (skip, shuffle,
+           * platform, country, offline, incognito) stays off every share;
+           * an end-to-end test asserts its field names never appear here.
+           */}
+          {data.genres ? (
+            <>
+              <TopList
+                title="Top genres"
+                rows={data.genres.genres.map((g, i) => ({
+                  key: g.genre,
+                  rank: i + 1,
+                  name: g.genre,
+                  plays: g.plays,
+                }))}
+              />
+              {data.genres.genres.length > 0 ? (
+                <p className="text-xs text-ink-faint">
+                  {data.genres.coverage.covered === data.genres.coverage.total
+                    ? 'Genres are known for all of this listening.'
+                    : `Genres are known for ${formatRatio(data.genres.coverage.covered, data.genres.coverage.total)} of this listening — a track counts toward each of its genres, so these add up to more than the total plays above.`}
+                </p>
+              ) : null}
+            </>
+          ) : null}
+
+          {data.taste ? (
+            <StatGrid columns={2}>
+              <Stat
+                label="Obscurity"
+                value={formatCount(data.taste.obscurity.value)}
+                suffix="of 100"
+                hint={tasteHint(data.taste.obscurity.covered, data.taste.obscurity.total)}
+              />
+              <Stat
+                label="Release lag"
+                value={formatYears(data.taste.releaseLag.value)}
+                suffix="years old"
+                hint={tasteHint(data.taste.releaseLag.covered, data.taste.releaseLag.total)}
+              />
+            </StatGrid>
+          ) : null}
         </>
       )}
 
@@ -226,4 +272,19 @@ function TopList({ title, rows }: { title: string; rows: TopRow[] }): ReactEleme
       )}
     </Panel>
   )
+}
+
+/** What a taste score's coverage reads, over the share's fixed period. */
+function tasteHint(covered: number, total: number): string {
+  if (total <= 0) return 'Not known for this period'
+  return `Known for ${formatRatio(covered, total)} of this listening`
+}
+
+/**
+ * A release-lag figure is a count of years, not a ratio — there is no
+ * percentage formatter that would be right here.
+ */
+function formatYears(value: number): string {
+  if (!Number.isFinite(value)) return '0.0'
+  return value.toFixed(1)
 }

@@ -27,6 +27,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const TopTracks = lazy(() => import('./pages/TopTracks'))
 const TopArtists = lazy(() => import('./pages/TopArtists'))
 const TopAlbums = lazy(() => import('./pages/TopAlbums'))
+const Genres = lazy(() => import('./pages/Genres'))
 const History = lazy(() => import('./pages/History'))
 const ArtistDetail = lazy(() => import('./pages/ArtistDetail'))
 const AlbumDetail = lazy(() => import('./pages/AlbumDetail'))
@@ -35,6 +36,7 @@ const Search = lazy(() => import('./pages/Search'))
 const Sessions = lazy(() => import('./pages/Sessions'))
 const Discovery = lazy(() => import('./pages/Discovery'))
 const Streaks = lazy(() => import('./pages/Streaks'))
+const Habits = lazy(() => import('./pages/Habits'))
 const YearInReview = lazy(() => import('./pages/YearInReview'))
 const Compare = lazy(() => import('./pages/Compare'))
 const Imports = lazy(() => import('./pages/Imports'))
@@ -88,11 +90,13 @@ export const routes: RouteObject[] = [
               { path: 'artists/:id', element: <ArtistDetail /> },
               { path: 'albums', element: <TopAlbums /> },
               { path: 'albums/:id', element: <AlbumDetail /> },
+              { path: 'genres', element: <Genres /> },
               { path: 'history', element: <History /> },
               { path: 'search', element: <Search /> },
               { path: 'sessions', element: <Sessions /> },
               { path: 'discovery', element: <Discovery /> },
               { path: 'streaks', element: <Streaks /> },
+              { path: 'habits', element: <Habits /> },
               { path: 'year', element: <CurrentYear /> },
               { path: 'year/:year', element: <YearInReview /> },
               { path: 'compare', element: <Compare /> },

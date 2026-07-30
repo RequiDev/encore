@@ -961,6 +961,30 @@ func TestSharedLinkShowsAggregatesToAnybodyHoldingIt(t *testing.T) {
 	}
 }
 
+// TestSharedLinkCarriesGenresAndObscurity checks the two aggregate additions
+// reach a shared page. They are the same data class as the top lists beside
+// them: what somebody's taste is, never when they were listening.
+func TestSharedLinkCarriesGenresAndObscurity(t *testing.T) {
+	inst := newInstance(t)
+	owner := inst.browser()
+	inst.signIn(owner)
+
+	at := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{playItem("shr00000000000000004a", at)}
+	decode[map[string]any](t, owner.postJSON("/api/sync/now", nil), http.StatusOK)
+
+	created := decode[map[string]any](t, owner.postJSON("/api/shares", map[string]any{}), http.StatusCreated)
+	token := created["token"].(string)
+
+	shared := decode[map[string]any](t, inst.browser().get("/api/share/"+token), http.StatusOK)
+	if _, ok := shared["genres"].(map[string]any); !ok {
+		t.Errorf("the shared payload carries no genre ranking: %v", shared)
+	}
+	if _, ok := shared["taste"].(map[string]any); !ok {
+		t.Errorf("the shared payload carries no taste scores: %v", shared)
+	}
+}
+
 // TestASharedLinkCannotReachTheListeningHistory is the privacy boundary, and the
 // reason the share endpoint composes its own payload instead of reusing the
 // statistics handlers behind a shared authentication path.
@@ -980,7 +1004,15 @@ func TestASharedLinkCannotReachTheListeningHistory(t *testing.T) {
 	token := created["token"].(string)
 
 	shared := decode[map[string]any](t, inst.browser().get("/api/share/"+token), http.StatusOK)
-	for _, forbidden := range []string{"history", "listens", "plays", "items"} {
+	// The playback-context statistics are withheld deliberately: device and
+	// country say what hardware somebody owns and where they have travelled,
+	// which is a different disclosure from a favourite artist.
+	for _, forbidden := range []string{
+		"history", "listens", "plays", "items",
+		"endReasons", "endReasonCoverage", "skipRate", "shuffleRate",
+		"platforms", "platformCoverage", "countries", "countryCoverage",
+		"offlineRate", "incognitoRate",
+	} {
 		if _, present := shared[forbidden]; present {
 			t.Fatalf("the shared payload carries a %q field; a share must expose "+
 				"aggregates and never individual plays", forbidden)

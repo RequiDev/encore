@@ -10,9 +10,15 @@
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import type { HeatmapCell, RepartitionBucket, TimelineBucket } from '../../lib/types'
+import type {
+  GenreTimelinePoint,
+  HeatmapCell,
+  RepartitionBucket,
+  TimelineBucket,
+} from '../../lib/types'
 import { BarChart } from './BarChart'
 import { ChartCard } from './ChartCard'
+import { GenreTimelineChart } from './GenreTimelineChart'
 import { Heatmap } from './Heatmap'
 import { HourChart } from './HourChart'
 import { ShareBar } from './ShareBar'
@@ -122,6 +128,84 @@ describe('BarChart', () => {
   it('says so when there is nothing to rank', () => {
     render(<BarChart label="Top artists by plays" data={[]} />)
     expect(screen.getByText(/nothing to rank in this range/)).toBeInTheDocument()
+  })
+})
+
+describe('GenreTimelineChart', () => {
+  it('gives fewer than five genres one band each, with no "Other"', () => {
+    const points: GenreTimelinePoint[] = [
+      { bucket: '2026-01-01T00:00:00Z', genre: 'dream pop', plays: 10, msPlayed: 0 },
+      { bucket: '2026-01-01T00:00:00Z', genre: 'synthwave', plays: 6, msPlayed: 0 },
+      { bucket: '2026-01-01T00:00:00Z', genre: 'ambient', plays: 2, msPlayed: 0 },
+    ]
+
+    const { container } = render(
+      <GenreTimelineChart
+        points={points}
+        genres={['dream pop', 'synthwave', 'ambient']}
+        interval="month"
+        timeZone="UTC"
+        metric="plays"
+      />,
+    )
+
+    expect(screen.queryByText('Other genres')).not.toBeInTheDocument()
+    expect(container.querySelectorAll('li')).toHaveLength(3)
+    const caption = screen.getByText(/^Genre listening by month/)
+    expect(caption).toHaveTextContent('across 3 genres')
+    expect(caption).toHaveTextContent('led by dream pop with 10')
+  })
+
+  it('folds rank five and beyond into one "Other" band, summed correctly', () => {
+    // Ranked, most-played first — as the server's top-eight cap always hands
+    // the component. The last two are given the largest values on purpose, so
+    // a wrong fold (e.g. dropping the overflow, or summing the wrong series)
+    // shows up as the wrong leader or the wrong total, not merely a missing row.
+    const genres = ['a', 'b', 'c', 'd', 'e', 'f']
+    const points: GenreTimelinePoint[] = [
+      { bucket: '2026-01-01T00:00:00Z', genre: 'a', plays: 10, msPlayed: 0 },
+      { bucket: '2026-01-01T00:00:00Z', genre: 'b', plays: 8, msPlayed: 0 },
+      { bucket: '2026-01-01T00:00:00Z', genre: 'c', plays: 6, msPlayed: 0 },
+      { bucket: '2026-01-01T00:00:00Z', genre: 'd', plays: 4, msPlayed: 0 },
+      { bucket: '2026-01-01T00:00:00Z', genre: 'e', plays: 20, msPlayed: 0 },
+      { bucket: '2026-01-01T00:00:00Z', genre: 'f', plays: 5, msPlayed: 0 },
+    ]
+
+    const { container } = render(
+      <GenreTimelineChart
+        points={points}
+        genres={genres}
+        interval="month"
+        timeZone="UTC"
+        metric="plays"
+      />,
+    )
+
+    // Four named bands (SERIES_LIMIT) plus one "Other" — never a sixth hue.
+    expect(container.querySelectorAll('li')).toHaveLength(5)
+    expect(screen.getByText('Other genres')).toBeInTheDocument()
+
+    const caption = screen.getByText(/^Genre listening by month/)
+    // Grand total is all six genres' plays (10+8+6+4+20+5 = 53); the leader is
+    // "Other", whose value is exactly the folded pair's sum (20+5 = 25) rather
+    // than either overflow genre alone or the whole grand total.
+    expect(caption).toHaveTextContent('53 across 5 genres')
+    expect(caption).toHaveTextContent('led by Other genres with 25')
+  })
+
+  it('does not crash on an empty points array', () => {
+    render(
+      <GenreTimelineChart
+        points={[]}
+        genres={['dream pop', 'synthwave']}
+        interval="month"
+        timeZone="UTC"
+        metric="plays"
+      />,
+    )
+    expect(
+      screen.getByText(/Nothing was played in this range, so there is no genre trend to show yet/),
+    ).toBeInTheDocument()
   })
 })
 

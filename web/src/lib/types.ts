@@ -127,6 +127,15 @@ export interface SharedStats {
   timeline: TimelineBucket[]
   hours: RepartitionBucket[]
   weekdays: RepartitionBucket[]
+  /**
+   * Aggregate taste — the same data class as the top lists above: what
+   * somebody listens to, never how or where. Optional because the Go DTO
+   * carries both as `omitempty` pointers; playback-context statistics (skip,
+   * shuffle, platform, country, offline, incognito) are never in this shape,
+   * on any version, because device and location are not what a share is for.
+   */
+  genres?: GenresResponse
+  taste?: TasteResponse
 }
 
 // --- playlists -------------------------------------------------------------
@@ -353,6 +362,83 @@ export interface HeatmapCell {
   hour: number
   plays: number
   msPlayed: number
+}
+
+// --- genres ------------------------------------------------------------
+
+/** The denominator every partial statistic carries. */
+export interface Coverage {
+  covered: number
+  total: number
+}
+
+/** A ratio and the coverage it was computed over. */
+export interface Rate extends Coverage {
+  value: number
+}
+
+export interface GenreEntry {
+  genre: string
+  plays: number
+  msPlayed: number
+}
+
+/**
+ * One page of the genre ranking.
+ *
+ * Plays across genres sum to more than the range's total plays: a track counts
+ * toward each of its genres. The page says so rather than normalising it away.
+ */
+export interface GenresResponse {
+  genres: GenreEntry[]
+  total: number
+  coverage: Coverage
+}
+
+export interface GenreTimelinePoint {
+  bucket: string
+  genre: string
+  plays: number
+  msPlayed: number
+}
+
+export interface GenreTimelineResponse {
+  interval: Interval
+  points: GenreTimelinePoint[]
+}
+
+// --- habits (playback context & taste) --------------------------------------
+
+/** One category of a breakdown: an end reason, a platform family, a country. */
+export interface ContextSlice {
+  key: string
+  plays: number
+}
+
+/** The two taste scores, each with its own coverage. Consumed by the dashboard. */
+export interface TasteResponse {
+  obscurity: Rate
+  releaseLag: Rate
+}
+
+/**
+ * How listening happened, as opposed to what was listened to.
+ *
+ * Every rate carries its own denominator: the underlying columns are written
+ * only by the extended-export importer, and an export may omit any one of them
+ * independently of the others.
+ */
+export interface PlaybackContextResponse {
+  endReasons: ContextSlice[]
+  endReasonCoverage: Coverage
+  skipRate: Rate
+  shuffleRate: Rate
+  platforms: ContextSlice[]
+  platformCoverage: Coverage
+  countries: ContextSlice[]
+  countryCoverage: Coverage
+  offlineRate: Rate
+  incognitoRate: Rate
 }
 
 export interface ListeningSession {

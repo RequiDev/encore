@@ -117,6 +117,25 @@ All accept `from` and `to`.
 | `GET` | `/api/stats/year-in-review?year=2026` | Wrapped-style yearly summary. |
 | `GET` | `/api/stats/extras` | Different artists per period, average album release year, average artists per track. |
 | `GET` | `/api/stats/affinity/{userId}` | Shared artists, albums and tracks with another user, and a similarity score. |
+| `GET` | `/api/stats/genres` | `?limit=&offset=`. Ranked genres of the artists behind the range's listening, with each genre's `plays` and `msPlayed`. Genre plays sum to more than the range's total plays, because a track counts toward every genre of every credited artist. Carries `coverage`: how many of the range's listens resolved to at least one genred artist. |
+| `GET` | `/api/stats/genres/timeline` | `?interval=&genre=`, with `genre` **repeated** (`?genre=rock&genre=jazz`), never comma-joined. Buckets the named genres across the range — one point per bucket per genre, zeroes included. Omitting `genre` charts the range's current top eight; at most **eight** genres may be requested in one call, matching what a stacked area chart can still show as distinct series. |
+| `GET` | `/api/stats/taste` | `{ "obscurity": <rate>, "releaseLag": <rate> }`. Obscurity is the play-weighted mean of Spotify's own artist popularity, 0–100, where **higher means more mainstream**. `releaseLag` is the play-weighted mean gap, in years, between an album's release and the play. |
+| `GET` | `/api/stats/context` | How the range was listened to, not what. `endReasons` (why a track stopped), `skipRate` (`reason_end = 'fwdbtn'` — going back is deliberately not counted as a skip), `shuffleRate`, `platforms`, `countries`, `offlineRate`, `incognitoRate`. |
+
+Genre, taste and playback-context statistics are partial by construction — genres exist only where
+enrichment has resolved the credited artist, and the playback-context columns exist only on rows an
+extended-history import wrote. Every figure above therefore ships its own denominator, in one of two
+shapes:
+
+```json
+{ "covered": 812, "total": 900 }
+{ "value": 42.7, "covered": 812, "total": 900 }
+```
+
+`total` is the range's relevant row count and `covered` is how many of those rows the statistic could
+actually compute from. A ranking or breakdown carries the pair as a `coverage`/`*Coverage` field
+alongside its list; a single figure carries it inline next to `value`. Nothing divides a partial
+count by the whole range and calls the result complete.
 
 ## Entities
 
@@ -232,11 +251,18 @@ Read-only links to a user's aggregate statistics.
 **Unauthenticated.** The only endpoint in Encore that answers with a user's data
 and no session.
 
-It composes a fixed payload — summary, top 25 tracks/artists/albums, timeline,
-hour and weekday repartition — using the same shapes the ordinary statistics
-endpoints return. There is no listening history in it and no parameter that
-could reach one: what a share exposes is a property of the feature, not a
-per-link setting.
+It composes a fixed payload — summary, top 25 tracks/artists/albums, genres,
+taste, timeline, hour and weekday repartition — using the same shapes the
+ordinary statistics endpoints return. There is no listening history in it and
+no parameter that could reach one: what a share exposes is a property of the
+feature, not a per-link setting.
+
+Genres and taste describe *what* somebody listens to, which a share has always
+disclosed in the top lists, so they are included. The playback-context
+statistics describe *how and where* — device and country say what hardware
+somebody owns and where they have travelled — and are deliberately left out of
+every share payload; an end-to-end test asserts their field names never
+appear in a shared response.
 
 The range comes from the link, never the query string. Revoked, expired,
 belonging to a deactivated user, and never-existed all answer `404` alike.

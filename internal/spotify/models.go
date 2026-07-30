@@ -100,7 +100,6 @@ type Track struct {
 	TrackNumber  int          `json:"track_number"`
 	IsLocal      bool         `json:"is_local"`
 	IsPlayable   bool         `json:"is_playable"`
-	PreviewURL   string       `json:"preview_url"`
 	Album        Album        `json:"album"`
 	Artists      []Artist     `json:"artists"`
 	ExternalIDs  ExternalIDs  `json:"external_ids"`

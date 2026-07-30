@@ -1,0 +1,267 @@
+/**
+ * Genre share over time, stacked.
+ *
+ * A ranking beside a ranking shows that taste changed; it does not show when.
+ * This is the "when": one band per genre, stacked so the total height is total
+ * listening and each band's thickness is that genre's share of it.
+ *
+ * The palette seats at most `SERIES_LIMIT` categorical colours — four, checked
+ * against colour-vision deficiency by the validator behind `palette.ts` — and a
+ * fifth adjacent hue is not distinguishable in daylight under deuteranopia. The
+ * caller may reasonably hand this component the range's top eight genres (the
+ * server's own cap, `genreTimelineMaxSeries`), so anything past the fourth is
+ * folded into a single "Other genres" band in a neutral, non-categorical tone
+ * rather than invented as a ninth hue. Every band is named in the legend below
+ * the plot as well as by colour, so identity never rests on the hue alone.
+ */
+
+import type { ReactElement, ReactNode } from 'react'
+import { useCallback, useMemo } from 'react'
+import { Area, AreaChart, CartesianGrid, Tooltip, XAxis, YAxis } from 'recharts'
+import type { TooltipContentProps } from 'recharts'
+import { usePrefersReducedMotion } from '../../lib/hooks'
+import type { GenreTimelinePoint, Interval } from '../../lib/types'
+import { formatCompact, formatCount, formatDuration, formatDurationShort } from '../../lib/format'
+import {
+  ChartEmpty,
+  ChartFrame,
+  TOOLTIP_WRAPPER,
+  TooltipCard,
+  axisLine,
+  crosshair,
+  numericTick,
+} from './ChartFrame'
+import { INTERVAL_NOUN, axisLabelFor, fullLabelFor } from './TimelineChart'
+import type { TimelineMetric } from './TimelineChart'
+import { SERIES_LIMIT, seriesColor, useChartPalette } from './palette'
+import type { ChartPalette } from './palette'
+
+/** Not a real genre name, so it cannot collide with one. */
+const OTHER_KEY = ' other'
+const OTHER_LABEL = 'Other genres'
+
+interface Band {
+  key: string
+  label: string
+  color: string
+}
+
+/** One bucket, with a value per displayed band. Dynamic keys, read by `dataKey`. */
+type Row = { key: string; label: string; full: string } & Record<string, number | string>
+
+function valueOf(point: GenreTimelinePoint | undefined, metric: TimelineMetric): number {
+  if (!point) return 0
+  return metric === 'plays' ? point.plays : point.msPlayed
+}
+
+function formatValue(value: number, metric: TimelineMetric): string {
+  return metric === 'plays' ? formatCount(value) : formatDuration(value)
+}
+
+function bandsFor(genres: string[], palette: ChartPalette): Band[] {
+  const displayed = genres.slice(0, SERIES_LIMIT)
+  const overflow = genres.slice(SERIES_LIMIT)
+  const bands = displayed.map((genre, i) => ({ key: genre, label: genre, color: seriesColor(palette, i) }))
+  if (overflow.length > 0) bands.push({ key: OTHER_KEY, label: OTHER_LABEL, color: palette.muted })
+  return bands
+}
+
+function rowsFor(
+  points: GenreTimelinePoint[],
+  bands: Band[],
+  overflow: string[],
+  interval: Interval,
+  timeZone: string,
+  metric: TimelineMetric,
+): Row[] {
+  const byBucket = new Map<string, Map<string, GenreTimelinePoint>>()
+  for (const point of points) {
+    let inner = byBucket.get(point.bucket)
+    if (!inner) {
+      inner = new Map()
+      byBucket.set(point.bucket, inner)
+    }
+    inner.set(point.genre, point)
+  }
+
+  return [...byBucket.keys()]
+    .sort()
+    .map((bucket) => {
+      const inner = byBucket.get(bucket)
+      const row: Row = {
+        key: bucket,
+        label: axisLabelFor(bucket, interval, timeZone),
+        full: fullLabelFor(bucket, interval, timeZone),
+      }
+      for (const band of bands) {
+        if (band.key === OTHER_KEY) {
+          row[band.key] = overflow.reduce(
+            (sum, genre) => sum + valueOf(inner?.get(genre), metric),
+            0,
+          )
+        } else {
+          row[band.key] = valueOf(inner?.get(band.key), metric)
+        }
+      }
+      return row
+    })
+}
+
+function describe(rows: Row[], bands: Band[], metric: TimelineMetric, interval: Interval): string {
+  const noun = INTERVAL_NOUN[interval]
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  if (!first || !last) return 'No genres to plot.'
+
+  const totals = bands
+    .map((band) => ({
+      ...band,
+      total: rows.reduce((sum, row) => sum + (Number(row[band.key]) || 0), 0),
+    }))
+    .sort((a, b) => b.total - a.total)
+  const grand = totals.reduce((sum, band) => sum + band.total, 0)
+  const leader = totals[0]
+
+  const span = rows.length === 1 ? first.full : `${first.full} to ${last.full}, one point per ${noun}`
+  const named = bands.length === 1 ? '1 genre' : `${bands.length} genres`
+
+  return (
+    `Genre listening by ${noun}, ${span}. ${formatValue(grand, metric)} across ${named}` +
+    (leader ? `, led by ${leader.label} with ${formatValue(leader.total, metric)}.` : '.')
+  )
+}
+
+export interface GenreTimelineChartProps {
+  points: GenreTimelinePoint[]
+  /** Ranked, most-played first. Drives the stack order, the colours and the legend. */
+  genres: string[]
+  interval: Interval
+  /** The user's timezone — the one the server bucketed in. */
+  timeZone: string
+  metric: TimelineMetric
+  height?: number
+  busy?: boolean
+  emptyAction?: ReactNode
+}
+
+export function GenreTimelineChart({
+  points,
+  genres,
+  interval,
+  timeZone,
+  metric,
+  height = 280,
+  busy = false,
+  emptyAction,
+}: GenreTimelineChartProps): ReactElement {
+  const palette = useChartPalette()
+  const reduced = usePrefersReducedMotion()
+
+  const bands = useMemo(() => bandsFor(genres, palette), [genres, palette])
+  const overflow = useMemo(() => genres.slice(SERIES_LIMIT), [genres])
+  const rows = useMemo(
+    () => rowsFor(points ?? [], bands, overflow, interval, timeZone, metric),
+    [points, bands, overflow, interval, timeZone, metric],
+  )
+
+  const tooltip = useCallback(
+    ({ active, payload }: TooltipContentProps): ReactNode => {
+      if (!active) return null
+      const row = payload?.[0]?.payload as Row | undefined
+      if (!row) return null
+      return (
+        <TooltipCard
+          title={row.full}
+          rows={bands.map((band) => ({
+            key: band.key,
+            color: band.color,
+            name: band.label,
+            value: formatValue(Number(row[band.key]) || 0, metric),
+          }))}
+        />
+      )
+    },
+    [bands, metric],
+  )
+
+  const hasData = rows.some((row) => bands.some((band) => (Number(row[band.key]) || 0) > 0))
+  if (!hasData) {
+    return (
+      <ChartEmpty
+        height={height}
+        description="Nothing was played in this range, so there is no genre trend to show yet."
+        action={emptyAction}
+      />
+    )
+  }
+
+  return (
+    <div>
+      <ChartFrame
+        label="Genre listening over time"
+        summary={describe(rows, bands, metric, interval)}
+        height={height}
+        busy={busy}
+      >
+        {(a11y) => (
+          <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }} {...a11y}>
+            <CartesianGrid stroke={palette.grid} strokeWidth={1} vertical={false} />
+            <XAxis
+              dataKey="key"
+              tickFormatter={(value: string) => axisLabelFor(value, interval, timeZone)}
+              tick={numericTick(palette)}
+              tickLine={false}
+              axisLine={axisLine(palette)}
+              minTickGap={28}
+              interval="preserveStartEnd"
+              height={22}
+            />
+            <YAxis
+              tick={numericTick(palette)}
+              tickLine={false}
+              axisLine={false}
+              width={48}
+              allowDecimals={false}
+              tickFormatter={(value: number) =>
+                metric === 'plays' ? formatCompact(value) : formatDurationShort(value)
+              }
+            />
+            <Tooltip
+              content={tooltip}
+              cursor={crosshair(palette)}
+              wrapperStyle={TOOLTIP_WRAPPER}
+              isAnimationActive={!reduced}
+            />
+            {bands.map((band) => (
+              <Area
+                key={band.key}
+                dataKey={band.key}
+                name={band.label}
+                type="linear"
+                stackId="genres"
+                stroke={band.color}
+                strokeWidth={1}
+                fill={band.color}
+                fillOpacity={0.65}
+                dot={false}
+                isAnimationActive={!reduced}
+              />
+            ))}
+          </AreaChart>
+        )}
+      </ChartFrame>
+      <ul className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-ink-muted">
+        {bands.map((band) => (
+          <li key={band.key} className="flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: band.color }}
+            />
+            <span className="max-w-[10rem] truncate">{band.label}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}

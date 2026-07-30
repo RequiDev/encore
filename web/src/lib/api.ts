@@ -60,13 +60,22 @@ export interface RequestOptions {
   onUploadProgress?: (loaded: number, total: number) => void
 }
 
-export type QueryValues = Record<string, string | number | boolean | null | undefined>
+export type QueryValues = Record<
+  string,
+  string | number | boolean | null | undefined | readonly string[]
+>
 
 export function buildQuery(query: QueryValues | undefined): string {
   if (!query) return ''
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) {
     if (value === null || value === undefined || value === '') continue
+    // An array becomes a repeated parameter rather than one comma-joined
+    // value, because that is what Go's r.URL.Query()[key] reads back.
+    if (Array.isArray(value)) {
+      for (const v of value) params.append(key, String(v))
+      continue
+    }
     params.set(key, String(value))
   }
   const s = params.toString()

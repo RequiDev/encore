@@ -505,6 +505,146 @@ type AlbumDetail struct {
 	TopTracks []TopEntry[TrackRef] `json:"topTracks"`
 }
 
+// --- genres ----------------------------------------------------------------
+
+// CoverageResponse is the shape every partial statistic carries.
+//
+// One shape across every endpoint so the client renders it with one component,
+// and so a reader of the JSON never has to work out which denominator a given
+// percentage was taken over.
+type CoverageResponse struct {
+	Covered int64 `json:"covered"`
+	Total   int64 `json:"total"`
+}
+
+// RateResponse is a ratio and the coverage it was computed over.
+//
+// Declared here rather than beside its first caller because it is this
+// endpoint group's coverage shape, generalised: the taste and playback-context
+// endpoints below are what actually reuse it.
+type RateResponse struct {
+	Value   float64 `json:"value"`
+	Covered int64   `json:"covered"`
+	Total   int64   `json:"total"`
+}
+
+// GenreEntry is one row of the genre ranking.
+type GenreEntry struct {
+	Genre    string `json:"genre"`
+	Plays    int64  `json:"plays"`
+	MsPlayed int64  `json:"msPlayed"`
+}
+
+// GenresResponse is one page of the ranking.
+//
+// Plays across genres sum to more than the range's total plays, because a track
+// counts toward each of its genres. The client says so on the page.
+type GenresResponse struct {
+	Genres   []GenreEntry     `json:"genres"`
+	Total    int64            `json:"total"`
+	Coverage CoverageResponse `json:"coverage"`
+}
+
+// GenreTimelinePoint is one genre in one bucket.
+type GenreTimelinePoint struct {
+	Bucket   time.Time `json:"bucket"`
+	Genre    string    `json:"genre"`
+	Plays    int64     `json:"plays"`
+	MsPlayed int64     `json:"msPlayed"`
+}
+
+// GenreTimelineResponse carries the interval so the client formats the axis
+// without re-deriving it.
+type GenreTimelineResponse struct {
+	Interval string               `json:"interval"`
+	Points   []GenreTimelinePoint `json:"points"`
+}
+
+func toCoverage(c stats.Coverage) CoverageResponse {
+	return CoverageResponse{Covered: c.Covered, Total: c.Total}
+}
+
+// TasteResponse carries both scores with their own coverage.
+type TasteResponse struct {
+	Obscurity  RateResponse `json:"obscurity"`
+	ReleaseLag RateResponse `json:"releaseLag"`
+}
+
+// ContextSliceEntry is one category of a breakdown.
+type ContextSliceEntry struct {
+	Key   string `json:"key"`
+	Plays int64  `json:"plays"`
+}
+
+// PlaybackContextResponse is the whole "how you listen" payload.
+//
+// Every rate carries its own denominator because the underlying columns are
+// written only by the extended-export importer, and an export may omit any one
+// of them independently.
+type PlaybackContextResponse struct {
+	EndReasons        []ContextSliceEntry `json:"endReasons"`
+	EndReasonCoverage CoverageResponse    `json:"endReasonCoverage"`
+	SkipRate          RateResponse        `json:"skipRate"`
+	ShuffleRate       RateResponse        `json:"shuffleRate"`
+	Platforms         []ContextSliceEntry `json:"platforms"`
+	PlatformCoverage  CoverageResponse    `json:"platformCoverage"`
+	Countries         []ContextSliceEntry `json:"countries"`
+	CountryCoverage   CoverageResponse    `json:"countryCoverage"`
+	OfflineRate       RateResponse        `json:"offlineRate"`
+	IncognitoRate     RateResponse        `json:"incognitoRate"`
+}
+
+// toRate pairs a ratio with the coverage it was computed over.
+//
+// It lives here rather than beside toCoverage in the previous task because
+// nothing called it until now, and staticcheck (U1000) rightly refuses an
+// unexported function with no call sites.
+func toRate(v float64, c stats.Coverage) RateResponse {
+	return RateResponse{Value: v, Covered: c.Covered, Total: c.Total}
+}
+
+func toContextSlices(in []stats.ContextSlice) []ContextSliceEntry {
+	out := make([]ContextSliceEntry, 0, len(in))
+	for _, s := range in {
+		out = append(out, ContextSliceEntry{Key: s.Key, Plays: s.Plays})
+	}
+	return out
+}
+
+func toTaste(t stats.Taste) TasteResponse {
+	return TasteResponse{
+		Obscurity:  toRate(t.Obscurity, t.ObscurityCoverage),
+		ReleaseLag: toRate(t.ReleaseLagYears, t.ReleaseLagCoverage),
+	}
+}
+
+func toPlaybackContext(c stats.PlaybackContext) PlaybackContextResponse {
+	return PlaybackContextResponse{
+		EndReasons:        toContextSlices(c.EndReasons),
+		EndReasonCoverage: toCoverage(c.EndReasonCoverage),
+		SkipRate:          toRate(c.SkipRate, c.SkipCoverage),
+		ShuffleRate:       toRate(c.ShuffleRate, c.ShuffleCoverage),
+		Platforms:         toContextSlices(c.Platforms),
+		PlatformCoverage:  toCoverage(c.PlatformCoverage),
+		Countries:         toContextSlices(c.Countries),
+		CountryCoverage:   toCoverage(c.CountryCoverage),
+		OfflineRate:       toRate(c.OfflineRate, c.OfflineCoverage),
+		IncognitoRate:     toRate(c.IncognitoRate, c.IncognitoCoverage),
+	}
+}
+
+func toGenres(p stats.GenrePage) GenresResponse {
+	out := GenresResponse{
+		Genres:   make([]GenreEntry, 0, len(p.Genres)),
+		Total:    p.Total,
+		Coverage: toCoverage(p.Coverage),
+	}
+	for _, g := range p.Genres {
+		out.Genres = append(out.Genres, GenreEntry{Genre: g.Genre, Plays: g.Plays, MsPlayed: g.MsPlayed})
+	}
+	return out
+}
+
 // --- listening history -----------------------------------------------------
 
 // HistoryItem is one row of the raw listening feed.
@@ -803,6 +943,13 @@ type SharedStatsResponse struct {
 	Timeline []TimelineBucket          `json:"timeline"`
 	Hours    []RepartitionBucket       `json:"hours"`
 	Weekdays []RepartitionBucket       `json:"weekdays"`
+
+	// Genres and Taste are aggregate taste, the same data class as the top
+	// lists above them. Playback context is deliberately absent: device and
+	// country say what hardware somebody owns and where they have travelled,
+	// which is not what a share is for.
+	Genres *GenresResponse `json:"genres,omitempty"`
+	Taste  *TasteResponse  `json:"taste,omitempty"`
 }
 
 // --- playlists --------------------------------------------------------------

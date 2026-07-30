@@ -48,6 +48,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { ranged: true, to: '/artists', label: 'Artists', icon: 'artist', primary: true },
       { ranged: true, to: '/albums', label: 'Albums', icon: 'album' },
       { ranged: true, to: '/tracks', label: 'Tracks', icon: 'track' },
+      { ranged: true, to: '/genres', label: 'Genres', icon: 'genre' },
     ],
   },
   {
@@ -56,6 +57,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { ranged: true, to: '/sessions', label: 'Sessions', icon: 'session' },
       { ranged: true, to: '/discovery', label: 'Discovery', icon: 'discovery' },
       { ranged: true, to: '/streaks', label: 'Streaks', icon: 'streak' },
+      { ranged: true, to: '/habits', label: 'Habits', icon: 'habits' },
     ],
   },
   {

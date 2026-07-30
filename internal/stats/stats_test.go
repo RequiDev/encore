@@ -63,6 +63,14 @@ func statements() []statement {
 		{name: "sharedAlbums", sql: sharedAlbumsSQL, params: 5},
 		{name: "sharedTracks", sql: sharedTracksSQL, params: 5},
 		{name: "affinityScore", sql: affinityScoreSQL, params: 4},
+		{name: "topGenresFact", sql: topGenresFactSQL, params: 5},
+		{name: "topGenresRollup", sql: topGenresRollupSQL, params: 6},
+		{name: "genreCoverage", sql: genreCoverageSQL, params: 3},
+		{name: "genreTimeline", sql: genreTimelineSQL, params: 6},
+		{name: "obscurity", sql: obscuritySQL, params: 3},
+		{name: "releaseLag", sql: releaseLagSQL, params: 4},
+		{name: "contextRates", sql: contextRatesSQL, params: 3},
+		{name: "contextBreakdown", sql: contextBreakdownSQL, params: 3},
 	}
 }
 

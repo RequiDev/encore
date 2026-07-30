@@ -41,6 +41,8 @@ export type IconName =
   | 'refresh'
   | 'logout'
   | 'calendar'
+  | 'genre'
+  | 'habits'
 
 const PATHS: Record<IconName, ReactNode> = {
   // A three-band equaliser: the dashboard is levels at a glance.
@@ -173,6 +175,21 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <rect x="3" y="5" width="18" height="16" rx="1.5" />
       <path d="M8 3v4M16 3v4M3 10h18" />
+    </>
+  ),
+  // A tag: genres are labels attached to a track, not entities of their own.
+  genre: (
+    <>
+      <path d="M11.5 3.5H19a1.5 1.5 0 0 1 1.5 1.5v7.5a1.5 1.5 0 0 1-.44 1.06l-8 8a1.5 1.5 0 0 1-2.12 0l-7.5-7.5a1.5 1.5 0 0 1 0-2.12l8-8a1.5 1.5 0 0 1 1.06-.44Z" />
+      <circle cx="15.5" cy="8.5" r="1.25" />
+    </>
+  ),
+  // A toggle: habits are the on/off gestures behind a listen — shuffled or
+  // not, offline or not — rather than the track itself.
+  habits: (
+    <>
+      <rect x="3" y="8" width="18" height="8" rx="4" />
+      <circle cx="15" cy="12" r="2.5" />
     </>
   ),
 }

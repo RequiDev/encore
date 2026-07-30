@@ -71,6 +71,18 @@ const SHARED: SharedStats = {
     total: 1,
   },
   albums: { items: [], total: 0 },
+  genres: {
+    genres: [
+      { genre: 'dream pop', plays: 120, msPlayed: 20_000_000 },
+      { genre: 'ambient', plays: 80, msPlayed: 15_000_000 },
+    ],
+    total: 2,
+    coverage: { covered: 1000, total: 1280 },
+  },
+  taste: {
+    obscurity: { value: 57, covered: 1200, total: 1280 },
+    releaseLag: { value: 8.4, covered: 1100, total: 1280 },
+  },
   timeline: [],
   hours: [],
   weekdays: [],
@@ -123,6 +135,13 @@ describe('a shared link', () => {
     expect(screen.getByText('1,280')).toBeInTheDocument()
     // Appears twice: as the top artist, and as the track's credit.
     expect(screen.getAllByText('Marconi Union').length).toBeGreaterThan(0)
+
+    // Genres and taste are aggregate taste, the same data class as the top
+    // lists, so a share carries them — each with its own coverage sentence.
+    expect(screen.getByText('dream pop')).toBeInTheDocument()
+    expect(screen.getByText(/Genres are known for 78.1% of this listening/)).toBeInTheDocument()
+    expect(screen.getByText('57')).toBeInTheDocument()
+    expect(screen.getByText('8.4')).toBeInTheDocument()
 
     // Not the login screen, and no application navigation: a visitor is not a
     // user of this instance and is shown nothing that suggests otherwise.

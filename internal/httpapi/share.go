@@ -204,6 +204,22 @@ func (s *Server) handleSharedStats(w http.ResponseWriter, r *http.Request) {
 	out.Artists = topPage(artists, refs.artistEntity)
 	out.Albums = topPage(albums, refs.albumEntity)
 
+	genres, err := s.stats.TopGenres(ctx, s.querier, owner.ID, rng, tz, shareTopLimit, 0)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sharedGenres := toGenres(genres)
+	out.Genres = &sharedGenres
+
+	taste, err := s.stats.Taste(ctx, s.querier, owner.ID, rng, tz)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sharedTaste := toTaste(taste)
+	out.Taste = &sharedTaste
+
 	interval := domain.SuggestInterval(rng)
 	out.Interval = string(interval)
 	points, err := s.stats.Timeline(ctx, s.querier, owner.ID, rng, tz, interval)
