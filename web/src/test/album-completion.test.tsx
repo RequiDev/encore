@@ -176,7 +176,7 @@ describe('the album page completion figure', () => {
 
     expect(within(section).getByText('Every track')).toBeInTheDocument()
     expect(within(section).queryByText('12 of 12')).not.toBeInTheDocument()
-    expect(within(section).getByText('All time')).toBeInTheDocument()
+    expect(within(section).getByText('all time')).toBeInTheDocument()
   })
 
   it('gives an in-progress ratio the same all-time qualifier as first and last listen', async () => {
@@ -190,7 +190,7 @@ describe('the album page completion figure', () => {
 
     expect(within(section).getByText('9 of 12')).toBeInTheDocument()
     expect(within(section).getByText('tracks')).toBeInTheDocument()
-    expect(within(section).getByText('All time')).toBeInTheDocument()
+    expect(within(section).getByText('all time')).toBeInTheDocument()
   })
 })
 

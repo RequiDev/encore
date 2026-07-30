@@ -150,11 +150,7 @@ export default function AlbumDetail(): ReactElement {
             busy={query.isFetching}
           />
 
-          <Panel
-            title="Heard"
-            description="How much of this album you have heard, all time."
-            padded={false}
-          >
+          <Panel title="Heard" description="How much of this album you have heard." padded={false}>
             <CompletionFigure completion={completion} />
           </Panel>
 
@@ -251,14 +247,14 @@ function CompletionFigure({
 
   return (
     <Stat
-      label="Heard"
+      label="Tracks heard"
       value={
         complete
           ? 'Every track'
           : `${formatCount(completion.heard)} of ${formatCount(completion.total)}`
       }
       suffix={complete ? undefined : 'tracks'}
-      hint="All time"
+      hint="all time"
     />
   )
 }
