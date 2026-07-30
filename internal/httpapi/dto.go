@@ -717,11 +717,30 @@ type ContextSliceEntry struct {
 	Plays int64  `json:"plays"`
 }
 
+// PlaylistContextEntryResponse is one (contextType, contextId) group: what the
+// listener was playing from, and how many times.
+//
+// Name is empty whenever user_playlists has no match for the pair — every
+// album, artist and collection (Liked Songs) context always, and a playlist
+// context whenever its id no longer names one of the listener's own playlists.
+// That is not an error: the row is still emitted, because dropping it would
+// understate the total PlaylistCoverage promises. ContextID is not a track,
+// album or artist id, so it is never a candidate for resolveRefs.
+type PlaylistContextEntryResponse struct {
+	ContextType string `json:"contextType"`
+	ContextID   string `json:"contextId"`
+	Name        string `json:"name"`
+	Plays       int64  `json:"plays"`
+}
+
 // PlaybackContextResponse is the whole "how you listen" payload.
 //
 // Every rate carries its own denominator because the underlying columns are
 // written only by the extended-export importer, and an export may omit any one
-// of them independently.
+// of them independently. Playlists and PlaylistCoverage are the one exception
+// to that rule: context_type and context_id are written only by live sync, so
+// their coverage is independent of — and typically disjoint from — the six
+// export-derived figures above.
 type PlaybackContextResponse struct {
 	EndReasons        []ContextSliceEntry `json:"endReasons"`
 	EndReasonCoverage CoverageResponse    `json:"endReasonCoverage"`
@@ -733,6 +752,9 @@ type PlaybackContextResponse struct {
 	CountryCoverage   CoverageResponse    `json:"countryCoverage"`
 	OfflineRate       RateResponse        `json:"offlineRate"`
 	IncognitoRate     RateResponse        `json:"incognitoRate"`
+
+	Playlists        []PlaylistContextEntryResponse `json:"playlists"`
+	PlaylistCoverage CoverageResponse               `json:"playlistCoverage"`
 }
 
 // toRate pairs a ratio with the coverage it was computed over.
@@ -748,6 +770,23 @@ func toContextSlices(in []stats.ContextSlice) []ContextSliceEntry {
 	out := make([]ContextSliceEntry, 0, len(in))
 	for _, s := range in {
 		out = append(out, ContextSliceEntry{Key: s.Key, Plays: s.Plays})
+	}
+	return out
+}
+
+// toPlaylistContextEntries carries each group's ids straight through. It does
+// not call resolveRefs: a context id is not always a track, album or artist
+// id — a playlist is none of those three — and the name this DTO reports
+// already came from user_playlists inside the statistic itself.
+func toPlaylistContextEntries(in []stats.PlaylistContextEntry) []PlaylistContextEntryResponse {
+	out := make([]PlaylistContextEntryResponse, 0, len(in))
+	for _, e := range in {
+		out = append(out, PlaylistContextEntryResponse{
+			ContextType: e.ContextType,
+			ContextID:   e.ContextID,
+			Name:        e.Name,
+			Plays:       e.Plays,
+		})
 	}
 	return out
 }
@@ -771,6 +810,8 @@ func toPlaybackContext(c stats.PlaybackContext) PlaybackContextResponse {
 		CountryCoverage:   toCoverage(c.CountryCoverage),
 		OfflineRate:       toRate(c.OfflineRate, c.OfflineCoverage),
 		IncognitoRate:     toRate(c.IncognitoRate, c.IncognitoCoverage),
+		Playlists:         toPlaylistContextEntries(c.Playlists),
+		PlaylistCoverage:  toCoverage(c.PlaylistCoverage),
 	}
 }
 
