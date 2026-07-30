@@ -309,14 +309,43 @@ func (r *Credentials) ListDueForSync(ctx context.Context, q store.Querier, older
 // broken refresh token fails identically at every endpoint, and polling it would
 // spend the instance's rate limit rediscovering an answer only the listener can
 // fix by reconnecting.
+//
+// The scopes predicate excludes an account that cannot sync at all: one that
+// predates Phase 2a's consent change and so was never asked for
+// user-library-read or user-follow-read. Without it, such an account's
+// library_synced_at stays NULL forever — the worker's own scope check in
+// sync() skips it without ever advancing the watermark — and NULLS FIRST then
+// keeps it permanently at the head of the queue; if enough never-scoped
+// accounts exist to fill a tick's batch limit, an account that has every scope
+// but has simply never synced is crowded out and never runs at all. The
+// in-code HasScope check in sync() stays as defence in depth: it is what
+// actually protects a request from being spent on an account the query below
+// let through by mistake.
+//
+// @> works against this column because every write path splits granted scopes
+// into one array element per scope (Token.Scopes, internal/httpapi/auth.go)
+// before it ever reaches Upsert; the one shape @> could not see through — an
+// older account's whole grant stored as a single space-separated element,
+// which MissingScopes and spotify.HasScope tolerate for exactly this reason —
+// only exists on a row that has never been re-upserted since before Encore
+// split them, and any such row necessarily predates both scopes named here.
+// Excluding it is therefore the correct answer whether @> recognises the
+// scope or not.
+//
+// c.user_id is a tiebreak, not merely tidiness: without one, every account
+// stuck on the residual case above (both scopes granted, syncing 403s anyway)
+// ties on the same library_synced_at forever and NULLS FIRST offers nothing to
+// break the tie, so the same accounts would head the queue on every tick
+// instead of rotating through it.
 const listDueForLibrarySyncSQL = `
 SELECT c.user_id
 FROM spotify_credentials c
 JOIN users u ON u.id = c.user_id
 WHERE c.sync_state <> 'needs_reauth'
   AND u.is_active
+  AND c.scopes @> ARRAY['user-library-read','user-follow-read']::text[]
   AND (c.library_synced_at IS NULL OR c.library_synced_at < $1)
-ORDER BY c.library_synced_at NULLS FIRST
+ORDER BY c.library_synced_at NULLS FIRST, c.user_id
 LIMIT $2`
 
 // ListDueForLibrarySync returns the users whose saved tracks, saved albums and

@@ -365,8 +365,12 @@ func TestLibraryWorkerReplacingWithASmallerSetDeletesAbsentRows(t *testing.T) {
 // TestListDueForLibrarySyncOrdersNullsFirstAndExcludesBrokenOrInactiveAccounts
 // pins the scheduling query added to the credentials repository for this
 // worker: never-enumerated accounts sort first, a recently enumerated one is
-// not due yet, and an account parked for re-authorisation is excluded exactly
-// as it is from recently-played sync's own queue.
+// not due yet, an account parked for re-authorisation is excluded exactly as
+// it is from recently-played sync's own queue, and an account that predates
+// Phase 2a's consent change — carrying neither user-library-read nor
+// user-follow-read — is excluded too, rather than sitting at the head of the
+// queue forever because nothing ever advances its (permanently NULL)
+// library_synced_at.
 func TestListDueForLibrarySyncOrdersNullsFirstAndExcludesBrokenOrInactiveAccounts(t *testing.T) {
 	env := harness.New(t)
 
@@ -393,6 +397,23 @@ func TestListDueForLibrarySyncOrdersNullsFirstAndExcludesBrokenOrInactiveAccount
 		t.Fatalf("mark needs reauth: %v", err)
 	}
 
+	// A pre-Phase-2a account: connected, active, never library-synced (so it
+	// would otherwise sort first, forever, under NULLS FIRST), but its grant
+	// carries none of the three read scopes this worker did not exist to ask
+	// for at the time. Without the scopes predicate this row starves every
+	// account that actually can sync once enough of them accumulate.
+	noscope := env.NewUser("libdue-noscope")
+	if err := env.Accounts.Credentials.Upsert(env.Ctx(), env.Store.DB(), domain.SpotifyCredentials{
+		UserID:         noscope.ID,
+		AccessToken:    "initial-access-token",
+		RefreshToken:   "the-refresh-token",
+		TokenExpiresAt: time.Now().Add(time.Hour),
+		Scopes:         []string{"user-read-recently-played", "user-read-private", "user-read-email"},
+		SyncState:      domain.SyncStateOK,
+	}); err != nil {
+		t.Fatalf("connect scope-less spotify account: %v", err)
+	}
+
 	due, err := env.Accounts.Credentials.ListDueForLibrarySync(
 		env.Ctx(), env.Store.DB(), time.Now().Add(-24*time.Hour), 10)
 	if err != nil {
@@ -411,5 +432,61 @@ func TestListDueForLibrarySyncOrdersNullsFirstAndExcludesBrokenOrInactiveAccount
 		if id == reauth.ID {
 			t.Fatal("an account parked for re-authorisation must not be due for library sync either")
 		}
+		if id == noscope.ID {
+			t.Fatal("an account missing user-library-read or user-follow-read must never be queued: " +
+				"it can only be skipped, and would otherwise pin the head of the queue forever")
+		}
+	}
+}
+
+// TestListDueForLibrarySyncBreaksTiesByUserID pins the tiebreak added
+// alongside the scopes predicate: two accounts with the identical
+// library_synced_at value (the residual case where an account has both
+// scopes but Spotify still 403s the endpoint every day, so the watermark
+// never moves and the two ties forever) must still come back in a stable,
+// rotating order rather than one permanently ahead of the other with nothing
+// to break the tie.
+func TestListDueForLibrarySyncBreaksTiesByUserID(t *testing.T) {
+	env := harness.New(t)
+
+	tiedAt := time.Now().Add(-48 * time.Hour)
+
+	a := env.NewUser("libdue-tie-a")
+	connect(t, env, a.ID, time.Now().Add(time.Hour))
+	if err := env.Accounts.Credentials.MarkLibrarySynced(env.Ctx(), env.Store.DB(), a.ID, tiedAt); err != nil {
+		t.Fatalf("mark library synced: %v", err)
+	}
+
+	b := env.NewUser("libdue-tie-b")
+	connect(t, env, b.ID, time.Now().Add(time.Hour))
+	if err := env.Accounts.Credentials.MarkLibrarySynced(env.Ctx(), env.Store.DB(), b.ID, tiedAt); err != nil {
+		t.Fatalf("mark library synced: %v", err)
+	}
+
+	due, err := env.Accounts.Credentials.ListDueForLibrarySync(
+		env.Ctx(), env.Store.DB(), time.Now().Add(-24*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("list due for library sync: %v", err)
+	}
+
+	var ia, ib = -1, -1
+	for i, id := range due {
+		if id == a.ID {
+			ia = i
+		}
+		if id == b.ID {
+			ib = i
+		}
+	}
+	if ia < 0 || ib < 0 {
+		t.Fatalf("due = %v, want both tied accounts %s and %s present", due, a.ID, b.ID)
+	}
+	wantFirst, wantSecond := a.ID, b.ID
+	if wantFirst.String() > wantSecond.String() {
+		wantFirst, wantSecond = wantSecond, wantFirst
+	}
+	if due[min(ia, ib)] != wantFirst || due[max(ia, ib)] != wantSecond {
+		t.Fatalf("tied accounts ordered %s then %s, want user_id order %s then %s",
+			due[min(ia, ib)], due[max(ia, ib)], wantFirst, wantSecond)
 	}
 }
