@@ -84,6 +84,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Different artists per period | **Implemented** | |
 | Average album release year | **Implemented** | |
 | Average artists per track | **Implemented** | |
+| Album completion | **Implemented** | "Heard 9 of 12 tracks", from `albums.total_tracks`, which needs no Spotify call. All-time rather than range-scoped, because completion is a property of a listening lifetime. An album whose track count has not been enriched reports that rather than a ratio. Naming *which* tracks are missing needs `GET /albums/{id}/tracks` and is not built. |
 | Listening history feed | **Implemented** | Keyset paginated on `(played_at, id)`, never `OFFSET`. |
 | Date-range filtering everywhere | **Implemented** | Half-open `[from, to)` in the URL, so any view is linkable. |
 | Artist blacklist | **Implemented** | Excluded from every statistic through one shared SQL fragment. |
