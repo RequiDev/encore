@@ -48,6 +48,12 @@ type StagedListen struct {
 	Skipped     *bool
 	Offline     *bool
 	Incognito   *bool
+
+	// ContextType and ContextID carry what the listener was playing from. See
+	// domain.Listen's own comment: empty means "not reported" and neither is an
+	// input to DedupeKey.
+	ContextType string
+	ContextID   string
 }
 
 // Stage turns a domain.Listen into its persistable form.
@@ -72,6 +78,8 @@ func Stage(l domain.Listen, importFileID *uuid.UUID) StagedListen {
 		Skipped:      l.Skipped,
 		Offline:      l.Offline,
 		Incognito:    l.Incognito,
+		ContextType:  l.ContextType,
+		ContextID:    l.ContextID,
 	}
 }
 
@@ -129,14 +137,16 @@ WITH input AS (
         $7::bytea[], $8::bytea[],
         $9::int[], $10::smallint[], $11::uuid[],
         $12::text[], $13::text[], $14::text[], $15::text[],
-        $16::bool[], $17::bool[], $18::bool[], $19::bool[]
+        $16::bool[], $17::bool[], $18::bool[], $19::bool[],
+        $20::text[], $21::text[]
     ) AS t(
         user_id, played_at, ts_precision,
         track_id, alias_artist, alias_title,
         identity_key, dedupe_key,
         ms_played, source, import_file_id,
         platform, conn_country, reason_start, reason_end,
-        shuffle, skipped, offline, incognito
+        shuffle, skipped, offline, incognito,
+        context_type, context_id
     )
 ),
 deduped AS (
@@ -173,6 +183,12 @@ fresh AS (
 -- The row keeps its id and its dedupe key; only the payload improves. Running the
 -- same import twice is still a no-op, because the second pass finds the row
 -- already carrying the export's source.
+--
+-- context_type/context_id are deliberately absent from this SET list, and that
+-- is not an oversight: only a source = 0 row can ever carry them (no export
+-- reports what a listener was playing from), so d — always source <> 0 here —
+-- never has anything to contribute, and leaving the columns out of the UPDATE
+-- simply preserves whatever the live sync already recorded.
 improve AS (
     UPDATE listens l
     SET ms_played    = d.ms_played,
@@ -202,19 +218,21 @@ ins AS (
         user_id, played_at, ts_precision, track_id, alias_artist, alias_title,
         identity_key, dedupe_key, ms_played, source, import_file_id,
         platform, conn_country, reason_start, reason_end,
-        shuffle, skipped, offline, incognito)
+        shuffle, skipped, offline, incognito,
+        context_type, context_id)
     SELECT
         user_id, played_at, ts_precision, track_id, alias_artist, alias_title,
         identity_key, dedupe_key, ms_played, source, import_file_id,
         platform, conn_country, reason_start, reason_end,
-        shuffle, skipped, offline, incognito
+        shuffle, skipped, offline, incognito,
+        context_type, context_id
     FROM fresh
     ON CONFLICT (user_id, dedupe_key) DO NOTHING
     RETURNING user_id, played_at
 ),
 dirty AS (
     INSERT INTO rollup_dirty_days (user_id, day)
-    SELECT DISTINCT user_id, (played_at AT TIME ZONE $20::text)::date FROM ins
+    SELECT DISTINCT user_id, (played_at AT TIME ZONE $22::text)::date FROM ins
     ON CONFLICT DO NOTHING
 )
 SELECT count(*)::bigint FROM ins`
@@ -257,6 +275,8 @@ func (r *Repo) InsertListens(ctx context.Context, q store.Querier, batch []Stage
 		skipped      = make([]*bool, n)
 		offline      = make([]*bool, n)
 		incognito    = make([]*bool, n)
+		contextTypes = make([]*string, n)
+		contextIDs   = make([]*string, n)
 	)
 
 	for i, l := range batch {
@@ -281,6 +301,8 @@ func (r *Repo) InsertListens(ctx context.Context, q store.Querier, batch []Stage
 		skipped[i] = l.Skipped
 		offline[i] = l.Offline
 		incognito[i] = l.Incognito
+		contextTypes[i] = store.Nullable(l.ContextType)
+		contextIDs[i] = store.Nullable(l.ContextID)
 	}
 
 	err = q.QueryRow(ctx, insertListensSQL,
@@ -290,6 +312,7 @@ func (r *Repo) InsertListens(ctx context.Context, q store.Querier, batch []Stage
 		msPlayed, sources, fileIDs,
 		platforms, countries, reasonStart, reasonEnd,
 		shuffle, skipped, offline, incognito,
+		contextTypes, contextIDs,
 		timezone,
 	).Scan(&inserted)
 	if err != nil {

@@ -133,6 +133,17 @@ type Listen struct {
 	Skipped     *bool
 	Offline     *bool
 	Incognito   *bool
+
+	// ContextType and ContextID are what the listener was playing *from* —
+	// "playlist", "album", "artist" or "collection" (Liked Songs), and the bare
+	// Spotify id of that context. Present only on a listen this instance synced
+	// live: the recently-played feed reports it, sometimes, and no export format
+	// carries it at all. Empty strings mean "not reported", the same convention
+	// as Platform and the rest of this block, and for the same reason: neither
+	// is an input to DedupeKey, so their presence or absence can never change
+	// which rows are duplicates.
+	ContextType string
+	ContextID   string
 }
 
 // IdentityKey returns the 32-byte identity hash.

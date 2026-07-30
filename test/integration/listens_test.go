@@ -75,6 +75,87 @@ func TestInsertListensIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestInsertListensWithContextIsIdempotent pins, at the store layer directly,
+// the property this task must not break: DedupeKey does not read context, so
+// inserting the same batch twice — this time carrying a playback context —
+// still adds nothing the second time.
+func TestInsertListensWithContextIsIdempotent(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("contextidempotent")
+	ensure(t, e, "track-a")
+
+	l := domain.Listen{
+		UserID:      user.ID,
+		PlayedAt:    base(),
+		Precision:   domain.PrecisionMillisecond,
+		Identity:    domain.TrackIdentityFromID("track-a"),
+		MsPlayed:    200_000,
+		Source:      domain.SourceSync,
+		ContextType: "playlist",
+		ContextID:   "37i9dQZF1DXcBWIGoYBM5M",
+	}
+	batch := []listens.StagedListen{listens.Stage(l, nil)}
+
+	first, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), batch, "UTC")
+	if err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("first insert = %d, want 1", first)
+	}
+
+	second, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), batch, "UTC")
+	if err != nil {
+		t.Fatalf("second insert: %v", err)
+	}
+	if second != 0 {
+		t.Fatalf("re-inserting the same batch with context added %d rows, want 0", second)
+	}
+	if got := e.CountListens(user.ID); got != 1 {
+		t.Fatalf("database holds %d listens, want 1", got)
+	}
+
+	var gotType, gotID *string
+	if err := e.Pool.QueryRow(e.Ctx(),
+		`SELECT context_type, context_id FROM listens WHERE user_id = $1`, user.ID.String(),
+	).Scan(&gotType, &gotID); err != nil {
+		t.Fatalf("read context: %v", err)
+	}
+	if gotType == nil || *gotType != "playlist" {
+		t.Fatalf("context_type = %v, want playlist", gotType)
+	}
+	if gotID == nil || *gotID != "37i9dQZF1DXcBWIGoYBM5M" {
+		t.Fatalf("context_id = %v, want the bare id, not the URI", gotID)
+	}
+}
+
+// TestInsertListensWithNoContextStoresNull pins the other half: a listen with
+// no context data must store NULL in both columns, not empty strings, because
+// NULL means "not reported" and the distinction is load-bearing for the
+// coverage statistic a later task builds on these columns.
+func TestInsertListensWithNoContextStoresNull(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("nocontext")
+	ensure(t, e, "track-a")
+
+	batch := []listens.StagedListen{
+		stage(user.ID, domain.TrackIdentityFromID("track-a"), base(), 200_000, domain.SourceExtended, domain.PrecisionSecond),
+	}
+	if n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), batch, "UTC"); err != nil || n != 1 {
+		t.Fatalf("insert: n=%d err=%v", n, err)
+	}
+
+	var gotType, gotID *string
+	if err := e.Pool.QueryRow(e.Ctx(),
+		`SELECT context_type, context_id FROM listens WHERE user_id = $1`, user.ID.String(),
+	).Scan(&gotType, &gotID); err != nil {
+		t.Fatalf("read context: %v", err)
+	}
+	if gotType != nil || gotID != nil {
+		t.Fatalf("context = (%v, %v), want NULL in both columns, not empty strings", gotType, gotID)
+	}
+}
+
 // TestInsertListensCollapsesDuplicatesWithinOneBatch covers a file that repeats
 // the same event; without the in-batch collapse the unique constraint would
 // reject the whole statement rather than the offending row.
@@ -221,6 +302,49 @@ func TestImportUpgradesASyncedListen(t *testing.T) {
 	}
 	if msAgain != 31_000 {
 		t.Fatalf("ms_played drifted to %d on a repeated import", msAgain)
+	}
+}
+
+// TestImportUpgradeKeepsTheSyncedContext pins a corollary of the upgrade rule
+// above: context can only ever come from a row this instance synced live — no
+// export reports it — so when an import improves a synced row's payload, the
+// context sync already recorded must survive untouched. The import has none to
+// offer, and clobbering it with NULL would erase real information for nothing.
+func TestImportUpgradeKeepsTheSyncedContext(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("upgradecontext")
+	ensure(t, e, "track-a")
+
+	id := domain.TrackIdentityFromID("track-a")
+
+	synced := listens.Stage(domain.Listen{
+		UserID:      user.ID,
+		PlayedAt:    base(),
+		Precision:   domain.PrecisionMillisecond,
+		Identity:    id,
+		MsPlayed:    240_000,
+		Source:      domain.SourceSync,
+		ContextType: "playlist",
+		ContextID:   "37i9dQZF1DXcBWIGoYBM5M",
+	}, nil)
+	if n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), []listens.StagedListen{synced}, "UTC"); err != nil || n != 1 {
+		t.Fatalf("seed synced listen: n=%d err=%v", n, err)
+	}
+
+	imported := stage(user.ID, id, base().Add(4*time.Second), 31_000, domain.SourceExtended, domain.PrecisionSecond)
+	if n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), []listens.StagedListen{imported}, "UTC"); err != nil || n != 0 {
+		t.Fatalf("import over the synced listen: n=%d err=%v", n, err)
+	}
+
+	var gotType, gotID *string
+	if err := e.Pool.QueryRow(e.Ctx(),
+		`SELECT context_type, context_id FROM listens WHERE user_id = $1`, user.ID.String(),
+	).Scan(&gotType, &gotID); err != nil {
+		t.Fatalf("read context after upgrade: %v", err)
+	}
+	if gotType == nil || *gotType != "playlist" || gotID == nil || *gotID != "37i9dQZF1DXcBWIGoYBM5M" {
+		t.Fatalf("context = (%v, %v) after the import upgraded the row, want the synced context preserved",
+			gotType, gotID)
 	}
 }
 

@@ -220,6 +220,77 @@ func TestSyncIsDuplicateSafe(t *testing.T) {
 	}
 }
 
+// TestSyncWithContextIsDuplicateSafe pins the property this task must not
+// break: context is not an input to DedupeKey, so re-syncing the same page
+// still inserts zero rows even when the plays carry a playback context. It
+// also pins the two storage rules the brief calls out: a context is stored as
+// its type plus the bare id extracted from the URI, and a play with no context
+// stores NULL in both columns rather than empty strings.
+func TestSyncWithContextIsDuplicateSafe(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("synccontext")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	at := time.Now().Add(-6 * time.Hour).Truncate(time.Second)
+	withContext := syncPlay("sync00000000000000009i", at)
+	withContext.Context = &spotify.PlayContext{
+		Type: "playlist",
+		URI:  "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+	}
+	withoutContext := syncPlay("sync0000000000000000aj", at.Add(5*time.Minute))
+	// withoutContext.Context is left nil, which is the ordinary case: Spotify
+	// omits it often.
+
+	page := []spotify.PlayHistory{withContext, withoutContext}
+	// The same page twice, exactly like TestSyncIsDuplicateSafe, but this time
+	// with a context on one of the plays — the change most likely to threaten
+	// the idempotence guarantee if context were ever folded into the dedupe key.
+	api := &fakeRecentlyPlayed{pages: [][]spotify.PlayHistory{page, page}}
+	poller := newPoller(t, env, api)
+
+	if _, err := poller.SyncUser(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if got := env.CountListens(user.ID); got != 2 {
+		t.Fatalf("database holds %d listens after the first sync, want 2", got)
+	}
+
+	res, err := poller.SyncUser(env.Ctx(), user.ID)
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if res.Imported != 0 {
+		t.Fatalf("re-syncing the same plays with context imported %d rows, want 0", res.Imported)
+	}
+	if got := env.CountListens(user.ID); got != 2 {
+		t.Fatalf("re-syncing the same plays with context changed the row count to %d, want 2", got)
+	}
+
+	var contextType, contextID *string
+	if err := env.Pool.QueryRow(env.Ctx(),
+		`SELECT context_type, context_id FROM listens WHERE user_id = $1 AND played_at = $2`,
+		user.ID.String(), at.UTC()).Scan(&contextType, &contextID); err != nil {
+		t.Fatalf("read the row with context: %v", err)
+	}
+	if contextType == nil || *contextType != "playlist" {
+		t.Fatalf("context_type = %v, want playlist", contextType)
+	}
+	if contextID == nil || *contextID != "37i9dQZF1DXcBWIGoYBM5M" {
+		t.Fatalf("context_id = %v, want the bare playlist id, not the URI", contextID)
+	}
+
+	var noType, noID *string
+	if err := env.Pool.QueryRow(env.Ctx(),
+		`SELECT context_type, context_id FROM listens WHERE user_id = $1 AND played_at = $2`,
+		user.ID.String(), at.Add(5*time.Minute).UTC()).Scan(&noType, &noID); err != nil {
+		t.Fatalf("read the row without context: %v", err)
+	}
+	if noType != nil || noID != nil {
+		t.Fatalf("context = (%v, %v) for a play with no context, want NULL in both columns, not empty strings",
+			noType, noID)
+	}
+}
+
 func TestSyncRefreshesAnExpiredTokenAndKeepsTheRefreshToken(t *testing.T) {
 	env := harness.New(t)
 	user := env.NewUser("syncrefresh")
