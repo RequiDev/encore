@@ -59,6 +59,25 @@ type PlaybackContext struct {
 
 	IncognitoRate     float64
 	IncognitoCoverage Coverage
+
+	Playlists        []PlaylistContextEntry
+	PlaylistCoverage Coverage
+}
+
+// PlaylistContextEntry is one (context_type, context_id) group: what the
+// listener was playing from, and how many times.
+//
+// Name is resolved against user_playlists and is empty whenever that lookup
+// finds nothing — every album, artist and collection context always, and a
+// playlist context whenever the id no longer names one of the listener's own
+// playlists (deleted since, or never theirs to begin with). An empty name is
+// not an error state: the row still counts, because dropping it would
+// understate the total the coverage figure promises.
+type PlaylistContextEntry struct {
+	ContextType string
+	ContextID   string
+	Name        string
+	Plays       int64
 }
 
 // contextRatesSQL computes every scalar ratio and its own denominator in one
@@ -102,6 +121,55 @@ UNION ALL
 SELECT 'reason_end', s.reason_end, count(*)::bigint
 FROM scoped s WHERE s.reason_end IS NOT NULL GROUP BY s.reason_end`,
 	rangeFilter("l", "$1", "$2", "$3"))
+
+// playlistContextSQL groups in-range listens by what the listener was playing
+// from and names each group against user_playlists.
+//
+// Only source = 0 rows can ever carry context (see this package's own header
+// and migrations/00012's), so context_type IS NOT NULL already scopes this to
+// live-synced rows without needing to say source = 0 — which matters, because
+// the coverage query below must count the same column, not the source, and
+// the two statements have to agree on what "has context" means.
+//
+// The LEFT JOIN onto user_playlists only ever matches a context_type of
+// "playlist" whose id is still one of this listener's own. A playlist deleted
+// since, one owned by somebody else, and every "album", "artist" and
+// "collection" context all satisfy context_type IS NOT NULL and must still be
+// counted, but user_playlists holds none of them — the join simply leaves
+// name unmatched rather than dropping the row, and coalesce turns that into an
+// empty string rather than a null reaching Go. Using JOIN instead would
+// silently understate the total this same range's coverage query reports.
+//
+// context_id can itself be NULL here — Spotify's bare "spotify:collection" URI
+// (Liked Songs with no id segment) parses to one, per ingest.go's contextID —
+// so it is coalesced to "" for the same reason: a group that names nothing
+// must still surface, never disappear.
+//
+// Parameters are $1 user, $2 from, $3 to, $4 limit.
+var playlistContextSQL = fmt.Sprintf(`
+SELECT l.context_type, coalesce(l.context_id, '') AS context_id,
+       coalesce(up.name, '') AS name, count(*)::bigint AS plays
+FROM listens l
+LEFT JOIN user_playlists up
+  ON up.user_id = l.user_id AND up.playlist_id = l.context_id AND l.context_type = 'playlist'
+WHERE %s AND l.context_type IS NOT NULL
+GROUP BY l.context_type, l.context_id, up.name
+ORDER BY plays DESC, l.context_type, l.context_id
+LIMIT $4`, rangeFilter("l", "$1", "$2", "$3"))
+
+// playlistContextCoverageSQL is the denominator playlistContextSQL's rows are
+// counted against: every in-range listen, and how many of those carry any
+// context at all. Per column — count(*) FILTER (WHERE context_type IS NOT
+// NULL) — never per source, for the reason this file's header states: keying
+// on source would require re-deriving which source can carry context here
+// (only 0 can) inside this query too, and the two definitions could drift.
+// Asking the column directly cannot drift from itself.
+//
+// Parameters are $1 user, $2 from, $3 to.
+var playlistContextCoverageSQL = fmt.Sprintf(`
+SELECT count(*)::bigint, count(*) FILTER (WHERE l.context_type IS NOT NULL)::bigint
+FROM listens l
+WHERE %s`, rangeFilter("l", "$1", "$2", "$3"))
 
 // ratio divides safely. A zero denominator is "no data", which is a zero rate
 // carrying a zero coverage, not a division by zero and not an error.
@@ -186,6 +254,33 @@ func (s *Service) PlaybackContext(
 	out.CountryCoverage = Coverage{Covered: sumSlices(out.Countries), Total: total}
 	sortSlices(out.Countries)
 	sortSlices(out.EndReasons)
+
+	playlistRows, err := q.Query(ctx, playlistContextSQL,
+		store.UUIDArg(userID), r.From.UTC(), r.To.UTC(), clampLimit(0))
+	if err != nil {
+		return PlaybackContext{}, postgres.Classify("playlist context", err)
+	}
+	defer playlistRows.Close()
+	out.Playlists = []PlaylistContextEntry{}
+	for playlistRows.Next() {
+		var e PlaylistContextEntry
+		if err := playlistRows.Scan(&e.ContextType, &e.ContextID, &e.Name, &e.Plays); err != nil {
+			return PlaybackContext{}, postgres.Classify("scan playlist context", err)
+		}
+		out.Playlists = append(out.Playlists, e)
+	}
+	if err := playlistRows.Err(); err != nil {
+		return PlaybackContext{}, postgres.Classify("playlist context", err)
+	}
+
+	var playlistTotal, playlistCovered int64
+	if err := q.QueryRow(ctx, playlistContextCoverageSQL,
+		store.UUIDArg(userID), r.From.UTC(), r.To.UTC(),
+	).Scan(&playlistTotal, &playlistCovered); err != nil {
+		return PlaybackContext{}, postgres.Classify("playlist context coverage", err)
+	}
+	out.PlaylistCoverage = Coverage{Covered: playlistCovered, Total: playlistTotal}
+
 	return out, nil
 }
 
