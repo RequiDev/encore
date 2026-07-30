@@ -13,7 +13,14 @@
 // The blacklist. A listen whose track has an artist the user has blacklisted is
 // invisible to every statistic here. The rule is written once, in
 // blacklistFilter, and composed into every query, so an artist cannot leak back
-// into one chart after being excluded from another.
+// into one chart after being excluded from another. The one documented
+// exception is TopDiff (topdiff.go): it can still show Spotify's own captured
+// ranking of a blacklisted artist, because that ranking is a snapshot Spotify
+// computed independently and is not a listen this package has any authority
+// over. Encore's own numbers for that artist - its rank and play count on
+// Encore's side of the same comparison - are still unconditionally zero, which
+// is the guarantee this rule actually makes: a blacklisted artist's listens
+// never resurface in Encore's own play-derived numbers, anywhere.
 //
 // Correctness before speed. Wide top-N queries may read listen_daily_rollup, but
 // only when the requested range is provably clean and aligned to local midnight.
