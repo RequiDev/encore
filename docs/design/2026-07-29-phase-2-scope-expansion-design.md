@@ -152,10 +152,14 @@ free** — names, artwork, genres — feeding Phase 1's genre statistics with no
 - Saved but never played, and how long ago they were saved.
 - Played heavily but never saved — ranked by plays, the inverse question.
 - Followed artists you have not played inside the range.
-- Library coverage: what share of listening is of saved material.
+- Library coverage: what share of listening is of saved material. **Deferred** — Phase 2c-ii shipped
+  the first three of these but not this one. See "Deferred from Phase 2c" (§9) below.
 
-Each reports coverage in the Phase 1 sense, because a library sync that has never run is a real
-state and must not render as "you have saved nothing".
+The library-sync state itself follows the Phase 1 discipline: `syncedAt` is nullable, and a sync
+that has never run renders as "not read yet" rather than as "you have saved nothing" — those are
+different facts and the page must not collapse them. That part shipped. What did **not** ship is a
+`covered`/`total` pair on the response and a coverage line on the page, in the §4.3 sense that every
+other Phase 2 statistic carries — also tracked in §9 below.
 
 ---
 
@@ -238,11 +242,20 @@ compilations and appearances. Completion counts `album` and excludes the rest by
 
 ## 6. Share links
 
-Album completion and the library and follows counts appear on a share, per the decision recorded in
-the overview. The `/me/top` diff and playlist context do not: the first is a comparison against a
+**Decided, not yet built.** The design intent — recorded in the overview §4.4 as an explicit choice
+by the project's owner — is that album completion and the library and follows counts appear on a
+share, while the `/me/top` diff and playlist context do not: the first is a comparison against a
 third party's opaque model of somebody, and the second describes when Encore was watching.
 
-As in Phase 1, this is fixed in `handleSharedStats` and adds no field to `ShareLink`.
+At head, neither has been added. `internal/httpapi/share.go`'s `handleSharedStats` composes a fixed
+set of aggregates that includes neither album completion nor the library and follows counts, and
+`SharedStatsResponse` carries no field for either. Album completion has been outstanding since the
+Phase 2b branch merged; the library and follows counts became outstanding when the Phase 2c-ii branch
+shipped the `/library` page without touching share links. Neither absence is a reversal of the
+decision above — both are "not yet built", tracked in "Deferred from Phase 2c" (§9) below.
+
+Once built, this is fixed in `handleSharedStats` and adds no field to `ShareLink`, per the boundary
+described in §4.4 of the overview.
 
 ---
 
@@ -269,3 +282,39 @@ As in Phase 1, this is fixed in `handleSharedStats` and adds no field to `ShareL
   behalf.
 - **Retaining top-snapshot history**, §2.1.
 - **Background discography enumeration**, §5.2.
+
+---
+
+## 9. Deferred from Phase 2c
+
+Phase 2c-i (library ingestion) and Phase 2c-ii (library statistics and the `/library` page) shipped
+against this design, but four things it called for are not built, and Phase 2c-ii's own whole-branch
+review found two further behavioural gaps. Recorded together here so the follow-up work has one place
+to look, rather than each being rediscovered later as a silent omission. None of these is a decision
+reversed — each is either "planned, not yet built" or "a real bug, deferred pending a design call":
+
+1. **Library coverage** (§3.4) — "what share of listening is of saved material" was never built.
+   Nothing in `LibraryStatsResponse` computes it, and the `/library` page has no such line.
+2. **Per-figure coverage denominators on the library statistics** (§3.4, §4.3 of the overview) — the
+   shipped response carries no `covered`/`total` pair and the page states no coverage fraction for
+   any of its three lists. This is separate from the `syncedAt`-null-vs-empty handling, which did
+   ship correctly.
+3. **Library and follows counts on share links** (§6; §4.4 of the overview) — decided, not built.
+   `handleSharedStats` (`internal/httpapi/share.go`) composes a fixed set of aggregates that does not
+   include them.
+4. **Album completion on share links** (§6; §4.4 of the overview) — also decided, not built. This gap
+   predates Phase 2c: it has been outstanding since the Phase 2b branch merged.
+
+Two more, found in the same review, are code behaviour rather than documentation drift. Both are
+real and both need a design decision rather than a one-line patch, so they are carried forward
+unchanged rather than fixed here:
+
+- **`dormantFollows` inverts on missing enrichment.** A followed artist whose plays are all on
+  tracks that enrichment has not yet credited has no `track_artists` rows. It falls through both
+  `NOT EXISTS` predicates used to build the list and sorts *first*, as "Never played" — the opposite
+  of what "dormant" is supposed to mean for that artist. Needs a decision between surfacing an
+  enrichment-coverage line and excluding such artists outright.
+- **`playedNeverSaved` ignores `user_saved_albums`.** Saving an album does not add its tracks to
+  `/v1/me/tracks`, so someone who saves albums rather than individual tracks sees those tracks listed
+  as "not in your saved library" even though the containing album is saved. Needs a decision between
+  narrowing the panel's copy and making the predicate album-aware.
