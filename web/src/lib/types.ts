@@ -429,11 +429,33 @@ export interface TasteResponse {
 }
 
 /**
+ * One (contextType, contextId) group: what the listener was playing from —
+ * a playlist, an album, an artist, or "collection" (Spotify's own encoding for
+ * Liked Songs) — and how many times.
+ *
+ * `name` is empty whenever `user_playlists` has no match for the pair: every
+ * album, artist and collection context always, and a playlist context whenever
+ * its id no longer names one of the listener's own playlists (deleted since,
+ * or never theirs to begin with). An empty name is not an error state — the
+ * row is still real and still counted — so the page must render something
+ * meaningful from `contextType` rather than dropping it or showing the raw id.
+ */
+export interface PlaylistContextEntry {
+  contextType: string
+  contextId: string
+  name: string
+  plays: number
+}
+
+/**
  * How listening happened, as opposed to what was listened to.
  *
  * Every rate carries its own denominator: the underlying columns are written
  * only by the extended-export importer, and an export may omit any one of them
- * independently of the others.
+ * independently of the others. `playlists`/`playlistCoverage` are the one
+ * exception to that lineage — `context_type`/`context_id` are written only by
+ * live sync, never by any Spotify export — so that coverage is independent of,
+ * and typically disjoint from, the other six figures here.
  */
 export interface PlaybackContextResponse {
   endReasons: ContextSlice[]
@@ -446,6 +468,8 @@ export interface PlaybackContextResponse {
   countryCoverage: Coverage
   offlineRate: Rate
   incognitoRate: Rate
+  playlists: PlaylistContextEntry[]
+  playlistCoverage: Coverage
 }
 
 export interface ListeningSession {
