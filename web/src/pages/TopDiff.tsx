@@ -245,7 +245,7 @@ export default function TopDiff(): ReactElement {
           <EmptyState
             icon={copy.kind}
             title={`Encore has not captured Spotify's top ${copy.nouns} ranking yet`}
-            description="It checks once a day, alongside your library; this page will fill in after the next run."
+            description="Checked once a day, alongside your library sync — this page fills in the next time that sync completes successfully."
           />
         </Panel>
       ) : entries.length === 0 ? (

@@ -136,7 +136,7 @@ describe('the top-diff page', () => {
       await screen.findByText(/encore has not captured spotify's top artists ranking yet/i),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/it checks once a day, alongside your library/i),
+      screen.getByText(/checked once a day, alongside your library sync/i),
     ).toBeInTheDocument()
     expect(screen.queryByText('Captured')).not.toBeInTheDocument()
   })

@@ -356,6 +356,20 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 	// scope, and that is every account that connected before this shipped —
 	// discovering it by a 403 would waste one request per account per day, for
 	// ever, rather than the one check below.
+	//
+	// Known limitation: everything below this point, including the six
+	// top-item calls further down, sits behind this gate and behind all three
+	// library enumerations succeeding. A truncated or failed saved-tracks,
+	// saved-albums or followed-artists call returns before the top snapshot is
+	// ever captured (see the early `return nil`s below), so an account whose
+	// library exceeds MaxPages never gets a top snapshot either — on every
+	// tick, permanently, not just until the library catches up. The fix is to
+	// run the six top-item calls before the three library enumerations, so a
+	// cheap, independent capture is not hostage to an expensive one; that is
+	// real restructuring, deferred rather than done here, because it also
+	// requires commit (below) to tolerate a library-less batch — a top-only
+	// run must still be able to write its snapshot without a reconciled
+	// library alongside it.
 	if !creds.HasScope(scopeLibraryRead) || !creds.HasScope(scopeFollowRead) {
 		log.Debug("account has not granted the library or follow scope; skipping")
 		return nil
