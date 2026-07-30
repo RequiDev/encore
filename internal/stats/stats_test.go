@@ -71,6 +71,8 @@ func statements() []statement {
 		{name: "releaseLag", sql: releaseLagSQL, params: 4},
 		{name: "contextRates", sql: contextRatesSQL, params: 3},
 		{name: "contextBreakdown", sql: contextBreakdownSQL, params: 3},
+		{name: "albumCompletion", sql: albumCompletionSQL, params: 2},
+		{name: "completedAlbums", sql: completedAlbumsSQL, params: 3},
 	}
 }
 
