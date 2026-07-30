@@ -299,6 +299,68 @@ func (r *Credentials) ListDueForSync(ctx context.Context, q store.Querier, older
 	return out, nil
 }
 
+// listDueForLibrarySyncSQL drives the library worker's queue.
+//
+// Keyed on library_synced_at rather than last_sync_at: the two watermarks track
+// unrelated jobs on unrelated schedules — recently-played polls every minute,
+// library enumeration once a day — and a heavily-synced account must not crowd
+// out a newly connected one's first library enumeration. needs_reauth accounts
+// are excluded for the same reason the recently-played poller excludes them: a
+// broken refresh token fails identically at every endpoint, and polling it would
+// spend the instance's rate limit rediscovering an answer only the listener can
+// fix by reconnecting.
+const listDueForLibrarySyncSQL = `
+SELECT c.user_id
+FROM spotify_credentials c
+JOIN users u ON u.id = c.user_id
+WHERE c.sync_state <> 'needs_reauth'
+  AND u.is_active
+  AND (c.library_synced_at IS NULL OR c.library_synced_at < $1)
+ORDER BY c.library_synced_at NULLS FIRST
+LIMIT $2`
+
+// ListDueForLibrarySync returns the users whose saved tracks, saved albums and
+// followed artists should be enumerated now.
+func (r *Credentials) ListDueForLibrarySync(ctx context.Context, q store.Querier, olderThan time.Time, limit int) ([]uuid.UUID, error) {
+	rows, err := q.Query(ctx, listDueForLibrarySyncSQL, olderThan.UTC(), clampLimit(limit))
+	if err != nil {
+		return nil, postgres.Classify("list accounts due for library sync", err)
+	}
+	defer rows.Close()
+
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, postgres.Classify("scan account due for library sync", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, postgres.Classify("list accounts due for library sync", err)
+	}
+	return out, nil
+}
+
+// MarkLibrarySynced advances the library watermark for one account.
+//
+// It is written by the same transaction as the reconciliation it describes, so
+// a run that never commits never advances it either: the account then reads as
+// never synced rather than merely overdue, which is exactly the distinction
+// library_synced_at exists to preserve.
+func (r *Credentials) MarkLibrarySynced(ctx context.Context, q store.Querier, userID uuid.UUID, at time.Time) error {
+	tag, err := q.Exec(ctx,
+		`UPDATE spotify_credentials SET library_synced_at = $2 WHERE user_id = $1`,
+		store.UUIDArg(userID), at.UTC())
+	if err != nil {
+		return postgres.Classify("mark library synced", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("mark library synced: %w", domain.ErrNotFound)
+	}
+	return nil
+}
+
 // truncate bounds a string that is about to be stored in a text column, cutting
 // on a rune boundary so that the result is still valid UTF-8 and Postgres does
 // not reject it.
