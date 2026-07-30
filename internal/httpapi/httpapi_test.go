@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,5 +313,71 @@ func TestNewStatsRoutesRequireASession(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("GET %s = %d, want 401", path, rec.Code)
 		}
+	}
+}
+
+// TestMeReportsMissingScopes is what drives the re-consent prompt.
+//
+// An account connected before the scope set grew has a grant that will never
+// widen on its own — a refresh token carries the scopes it was issued with for
+// ever — and Spotify answers 403 for anything needing the new ones. The
+// shortfall has to reach the client or the failure is invisible.
+func TestMeReportsMissingScopes(t *testing.T) {
+	ts := newTestServer(t)
+	ts.credentials.err = nil
+	ts.credentials.creds = domain.SpotifyCredentials{
+		UserID:         ts.sessions.user.ID,
+		AccessToken:    "token",
+		RefreshToken:   "refresh",
+		TokenExpiresAt: ts.clock.Add(time.Hour),
+		// The three scopes every account connected before this change holds.
+		Scopes:    []string{"user-read-recently-played", "user-read-private", "user-read-email"},
+		SyncState: domain.SyncStateOK,
+	}
+
+	rec := ts.do(ts.signedIn(httptest.NewRequest(http.MethodGet, "/api/me", nil)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/me = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+
+	var body MeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not a me payload: %v (%s)", err, rec.Body.String())
+	}
+
+	want := []string{
+		"user-top-read", "user-library-read", "user-follow-read",
+		"playlist-read-private", "user-read-playback-state",
+	}
+	if !slices.Equal(body.Spotify.MissingScopes, want) {
+		t.Errorf("missingScopes =\n  %v\nwant\n  %v", body.Spotify.MissingScopes, want)
+	}
+}
+
+// TestMeReportsNoMissingScopesForACurrentGrant guards the other direction. A
+// freshly connected account must never be nagged, and an empty result must
+// serialise as [] rather than null so the client can test its length.
+func TestMeReportsNoMissingScopesForACurrentGrant(t *testing.T) {
+	ts := newTestServer(t)
+	ts.credentials.err = nil
+	ts.credentials.creds = domain.SpotifyCredentials{
+		UserID:         ts.sessions.user.ID,
+		AccessToken:    "token",
+		RefreshToken:   "refresh",
+		TokenExpiresAt: ts.clock.Add(time.Hour),
+		Scopes:         config.DefaultScopes(),
+		SyncState:      domain.SyncStateOK,
+	}
+
+	rec := ts.do(ts.signedIn(httptest.NewRequest(http.MethodGet, "/api/me", nil)))
+	var body MeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not a me payload: %v (%s)", err, rec.Body.String())
+	}
+	if len(body.Spotify.MissingScopes) != 0 {
+		t.Errorf("a current grant reported missing scopes: %v", body.Spotify.MissingScopes)
+	}
+	if !strings.Contains(rec.Body.String(), `"missingScopes":[]`) {
+		t.Error("an empty missingScopes must serialise as [] and not null")
 	}
 }

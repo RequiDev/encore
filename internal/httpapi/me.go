@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/crypto"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/spotify"
 )
 
 // handleMe answers GET /api/me, the bootstrap call the client makes on load.
@@ -57,9 +59,10 @@ func (s *Server) spotifyConnection(r *http.Request, user domain.User) (SpotifyCo
 			// An account with no grant is one that has to authorise before it can
 			// sync, which is exactly what needs_reauth means.
 			return SpotifyConnection{
-				Connected: false,
-				SyncState: string(domain.SyncStateNeedsReauth),
-				Scopes:    []string{},
+				Connected:     false,
+				SyncState:     string(domain.SyncStateNeedsReauth),
+				Scopes:        []string{},
+				MissingScopes: []string{},
 			}, nil
 		}
 		return SpotifyConnection{}, err
@@ -70,6 +73,7 @@ func (s *Server) spotifyConnection(r *http.Request, user domain.User) (SpotifyCo
 		LastSyncAt:    tsPtr(creds.LastSyncAt),
 		LastSyncError: creds.LastSyncError,
 		Scopes:        nonNil(creds.Scopes),
+		MissingScopes: spotify.MissingScopes(creds.Scopes, config.DefaultScopes()),
 	}, nil
 }
 
