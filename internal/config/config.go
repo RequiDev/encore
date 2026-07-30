@@ -29,6 +29,7 @@ type Config struct {
 	Security Security
 	Spotify  Spotify
 	Sync     Sync
+	Library  Library
 	Import   Import
 	Enrich   Enrich
 	Metrics  Metrics
@@ -142,6 +143,32 @@ type Sync struct {
 	Concurrency int
 	// InitialLookback bounds the first poll for a newly connected account.
 	InitialLookback time.Duration
+}
+
+// Library governs the worker that enumerates a listener's saved tracks, saved
+// albums and followed artists, and reconciles each against a local table.
+// There is no delta endpoint for any of these, so every run is a full
+// enumeration.
+//
+// Enabled defaults to true, unlike the Phase 3 now-playing poller and the
+// metadata fallback, both of which default off. The difference is cost: this
+// runs once a day rather than on every tick, and one run costs roughly
+//
+//	ceil(saved_tracks/50) + ceil(saved_albums/50) + ceil(followed/50)
+//
+// requests per account — a few hundred for a large library, against a quota
+// that a single import can exhaust on its own. That is affordable, and a
+// feature that defaults off is one most instances never turn on and so never
+// see. Set ENCORE_LIBRARY_SYNC_ENABLED=false to disable it.
+type Library struct {
+	Enabled  bool
+	Interval time.Duration
+	// Concurrency is how many accounts are enumerated at once.
+	Concurrency int
+	// MaxPages bounds how many pages of any single endpoint one run will
+	// follow, so a misbehaving upstream cannot spend a whole day's quota
+	// enumerating one account.
+	MaxPages int
 }
 
 type Import struct {
@@ -334,6 +361,13 @@ func parse(get lookup) (*Config, error) {
 		InitialLookback: p.duration("ENCORE_SYNC_INITIAL_LOOKBACK", 14*24*time.Hour),
 	}
 
+	c.Library = Library{
+		Enabled:     p.boolean("ENCORE_LIBRARY_SYNC_ENABLED", true),
+		Interval:    p.duration("ENCORE_LIBRARY_SYNC_INTERVAL", 24*time.Hour),
+		Concurrency: p.intRange("ENCORE_LIBRARY_SYNC_CONCURRENCY", 2, 1, 256),
+		MaxPages:    p.intRange("ENCORE_LIBRARY_SYNC_MAX_PAGES", 200, 1, 10000),
+	}
+
 	c.Import = Import{
 		Dir:               p.str("ENCORE_IMPORT_DIR", "/var/lib/encore/imports"),
 		BatchSize:         p.intRange("ENCORE_IMPORT_BATCH_SIZE", 1000, 1, 100000),
@@ -442,6 +476,8 @@ func (c *Config) Redacted() map[string]any {
 		"spotify_rate_limit": c.Spotify.RateLimit,
 		"sync_enabled":       c.Sync.Enabled,
 		"sync_interval":      c.Sync.Interval.String(),
+		"library_enabled":    c.Library.Enabled,
+		"library_interval":   c.Library.Interval.String(),
 		"import_dir":         c.Import.Dir,
 		"import_batch_size":  c.Import.BatchSize,
 		"import_workers":     c.Import.Workers,

@@ -84,6 +84,15 @@ accept a plain number or a suffix (`512kb`, `64mb`, `4gb`). Booleans accept `tru
 | `ENCORE_SYNC_CONCURRENCY` | `4` | Accounts polled at once. |
 | `ENCORE_SYNC_INITIAL_LOOKBACK` | `336h` (14 days) | How far back the very first poll for a new account reaches. |
 
+## Library and follows
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENCORE_LIBRARY_SYNC_ENABLED` | `true` | Enumerates saved tracks, saved albums and followed artists once a day and reconciles them locally. On by default, unlike the metadata fallback's `Prefer` and the now-playing poller: a run costs roughly `ceil(saved_tracks/50) + ceil(saved_albums/50) + ceil(followed/50)` requests per account per day — a few hundred at most for a large library, against a quota a single import can exhaust. Set to `false` to disable. |
+| `ENCORE_LIBRARY_SYNC_INTERVAL` | `24h` | How often each account's library is re-enumerated. Spotify has no delta endpoint, so every run walks the whole library. |
+| `ENCORE_LIBRARY_SYNC_CONCURRENCY` | `2` | Accounts enumerated at once. |
+| `ENCORE_LIBRARY_SYNC_MAX_PAGES` | `200` | Caps pages followed per endpoint per run (50 items a page, so 10,000 items), so a misbehaving upstream cannot spend a whole day's quota on one account. |
+
 ## Import
 
 | Variable | Default | Description |

@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestEncryptionKeyAcceptsHexAndBase64 pins a distinction that is easy to get
@@ -100,5 +102,73 @@ func TestDefaultScopesGrantNoWriteAccess(t *testing.T) {
 		if !readOnly[s] {
 			t.Errorf("%q is not a known read-only scope and must not be in the sign-in grant", s)
 		}
+	}
+}
+
+// libraryTestEnv returns a minimal environment satisfying every required
+// variable, so a test can override just the Library-specific ones it cares
+// about without tripping unrelated required-field errors.
+func libraryTestEnv(overrides map[string]string) map[string]string {
+	env := map[string]string{
+		"ENCORE_PUBLIC_URL":            "https://encore.example.com",
+		"ENCORE_WEB_URL":               "https://encore.example.com",
+		"ENCORE_DATABASE_URL":          "postgres://encore:secret@db:5432/encore",
+		"ENCORE_ENCRYPTION_KEY":        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+		"ENCORE_SPOTIFY_CLIENT_ID":     "client-id",
+		"ENCORE_SPOTIFY_CLIENT_SECRET": "client-secret",
+	}
+	for k, v := range overrides {
+		env[k] = v
+	}
+	return env
+}
+
+// TestLibraryDefaults pins the on-by-default posture and its four values. The
+// worker (a later task) trusts these without re-deriving them, and the doc
+// comment on Library explains why default-on is affordable here when it is
+// not for the now-playing poller or the metadata fallback.
+func TestLibraryDefaults(t *testing.T) {
+	cfg, err := LoadFrom(libraryTestEnv(nil))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	want := Library{
+		Enabled:     true,
+		Interval:    24 * time.Hour,
+		Concurrency: 2,
+		MaxPages:    200,
+	}
+	if cfg.Library != want {
+		t.Errorf("Library = %+v, want %+v", cfg.Library, want)
+	}
+}
+
+// TestLibrarySyncIntervalRejectsNonPositive matches Sync and Enrich: a zero or
+// negative poll interval is a configuration error caught at startup, not a
+// busy-loop discovered at runtime.
+func TestLibrarySyncIntervalRejectsNonPositive(t *testing.T) {
+	_, err := LoadFrom(libraryTestEnv(map[string]string{
+		"ENCORE_LIBRARY_SYNC_INTERVAL": "0",
+	}))
+	if err == nil {
+		t.Fatal("LoadFrom: want an error for a non-positive interval, got nil")
+	}
+	if !strings.Contains(err.Error(), "ENCORE_LIBRARY_SYNC_INTERVAL") {
+		t.Errorf("error %q does not mention ENCORE_LIBRARY_SYNC_INTERVAL", err)
+	}
+}
+
+// TestLibrarySyncConcurrencyRejectsOutOfRange keeps an absurd concurrency a
+// reported configuration error rather than a runtime surprise.
+func TestLibrarySyncConcurrencyRejectsOutOfRange(t *testing.T) {
+	_, err := LoadFrom(libraryTestEnv(map[string]string{
+		"ENCORE_LIBRARY_SYNC_CONCURRENCY": "0",
+	}))
+	if err == nil {
+		t.Fatal("LoadFrom: want an error for an out-of-range concurrency, got nil")
+	}
+	if !strings.Contains(err.Error(), "ENCORE_LIBRARY_SYNC_CONCURRENCY") {
+		t.Errorf("error %q does not mention ENCORE_LIBRARY_SYNC_CONCURRENCY", err)
 	}
 }
