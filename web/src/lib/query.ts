@@ -115,6 +115,9 @@ export const qk = {
   taste: (range: DateRange) => ['stats', 'taste', range] as const,
   streaks: (range: DateRange) => ['stats', 'streaks', range] as const,
   extras: (range: DateRange) => ['stats', 'extras', range] as const,
+  // Keyed by range even though one of the three lists ignores it: the other
+  // two do not, so a range change must still be a cache miss.
+  library: (range: DateRange) => ['stats', 'library', range] as const,
   compare: (a: DateRange, b: DateRange) => ['stats', 'compare', a, b] as const,
   yearInReview: (year: number) => ['stats', 'year', year] as const,
   affinity: (userId: string, range: DateRange) => ['stats', 'affinity', userId, range] as const,

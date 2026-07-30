@@ -530,6 +530,64 @@ export interface AffinityResponse {
   tracks: AffinityEntry<TrackRef>[]
 }
 
+// --- library -----------------------------------------------------------
+
+/**
+ * One saved track nothing in the fact table has ever played. All time
+ * regardless of the selected range: see `LibraryStatsResponse` for why
+ * narrowing the window must not change this list.
+ *
+ * `addedAt` is null when Spotify did not report it, or the listener saved
+ * the track before Encore recorded that field.
+ */
+export interface LibrarySavedTrack {
+  entity: TrackRef
+  addedAt: Timestamp | null
+}
+
+/** One track played inside the range that the caller has never saved. */
+export interface LibraryPlayedTrack {
+  entity: TrackRef
+  plays: number
+  msPlayed: number
+}
+
+/**
+ * One followed artist with no play inside the range. `lastPlayedAt` is the
+ * artist's last play ever, regardless of the range, so the page can say how
+ * long it has actually been rather than only that it has been a while; null
+ * when the artist has never been played at all.
+ */
+export interface LibraryDormantArtist {
+  entity: ArtistRef
+  lastPlayedAt: Timestamp | null
+}
+
+/**
+ * Answers `GET /api/stats/library`: the last enumeration's snapshot, plus
+ * the three lists that cross what has been saved and followed against what
+ * has actually been played.
+ *
+ * `syncedAt` is null until the library worker's first successful run — the
+ * state of every account on an upgraded instance — and must never be treated
+ * as a zero timestamp: it is how the page tells "never enumerated" apart
+ * from "enumerated and found nothing".
+ *
+ * `savedNeverPlayed` is all time regardless of the requested range.
+ * `playedNeverSaved` and `dormantFollows` both follow it. `syncedAt` and the
+ * three counts describe neither: they are a snapshot of the last
+ * enumeration itself.
+ */
+export interface LibraryStatsResponse {
+  syncedAt: Timestamp | null
+  savedTracks: number
+  savedAlbums: number
+  followedArtists: number
+  savedNeverPlayed: LibrarySavedTrack[]
+  playedNeverSaved: LibraryPlayedTrack[]
+  dormantFollows: LibraryDormantArtist[]
+}
+
 /**
  * One track, artist or album on its detail page.
  *

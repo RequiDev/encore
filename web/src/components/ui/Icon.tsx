@@ -43,6 +43,7 @@ export type IconName =
   | 'calendar'
   | 'genre'
   | 'habits'
+  | 'library'
 
 const PATHS: Record<IconName, ReactNode> = {
   // A three-band equaliser: the dashboard is levels at a glance.
@@ -192,6 +193,8 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="15" cy="12" r="2.5" />
     </>
   ),
+  // A bookmark: the library is what has been kept, not what has been played.
+  library: <path d="M6.5 3.5h11a1 1 0 0 1 1 1V21l-6.5-3.8L5.5 21V4.5a1 1 0 0 1 1-1Z" />,
 }
 
 export interface IconProps {

@@ -58,6 +58,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { ranged: true, to: '/discovery', label: 'Discovery', icon: 'discovery' },
       { ranged: true, to: '/streaks', label: 'Streaks', icon: 'streak' },
       { ranged: true, to: '/habits', label: 'Habits', icon: 'habits' },
+      { ranged: true, to: '/library', label: 'Library', icon: 'library' },
     ],
   },
   {

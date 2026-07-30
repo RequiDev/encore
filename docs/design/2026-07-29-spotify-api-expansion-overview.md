@@ -147,8 +147,8 @@ is decided once, here:
 | Statistic | On a share? |
 |---|---|
 | Genres, obscurity score | **Yes** |
-| Album completion | **Yes** |
-| Library and follows counts | **Yes** |
+| Album completion | **Yes**\* |
+| Library and follows counts | **Yes**\* |
 | Shuffle share, skip rate | No |
 | Platform, country, offline, incognito | No |
 | Playlist listening context | No |
@@ -156,6 +156,14 @@ is decided once, here:
 
 Device and country reveal what hardware somebody owns and where they have travelled. Now-playing is
 real-time presence, which is precisely the concern the share design was written around.
+
+\* **Decided, not yet built.** These two rows record the decision made here, not the current state of
+the code. Neither has been added to `handleSharedStats` (`internal/httpapi/share.go`) or to
+`SharedStatsResponse` — the fixed set that handler composes today includes neither. Album completion
+has been outstanding since the Phase 2b branch merged; library and follows counts became outstanding
+when the Phase 2c-ii branch shipped the `/library` page without touching share links. Both are
+tracked as deferred work in [Phase 2's "Deferred from Phase
+2c"](2026-07-29-phase-2-scope-expansion-design.md#9-deferred-from-phase-2c).
 
 ### 4.5 Phase boundaries
 

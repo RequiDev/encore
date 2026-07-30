@@ -37,6 +37,7 @@ const Sessions = lazy(() => import('./pages/Sessions'))
 const Discovery = lazy(() => import('./pages/Discovery'))
 const Streaks = lazy(() => import('./pages/Streaks'))
 const Habits = lazy(() => import('./pages/Habits'))
+const Library = lazy(() => import('./pages/Library'))
 const YearInReview = lazy(() => import('./pages/YearInReview'))
 const Compare = lazy(() => import('./pages/Compare'))
 const Imports = lazy(() => import('./pages/Imports'))
@@ -97,6 +98,7 @@ export const routes: RouteObject[] = [
               { path: 'discovery', element: <Discovery /> },
               { path: 'streaks', element: <Streaks /> },
               { path: 'habits', element: <Habits /> },
+              { path: 'library', element: <Library /> },
               { path: 'year', element: <CurrentYear /> },
               { path: 'year/:year', element: <YearInReview /> },
               { path: 'compare', element: <Compare /> },

@@ -130,6 +130,7 @@ All accept `from` and `to`.
 | `GET` | `/api/stats/genres/timeline` | `?interval=&genre=`, with `genre` **repeated** (`?genre=rock&genre=jazz`), never comma-joined. Buckets the named genres across the range — one point per bucket per genre, zeroes included. Omitting `genre` charts the range's current top eight; at most **eight** genres may be requested in one call, matching what a stacked area chart can still show as distinct series. |
 | `GET` | `/api/stats/taste` | `{ "obscurity": <rate>, "releaseLag": <rate> }`. Obscurity is the play-weighted mean of Spotify's own artist popularity, 0–100, where **higher means more mainstream**. `releaseLag` is the play-weighted mean gap, in years, between an album's release and the play. |
 | `GET` | `/api/stats/context` | How the range was listened to, not what. `endReasons` (why a track stopped), `skipRate` (`reason_end = 'fwdbtn'` — going back is deliberately not counted as a skip), `shuffleRate`, `platforms`, `countries`, `offlineRate`, `incognitoRate`. |
+| `GET` | `/api/stats/library` | `?limit=`, default 10. The last enumeration's snapshot of the account's saved and followed Spotify library, crossed against what has actually been played. See "Library" below — its three lists are deliberately scoped three different ways, and the endpoint is a snapshot, not a live query. |
 
 Genre, taste and playback-context statistics are partial by construction — genres exist only where
 enrichment has resolved the credited artist, and the playback-context columns exist only on rows an
@@ -175,6 +176,64 @@ count yet, not that the album has no tracks. A client renders "track count not k
 than a ratio or `0%` in that case, and `albumsCompleted` excludes such albums from both `complete`
 and `albums` for the same reason: crediting or penalising a listener for a number Spotify has not
 supplied yet would not describe their listening.
+
+### Library
+
+`GET /api/stats/library` answers what the account has saved and followed on Spotify, crossed against
+what it has actually played. Reading it requires the `user-library-read` and `user-follow-read`
+scopes; an account that connected before Encore asked for them answers with those two scopes present
+in `missingScopes` (see `GET /api/me`), and the client is expected to offer relink rather than render
+an empty library.
+
+**This is a snapshot, not a live query.** Encore never asks Spotify for the library on request. A
+background worker enumerates saved tracks, saved albums and followed artists once a day
+(`ENCORE_LIBRARY_SYNC_INTERVAL`, default `24h`; see [`docs/configuration.md`](configuration.md)) and
+reconciles the result into `user_saved_tracks`, `user_saved_albums` and `user_followed_artists`. A
+track saved a minute ago will not appear here until that worker's next run.
+
+`syncedAt` is nullable, and **null means "never enumerated", not "nothing saved"**. Every account is
+`null` until the library worker's first successful run for it — including every account that existed
+before this feature shipped — and a client must never substitute a zero timestamp for it or infer
+empty counts from it.
+
+The three lists are deliberately scoped in three different ways:
+
+| List | Scope |
+|---|---|
+| `savedNeverPlayed` | **All time**, and does not move when `from`/`to` change. "Never played" means never; scoping it to the requested range would list every saved track the listener simply did not happen to play in that window, a different and far less useful question. |
+| `playedNeverSaved` | **Range-scoped**, like every other ranked list in the API: tracks played inside `from`/`to` that are not in the saved library. |
+| `dormantFollows` | **Range-scoped**: followed artists with no play inside `from`/`to`. Its `lastPlayedAt` is still the artist's all-time last play regardless of the range, so a client can say how long a follow has actually been dormant rather than only that it was quiet in the current window. |
+
+`syncedAt` and the three counts (`savedTracks`, `savedAlbums`, `followedArtists`) describe neither
+history nor a range — they describe the last enumeration itself.
+
+Each list entry wraps its resolved entity under an `entity` key, the same convention `TopEntry` and
+`AffinityEntry` use elsewhere on this page:
+
+```json
+{
+  "syncedAt": "2026-07-29T04:00:00Z",
+  "savedTracks": 812, "savedAlbums": 64, "followedArtists": 210,
+  "savedNeverPlayed": [
+    { "entity": { "id": "…", "name": "…", "artists": […], "album": {…} },
+      "addedAt": "2026-06-01T00:00:00Z" }
+  ],
+  "playedNeverSaved": [
+    { "entity": { "id": "…", "name": "…", "artists": […], "album": {…} },
+      "plays": 14, "msPlayed": 3200000 }
+  ],
+  "dormantFollows": [
+    { "entity": { "id": "…", "name": "…" }, "lastPlayedAt": "2025-11-02T00:00:00Z" }
+  ]
+}
+```
+
+`addedAt` and `lastPlayedAt` are themselves nullable independently of `syncedAt`: `addedAt` is null
+when Spotify did not report it, or the track was saved before Encore recorded that field; a dormant
+follow's `lastPlayedAt` is null when the artist has never been played at all.
+
+The blacklist applies here too: a blacklisted artist never appears in `dormantFollows`, and none of
+its plays count toward whether a followed artist looks dormant or a saved track looks played.
 
 ## Entities
 
