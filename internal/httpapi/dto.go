@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/RequiDev/encore/internal/albumtracks"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/importer"
 	"github.com/RequiDev/encore/internal/stats"
@@ -644,6 +645,103 @@ func toAlbumCompletion(c stats.AlbumCompletion) AlbumCompletionResponse {
 
 func toCompletedAlbums(c stats.CompletedAlbums) CompletedAlbumsResponse {
 	return CompletedAlbumsResponse{Complete: c.Complete, Albums: c.Albums}
+}
+
+// AlbumTrackRef is one track of an album's own listing.
+//
+// Deliberately not a TrackRef. These come from Spotify's listing rather than
+// from the catalogue, and a track nobody has played is not in the catalogue at
+// all — see migrations/00013_album_tracks.sql. Giving it the shape of a
+// catalogue entity would invite a client to link to a track page that does not
+// exist.
+type AlbumTrackRef struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DiscNumber  int    `json:"discNumber"`
+	TrackNumber int    `json:"trackNumber"`
+}
+
+// AlbumTrackList is which tracks of an album the caller has never played.
+//
+// State is one of:
+//
+//	"ready"       — a listing is stored; Coverage and Missing mean something
+//	"pending"     — no listing yet, and one is being read from Spotify now
+//	"unavailable" — no listing, and none is being read: the last attempt failed
+//	"disabled"    — no listing, and this instance does not fetch them at all
+//	                (ENCORE_ALBUM_TRACKS_ENABLED=false)
+//
+// A client MUST render all four differently, and must never read anything but
+// "ready" as "you have played everything". Missing is empty in three of the
+// four, which is exactly why State exists. Only "ready" with
+// Coverage.Covered == Coverage.Total means the album was played in full.
+//
+// "disabled" is deliberately distinct from "unavailable". The first is the
+// operator's choice and the second is Spotify failing to answer; a client that
+// renders the failure copy for the first blames a third party for a local
+// decision.
+//
+// A listing already cached is still served as "ready" when fetching is
+// disabled, past its TTL or not — turning off fetching does not hide what is on
+// disk. FetchedAt is what keeps that honest, and it is the reason there is no
+// separate "this will never refresh" field: a date says how old the answer is
+// without claiming anything about how fresh it is, and a second field
+// expressing the same fact is a field that drifts.
+//
+// Coverage's denominator is the listing Spotify returned, which is not
+// necessarily the album's total_tracks: those come from different reads at
+// different times and can disagree. The client states which one it followed.
+type AlbumTrackList struct {
+	State    string           `json:"state"`
+	Coverage CoverageResponse `json:"coverage"`
+	// Missing is the listed tracks with no play, in disc and track order. Always
+	// present and never null, so a client can iterate it without a guard; it is
+	// empty both when everything was played and when there is no listing, which
+	// is exactly why State exists.
+	Missing []AlbumTrackRef `json:"missing"`
+	// FetchedAt is when the listing was last read from Spotify, absent until one
+	// has succeeded. A listing older than the TTL is still served while a refresh
+	// runs, so this is what says how old the answer is.
+	FetchedAt *time.Time `json:"fetchedAt,omitempty"`
+}
+
+// toAlbumTrackList diffs the listing against what the caller has played.
+//
+// The diff is done here rather than in SQL because the two halves come from
+// different places for different reasons: the listing is global catalogue data
+// cached from Spotify, and the played set is one user's own history with their
+// own blacklist applied. Joining them in one statement would tie a per-user
+// answer to a table that is shared between users.
+func toAlbumTrackList(l albumtracks.Listing, heard []string) AlbumTrackList {
+	played := make(map[string]struct{}, len(heard))
+	for _, id := range heard {
+		played[id] = struct{}{}
+	}
+
+	out := AlbumTrackList{
+		State:   string(l.State),
+		Missing: make([]AlbumTrackRef, 0, len(l.Tracks)),
+	}
+	for _, t := range l.Tracks {
+		if _, ok := played[t.ID]; ok {
+			out.Coverage.Covered++
+			continue
+		}
+		out.Missing = append(out.Missing, AlbumTrackRef{
+			ID: t.ID, Name: t.Name,
+			DiscNumber: t.DiscNumber, TrackNumber: t.TrackNumber,
+		})
+	}
+	// The denominator is the listing, not albums.total_tracks. A listener who has
+	// played a track Spotify no longer lists under this album is counted in
+	// neither, which is honest: this panel can only speak about the listing it
+	// has.
+	out.Coverage.Total = int64(len(l.Tracks))
+	if !l.FetchedAt.IsZero() {
+		at := l.FetchedAt.UTC()
+		out.FetchedAt = &at
+	}
+	return out
 }
 
 // --- genres ----------------------------------------------------------------

@@ -319,6 +319,63 @@ func (s *Server) handleAlbum(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAlbumTracklist answers GET /api/albums/{id}/tracklist.
+//
+// It is a separate route from GET /api/albums/{id} for two reasons. It is the
+// only trigger for the lazy fetch, so there is exactly one place that can start
+// one; and the client polls it while a fetch runs, which must not re-run the
+// album page's whole statistics on every tick.
+//
+// It never waits for Spotify. Everything below reads the database; the service
+// starts a detached fetch when one is due and this returns "pending", and the
+// client asks again. A page that hangs on a third party is a defect.
+func (s *Server) handleAlbumTracklist(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	id, err := parseSpotifyIDPath(r, "id")
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+
+	// The album must already be in the catalogue. Without this, any base-62
+	// string in the URL would spend one of the instance's Spotify requests on a
+	// record nobody has listened to — the same quota argument §5.2 uses to reject
+	// a background sweep, arriving through a different door.
+	if _, err := s.catalog.GetAlbum(ctx, s.querier, id); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Two independent round trips rather than one transaction. The listing is
+	// global catalogue data with its own TTL and the heard set is one user's
+	// history; nothing here writes, and a snapshot would still be stale the
+	// instant a new listen lands, transaction or not. A concurrent write
+	// between these two calls can make Coverage and Missing disagree for one
+	// response — "9 of 12 heard" beside a list of four — which is a known,
+	// accepted staleness window rather than an oversight: the client polls this
+	// endpoint, so a momentary disagreement self-corrects on the next tick, and
+	// wrapping two independently-scoped reads in one transaction to avoid it
+	// would buy consistency at the cost of pinning a connection across a call
+	// this package otherwise never has to hold one for.
+	listing, err := s.albumTracks.Listing(ctx, s.querier, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	heard, err := s.stats.AlbumHeardTracks(ctx, s.querier, user.ID, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, toAlbumTrackList(listing, heard))
+}
+
 // handleSearch answers GET /api/search.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if _, err := requireUser(r); err != nil {

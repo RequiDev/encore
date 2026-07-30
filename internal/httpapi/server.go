@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/RequiDev/encore/internal/albumtracks"
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/importer"
@@ -64,6 +65,11 @@ type Deps struct {
 	// it if necessary. Optional: without it, playlist creation is refused rather
 	// than attempted with a token that may have expired.
 	UserToken func(ctx context.Context, userID uuid.UUID) (string, error)
+	// AlbumTracks serves the cached listing of an album's tracks and starts a
+	// refresh when one is due. Required: without it GET
+	// /api/albums/{id}/tracklist could only answer "unavailable" for ever, which
+	// is a broken instance wearing the mask of a working one.
+	AlbumTracks albumTrackSource
 }
 
 // The narrow interfaces below are the only view the HTTP layer takes of the
@@ -136,6 +142,15 @@ type settingsStore interface {
 	SpotifyPausedUntil(ctx context.Context, q store.Querier) (time.Time, error)
 }
 
+// albumTrackSource is the album track cache as the HTTP layer needs it.
+//
+// An interface rather than the concrete service, so this package keeps its rule
+// of holding no SQL and never importing pgx, and so the handler can be
+// exercised without a Spotify client behind it.
+type albumTrackSource interface {
+	Listing(ctx context.Context, q store.Querier, albumID string) (albumtracks.Listing, error)
+}
+
 // Server owns the routing table and the middleware chain.
 type Server struct {
 	cfg *config.Config
@@ -172,6 +187,10 @@ type Server struct {
 	intake    *importer.Intake
 	spotify   *spotify.Client
 	metrics   *metrics.Registry
+	// albumTracks is the album track cache: which of an album's tracks the
+	// caller has never played. See albumTrackSource for why this is an
+	// interface rather than *albumtracks.Service.
+	albumTracks albumTrackSource
 
 	syncNow func(ctx context.Context, userID uuid.UUID) (SyncOutcome, error)
 	syncing *inFlight
@@ -209,6 +228,8 @@ func New(deps Deps) (*Server, error) {
 		return nil, errors.New("httpapi: import intake is required")
 	case deps.Spotify == nil:
 		return nil, errors.New("httpapi: spotify client is required")
+	case deps.AlbumTracks == nil:
+		return nil, errors.New("httpapi: album track source is required")
 	}
 	if deps.Accounts.Users == nil || deps.Accounts.Sessions == nil || deps.Accounts.Credentials == nil ||
 		deps.Accounts.OAuthStates == nil || deps.Accounts.Settings == nil {
@@ -252,6 +273,7 @@ func New(deps Deps) (*Server, error) {
 		intake:      deps.Intake,
 		spotify:     deps.Spotify,
 		metrics:     deps.Metrics,
+		albumTracks: deps.AlbumTracks,
 		syncNow:     syncNow,
 		syncing:     newInFlight(),
 		touched:     newTouchTracker(),

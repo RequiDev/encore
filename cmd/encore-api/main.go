@@ -6,9 +6,11 @@
 // wiring in one readable place and lets every package underneath be exercised
 // with fakes — so this file is the whole of the composition root.
 //
-// The API never runs a background loop. It builds a sync poller only so that the
-// "sync now" button can poll one account on demand; the scheduled polling, the
-// import runners and the enrichment loops all belong to encore-worker.
+// The API runs no scheduled loop: polling, imports and enrichment all belong to
+// encore-worker. It does start two kinds of work on demand — a sync poller so
+// the "sync now" button can poll one account, and an album track fetch when
+// somebody opens an album page — both of which are triggered by a request and
+// both of which are cancelled at shutdown.
 package main
 
 import (
@@ -23,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/RequiDev/encore/internal/albumtracks"
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/crypto"
 	"github.com/RequiDev/encore/internal/httpapi"
@@ -132,6 +135,21 @@ func run() error {
 		return err
 	}
 
+	// The API runs no background *loop* — that is still encore-worker's job — but
+	// it does start detached work on demand, the same way the "sync now" button
+	// does. An album's track list is read when somebody opens that album's page,
+	// and Close cancels anything still in flight at shutdown.
+	albumTracks, err := albumtracks.New(cfg.AlbumTracks, albumtracks.Deps{
+		Catalog: catalogRepo,
+		Spotify: client,
+		Writer:  albumtracks.StoreWriter{Store: db},
+		Logger:  lg,
+	})
+	if err != nil {
+		return err
+	}
+	defer albumTracks.Close()
+
 	api, err := httpapi.New(httpapi.Deps{
 		Config:   cfg,
 		Store:    db,
@@ -148,7 +166,8 @@ func run() error {
 		SyncNow:  syncNow(poller),
 		// Playlists act on the listener's own account, so they need the
 		// listener's own token, and refreshing one belongs to the poller.
-		UserToken: poller.AccessToken,
+		UserToken:   poller.AccessToken,
+		AlbumTracks: albumTracks,
 	})
 	if err != nil {
 		return err
