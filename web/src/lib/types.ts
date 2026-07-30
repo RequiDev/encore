@@ -497,10 +497,23 @@ export interface YearInReview {
   newArtists: number
 }
 
+/**
+ * Range-scoped: both numbers describe albums played inside the selected range,
+ * counting only those whose track count is known. The aggregate names its own
+ * denominator in prose rather than shipping a bare count, because — unlike
+ * every other figure on the dashboard — it is not the same population as the
+ * album page's all-time `AlbumCompletion` beside it.
+ */
+export interface CompletedAlbums {
+  complete: number
+  albums: number
+}
+
 export interface StatsExtras {
   differentArtists: number
   averageAlbumReleaseYear: number | null
   averageArtistsPerTrack: number
+  albumsCompleted?: CompletedAlbums
 }
 
 export interface AffinityEntry<T> {
@@ -557,10 +570,25 @@ export interface ArtistDetail {
   blacklisted: boolean
 }
 
+/**
+ * How much of an album has been heard, ever — not scoped to the selected
+ * range, unlike everything else on the album page. `discoveredAt` and
+ * `lastPlayedAt` on `EntityStats` above carry the same all-time property for
+ * the same reason: a range re-derives "first heard" or "how much of this
+ * record you know" into a fact about the window rather than about the music.
+ */
+export interface AlbumCompletion {
+  heard: number
+  total: number
+  /** False when the album's track count has not been enriched yet. */
+  known: boolean
+}
+
 export interface AlbumDetail {
   album: Album
   stats: EntityStats
   topTracks: TopEntry<TrackRef>[]
+  completion?: AlbumCompletion
 }
 
 // --- listening history -----------------------------------------------------

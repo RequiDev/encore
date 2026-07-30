@@ -8,13 +8,13 @@
  */
 
 import type { ReactElement, ReactNode } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, api } from '../lib/api'
 import { qk } from '../lib/query'
 import { useRange } from '../lib/range'
 import { EMPTY, formatCount, formatPlural } from '../lib/format'
-import type { AlbumDetail as AlbumPayload } from '../lib/types'
+import type { AlbumCompletion, AlbumDetail as AlbumPayload } from '../lib/types'
 import {
   ButtonLink,
   Chip,
@@ -27,6 +27,7 @@ import {
   Skeleton,
   SkeletonLedger,
   SkeletonText,
+  Stat,
 } from '../components/ui'
 import { Artwork, EntityFigures, EntityLedger, formatRelease } from './top/TopList'
 
@@ -47,6 +48,7 @@ export default function AlbumDetail(): ReactElement {
 
   const album = query.data?.album
   const stats = query.data?.stats
+  const completion = query.data?.completion
   const tracks = query.data?.topTracks ?? []
   const title = album?.name ?? 'Album'
   const notFound = query.error instanceof ApiError && query.error.isNotFound
@@ -145,6 +147,14 @@ export default function AlbumDetail(): ReactElement {
           />
 
           <Panel
+            title="Heard"
+            description="How much of this album you have heard, all time."
+            padded={false}
+          >
+            <CompletionFigure completion={completion} />
+          </Panel>
+
+          <Panel
             title="Tracks you played"
             description={
               album.totalTracks > 0
@@ -195,6 +205,60 @@ function Entry({ label, children }: { label: string; children: ReactNode }): Rea
   )
 }
 
+/**
+ * How much of the album has been heard, ever.
+ *
+ * Every other figure on this page is scoped to the range picker; this one
+ * deliberately is not, so it carries "all time" the same way `EntityFigures`
+ * carries it for first and last listen above — a hint under the figure,
+ * never a second, differently-worded way of saying the same thing.
+ *
+ * `known` is false until the album's track count has been enriched, which is
+ * true of nearly every album on a freshly imported instance. That state
+ * cannot compute a ratio at all, so it says so instead of rendering one — a
+ * fabricated "0 of 0" or a bare "0%" would read as "you have heard nothing
+ * from this record," which is not what an unresolved track count means.
+ */
+function CompletionFigure({
+  completion,
+}: {
+  completion: AlbumCompletion | undefined
+}): ReactElement {
+  if (!completion || !completion.known) {
+    return (
+      <EmptyState
+        title="Track count not known yet"
+        description={
+          <>
+            Encore learns track counts from Spotify while it fills in your catalogue; check{' '}
+            <Link to="/settings" className="text-lamp hover:underline">
+              Settings
+            </Link>{' '}
+            for progress.
+          </>
+        }
+      />
+    )
+  }
+
+  // Worth calling out on its own: "12 of 12" buries the one state that is
+  // actually interesting to notice.
+  const complete = completion.heard >= completion.total
+
+  return (
+    <Stat
+      label="Heard"
+      value={
+        complete
+          ? 'Every track'
+          : `${formatCount(completion.heard)} of ${formatCount(completion.total)}`
+      }
+      suffix={complete ? undefined : 'tracks'}
+      hint="All time"
+    />
+  )
+}
+
 /** The page's shape while the one request is in flight, so nothing jumps. */
 function LoadingBody(): ReactElement {
   return (
@@ -208,6 +272,7 @@ function LoadingBody(): ReactElement {
       </Panel>
       <div className="panel h-28" />
       <div className="panel h-72" />
+      <div className="panel h-28" />
       <Panel padded={false}>
         <SkeletonLedger rows={8} columns={4} />
       </Panel>
