@@ -165,43 +165,77 @@ func TestTopTracksLimitIsClamped(t *testing.T) {
 	}
 }
 
+// TestTopArtistsEmptyItemsIsEmptyNotNil covers all three shapes Spotify (or a
+// quirking intermediary) could plausibly send when there is no ranking: an
+// empty array, the key left out entirely, and an explicit JSON null.
+// encoding/json already decodes a bare "[]" into a non-nil, zero-length
+// slice on its own, so that case alone would pass whether or not
+// TopArtists's own nil-guard exists; the other two only pass because of it.
 func TestTopArtistsEmptyItemsIsEmptyNotNil(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"items":[],"next":null}`)
-	}))
-	defer srv.Close()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"empty array", `{"items":[],"next":null}`},
+		{"key absent", `{"next":null}`},
+		{"explicit null", `{"items":null,"next":null}`},
+	}
 
-	c := newTestClient(t, srv, newFakeClock())
-	artists, err := c.TopArtists(context.Background(), "user-token", TopShortTerm, 50)
-	if err != nil {
-		t.Fatalf("TopArtists: %v", err)
-	}
-	if artists == nil {
-		t.Fatal("TopArtists returned nil for an empty ranking, want a non-nil empty slice")
-	}
-	if len(artists) != 0 {
-		t.Fatalf("got %d artists, want 0", len(artists))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv, newFakeClock())
+			artists, err := c.TopArtists(context.Background(), "user-token", TopShortTerm, 50)
+			if err != nil {
+				t.Fatalf("TopArtists: %v", err)
+			}
+			if artists == nil {
+				t.Fatal("TopArtists returned nil for an empty ranking, want a non-nil empty slice")
+			}
+			if len(artists) != 0 {
+				t.Fatalf("got %d artists, want 0", len(artists))
+			}
+		})
 	}
 }
 
+// TestTopTracksEmptyItemsIsEmptyNotNil mirrors
+// TestTopArtistsEmptyItemsIsEmptyNotNil for the tracks endpoint.
 func TestTopTracksEmptyItemsIsEmptyNotNil(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"items":[],"next":null}`)
-	}))
-	defer srv.Close()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"empty array", `{"items":[],"next":null}`},
+		{"key absent", `{"next":null}`},
+		{"explicit null", `{"items":null,"next":null}`},
+	}
 
-	c := newTestClient(t, srv, newFakeClock())
-	tracks, err := c.TopTracks(context.Background(), "user-token", TopShortTerm, 50)
-	if err != nil {
-		t.Fatalf("TopTracks: %v", err)
-	}
-	if tracks == nil {
-		t.Fatal("TopTracks returned nil for an empty ranking, want a non-nil empty slice")
-	}
-	if len(tracks) != 0 {
-		t.Fatalf("got %d tracks, want 0", len(tracks))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv, newFakeClock())
+			tracks, err := c.TopTracks(context.Background(), "user-token", TopShortTerm, 50)
+			if err != nil {
+				t.Fatalf("TopTracks: %v", err)
+			}
+			if tracks == nil {
+				t.Fatal("TopTracks returned nil for an empty ranking, want a non-nil empty slice")
+			}
+			if len(tracks) != 0 {
+				t.Fatalf("got %d tracks, want 0", len(tracks))
+			}
+		})
 	}
 }
 
