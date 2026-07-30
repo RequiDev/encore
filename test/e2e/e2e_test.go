@@ -707,6 +707,143 @@ func TestStatsExtrasReportsAlbumsCompleted(t *testing.T) {
 	}
 }
 
+// TestLibraryStatsNeverSyncedRendersNullSyncedAt pins the wire-level contract
+// for the state every upgraded instance starts in: an account the library
+// worker has never enumerated. A struct-level assertion cannot tell "the
+// server sent null" apart from "the server omitted the field" — encoding/json
+// unmarshals both into the same nil pointer — so this checks the raw response
+// text, exactly as TestMeReportsNoMissingScopesForACurrentGrant checks for []
+// rather than null for the same reason.
+func TestLibraryStatsNeverSyncedRendersNullSyncedAt(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	resp := b.get("/api/stats/library")
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/stats/library = %d, want 200; body: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"syncedAt":null`) {
+		t.Errorf(`a never-synced account must report "syncedAt":null verbatim, got: %s`, body)
+	}
+	for _, list := range []string{"savedNeverPlayed", "playedNeverSaved", "dormantFollows"} {
+		if !strings.Contains(string(body), fmt.Sprintf(`"%s":[]`, list)) {
+			t.Errorf("%s must serialise as [] and not null, got: %s", list, body)
+		}
+	}
+
+	var lib httpapi.LibraryStatsResponse
+	if err := json.Unmarshal(body, &lib); err != nil {
+		t.Fatalf("decode library stats: %v; body: %s", err, body)
+	}
+	if lib.SyncedAt != nil {
+		t.Errorf("synced at = %v, want nil", *lib.SyncedAt)
+	}
+	if lib.SavedTracks != 0 || lib.SavedAlbums != 0 || lib.FollowedArtists != 0 {
+		t.Errorf("counts = %+v, want all zero for a never-synced account", lib)
+	}
+}
+
+// TestLibraryStatsResolvesEntitiesAndSyncState is the wiring check for the
+// happy path. The arithmetic behind each list is covered exhaustively by
+// test/integration/librarystats_test.go; what only an HTTP-level test can see
+// is that the endpoint actually resolves every identifier to a name — through
+// resolveRefs, exactly as handleAlbum does for every other list in the API —
+// and reports the true sync watermark rather than a placeholder.
+func TestLibraryStatsResolvesEntitiesAndSyncState(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	me := inst.signIn(b)
+	userID := uuid.MustParse(me["user"].(map[string]any)["id"].(string))
+	ctx, db := inst.env.Ctx(), inst.env.Store.DB()
+
+	// A track saved but never played. Seeded straight into the catalogue,
+	// exactly as the library worker's own reconciliation would leave it, since
+	// it carries no listen at all.
+	savedTrackID := "e2elibsavedtrack0001"
+	if err := inst.env.Catalog.UpsertTracks(ctx, db, []domain.Track{
+		{ID: savedTrackID, Name: "Saved Never Played"},
+	}); err != nil {
+		t.Fatalf("seed saved track: %v", err)
+	}
+	inst.env.Exec(`INSERT INTO user_saved_tracks (user_id, track_id) VALUES ($1, $2)`,
+		userID, savedTrackID)
+
+	// A followed artist with no listen at all, so it reads as dormant with no
+	// LastPlayedAt.
+	followedArtistID := "e2elibfollowedartist1"
+	if err := inst.env.Catalog.UpsertArtists(ctx, db, []domain.Artist{
+		{ID: followedArtistID, Name: "Dormant Artist"},
+	}); err != nil {
+		t.Fatalf("seed followed artist: %v", err)
+	}
+	inst.env.Exec(`INSERT INTO user_followed_artists (user_id, artist_id) VALUES ($1, $2)`,
+		userID, followedArtistID)
+
+	// A play, which the sync gives its own catalogue row and which is
+	// therefore played-never-saved.
+	playedTrackID := "e2elibplayedtrack0001"
+	at := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{playItem(playedTrackID, at)}
+	syncResult := decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != 1 {
+		t.Fatalf("sync reported %v imported, want 1", syncResult["imported"])
+	}
+
+	syncedAt := time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC)
+	if err := inst.env.Accounts.Credentials.MarkLibrarySynced(ctx, db, userID, syncedAt); err != nil {
+		t.Fatalf("mark library synced: %v", err)
+	}
+
+	from := at.Add(-24 * time.Hour).Format(time.RFC3339)
+	to := time.Now().Add(24 * time.Hour).Format(time.RFC3339)
+	lib := decode[httpapi.LibraryStatsResponse](t, b.get(
+		fmt.Sprintf("/api/stats/library?from=%s&to=%s", url.QueryEscape(from), url.QueryEscape(to))),
+		http.StatusOK)
+
+	if lib.SyncedAt == nil || *lib.SyncedAt != syncedAt.Format(time.RFC3339) {
+		t.Fatalf("synced at = %v, want %v", lib.SyncedAt, syncedAt.Format(time.RFC3339))
+	}
+	if lib.SavedTracks != 1 {
+		t.Errorf("saved tracks = %d, want 1", lib.SavedTracks)
+	}
+	if lib.FollowedArtists != 1 {
+		t.Errorf("followed artists = %d, want 1", lib.FollowedArtists)
+	}
+
+	if len(lib.SavedNeverPlayed) != 1 || lib.SavedNeverPlayed[0].Entity.ID != savedTrackID ||
+		lib.SavedNeverPlayed[0].Entity.Name != "Saved Never Played" {
+		t.Fatalf("savedNeverPlayed = %+v, want one entry naming %q", lib.SavedNeverPlayed, savedTrackID)
+	}
+
+	found := false
+	for _, e := range lib.PlayedNeverSaved {
+		if e.Entity.ID == playedTrackID {
+			found = true
+			if e.Entity.Name != "Track "+playedTrackID {
+				t.Errorf("played track name = %q, want %q", e.Entity.Name, "Track "+playedTrackID)
+			}
+			if e.Plays != 1 {
+				t.Errorf("played track plays = %d, want 1", e.Plays)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("playedNeverSaved = %+v, want an entry for %q", lib.PlayedNeverSaved, playedTrackID)
+	}
+
+	if len(lib.DormantFollows) != 1 || lib.DormantFollows[0].Entity.ID != followedArtistID ||
+		lib.DormantFollows[0].Entity.Name != "Dormant Artist" {
+		t.Fatalf("dormantFollows = %+v, want one entry naming %q", lib.DormantFollows, followedArtistID)
+	}
+	if lib.DormantFollows[0].LastPlayedAt != nil {
+		t.Errorf("dormant artist last played at = %v, want nil: it has never played",
+			*lib.DormantFollows[0].LastPlayedAt)
+	}
+}
+
 func TestImportFlowThroughTheAPI(t *testing.T) {
 	inst := newInstance(t)
 	b := inst.browser()

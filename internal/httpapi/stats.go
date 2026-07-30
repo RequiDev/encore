@@ -714,6 +714,88 @@ func (s *Server) handlePlaybackContext(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, toPlaybackContext(c))
 }
 
+// handleLibrary answers GET /api/stats/library.
+//
+// limit follows handleSessions' shape rather than the top-N handlers': it is a
+// single caller-adjustable page size applied to all three lists at once (there
+// is no offset, because this is a dashboard preview, not something paged),
+// defaulting to stats.EntityTopLimit the way every other detail-page sub-list
+// does.
+func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
+	user, tr, err := s.callerAndRange(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	limit, err := parseLimit(r, stats.EntityTopLimit, maxPageLimit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+
+	lib, err := s.stats.Library(ctx, s.querier, user.ID, tr, user.Timezone, limit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Every identifier the three lists carry is resolved in one pass: tracks
+	// for the saved- and played-side lists, artists for the followed side.
+	var trackIDs, artistIDs []string
+	for _, e := range lib.SavedNeverPlayed {
+		trackIDs = append(trackIDs, e.TrackID)
+	}
+	for _, e := range lib.PlayedNeverSaved {
+		trackIDs = append(trackIDs, e.TrackID)
+	}
+	for _, e := range lib.DormantFollows {
+		artistIDs = append(artistIDs, e.ArtistID)
+	}
+	refs, err := s.resolveRefs(ctx, trackIDs, nil, artistIDs)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toLibraryStats(lib, refs))
+}
+
+// toLibraryStats renders a library snapshot with its three lists' identifiers
+// resolved to names and artwork.
+func toLibraryStats(l stats.LibraryStats, refs *catalogRefs) LibraryStatsResponse {
+	saved := make([]LibrarySavedTrack, 0, len(l.SavedNeverPlayed))
+	for _, e := range l.SavedNeverPlayed {
+		saved = append(saved, LibrarySavedTrack{
+			Entity:  refs.trackEntity(e.TrackID),
+			AddedAt: tsPtr(e.AddedAt),
+		})
+	}
+	played := make([]LibraryPlayedTrack, 0, len(l.PlayedNeverSaved))
+	for _, e := range l.PlayedNeverSaved {
+		played = append(played, LibraryPlayedTrack{
+			Entity:   refs.trackEntity(e.TrackID),
+			Plays:    e.Plays,
+			MsPlayed: e.MsPlayed,
+		})
+	}
+	dormant := make([]LibraryDormantArtist, 0, len(l.DormantFollows))
+	for _, e := range l.DormantFollows {
+		dormant = append(dormant, LibraryDormantArtist{
+			Entity:       refs.artistEntity(e.ArtistID),
+			LastPlayedAt: tsPtr(e.LastPlayedAt),
+		})
+	}
+	return LibraryStatsResponse{
+		SyncedAt:         tsPtr(l.SyncedAt),
+		SavedTracks:      l.SavedTracks,
+		SavedAlbums:      l.SavedAlbums,
+		FollowedArtists:  l.FollowedArtists,
+		SavedNeverPlayed: saved,
+		PlayedNeverSaved: played,
+		DormantFollows:   dormant,
+	}
+}
+
 // handleListUsers answers GET /api/users: who else is on this instance.
 //
 // Deactivated accounts and the caller are left out, and each entry carries only

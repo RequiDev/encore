@@ -456,6 +456,54 @@ type AffinityResponse struct {
 	Tracks  []AffinityEntry[TrackRef]  `json:"tracks"`
 }
 
+// --- library -----------------------------------------------------------
+
+// LibrarySavedTrack is one saved track nothing in the fact table has ever
+// played. It is all-time regardless of the requested range: see
+// stats.LibraryStats for why narrowing the window must not change this list.
+// AddedAt is null when Spotify did not report it, or the listener saved the
+// track before Encore recorded that field.
+type LibrarySavedTrack struct {
+	Entity  TrackRef `json:"entity"`
+	AddedAt *string  `json:"addedAt"`
+}
+
+// LibraryPlayedTrack is one track played inside the range that the caller has
+// never saved.
+type LibraryPlayedTrack struct {
+	Entity   TrackRef `json:"entity"`
+	Plays    int64    `json:"plays"`
+	MsPlayed int64    `json:"msPlayed"`
+}
+
+// LibraryDormantArtist is one followed artist with no play inside the range.
+// LastPlayedAt is the artist's last play ever, regardless of the range, so the
+// client can say how long it has actually been rather than only that it has
+// been a while; it is null when the artist has never been played at all.
+type LibraryDormantArtist struct {
+	Entity       ArtistRef `json:"entity"`
+	LastPlayedAt *string   `json:"lastPlayedAt"`
+}
+
+// LibraryStatsResponse answers GET /api/stats/library: the last enumeration's
+// snapshot, plus the three lists of stats.LibraryStats with every identifier
+// resolved to a name and artwork.
+//
+// SyncedAt is null until the library worker's first successful run — the
+// state of every account on an upgraded instance — and must never be
+// substituted with a zero time or omitted: it is how the client tells "never
+// enumerated" apart from "enumerated and found nothing".
+type LibraryStatsResponse struct {
+	SyncedAt        *string `json:"syncedAt"`
+	SavedTracks     int64   `json:"savedTracks"`
+	SavedAlbums     int64   `json:"savedAlbums"`
+	FollowedArtists int64   `json:"followedArtists"`
+
+	SavedNeverPlayed []LibrarySavedTrack    `json:"savedNeverPlayed"`
+	PlayedNeverSaved []LibraryPlayedTrack   `json:"playedNeverSaved"`
+	DormantFollows   []LibraryDormantArtist `json:"dormantFollows"`
+}
+
 // EntityStats is what every detail page shows about one track, artist or album.
 //
 // The two pairs of timestamps answer different questions and both are sent.
