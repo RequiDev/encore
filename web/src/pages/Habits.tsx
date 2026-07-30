@@ -234,12 +234,20 @@ export default function Habits(): ReactElement {
       api.get<TasteResponse>('/stats/taste', { from: range.from, to: range.to }, signal),
   })
 
+  // `noContext` gates only the six extended-export columns (see the doc
+  // comment above it) — it says nothing about playlist/album context, which
+  // renders independent of it and can be fully populated even when this is
+  // true (a sync-only instance is exactly that case). A blanket "no playback
+  // detail" here would be announced by a screen reader while a full playlist
+  // chart sits on screen below, so this names the one figure the sentence
+  // actually has an opinion about — the same one the `data` branch below
+  // already reports on — rather than a claim that reaches past it.
   const status = context.isPending
     ? `Loading listening habits for ${label.toLowerCase()}.`
     : context.isError
       ? 'Your listening habits could not be loaded.'
       : noContext
-        ? 'No playback detail is known yet for this range.'
+        ? 'How a play ended is not known yet for this range.'
         : data
           ? `How a play ended is known for ${formatRatio(data.skipRate.covered, data.skipRate.total)} of your listening in ${label.toLowerCase()}.`
           : ''
@@ -264,9 +272,16 @@ export default function Habits(): ReactElement {
     () => toPlaylistBarData(playlists.slice(0, TOP_PLAYLISTS)),
     [playlists],
   )
+  // Unlike `countries` above, `playlists` is never the listener's true total
+  // of distinct contexts: playlistContextSQL runs with a server-side LIMIT
+  // (clampLimit(0), the default page size), so `playlists.length` is already
+  // capped before it gets here. Saying "the top 12 of N" would print N as if
+  // it were a total the response actually counted, when it is only "however
+  // many rows fit under that limit" — so this names how many are shown and
+  // never claims a total the payload cannot substantiate.
   const playlistsDescription =
     playlists.length > TOP_PLAYLISTS
-      ? `Ranked by plays in this range — the top ${TOP_PLAYLISTS} of ${formatCount(playlists.length)}.`
+      ? `Ranked by plays in this range — the top ${TOP_PLAYLISTS} shown.`
       : 'Ranked by plays in this range.'
 
   return (
@@ -441,10 +456,16 @@ export default function Habits(): ReactElement {
           ) : null}
 
           {playlistNoContext ? (
+            // `playlistCoverage.covered === 0` is a property of *this range*,
+            // not of the instance's whole history — an instance that has
+            // synced live for months reads this the moment somebody picks a
+            // range that predates when sync started. The title says so
+            // explicitly; the reassurance that it fills in as sync
+            // accumulates is unchanged, since that remains true regardless.
             <Panel padded={false}>
               <EmptyState
                 icon="habits"
-                title="Encore has not recorded any plays live yet"
+                title="Encore has recorded none of this range's listening live"
                 description="This fills in as it syncs."
               />
             </Panel>

@@ -159,7 +159,7 @@ describe('the playlist/album context section of the Habits page', () => {
 
     // Not the zero-coverage empty state: real data is on screen.
     expect(
-      screen.queryByText('Encore has not recorded any plays live yet'),
+      screen.queryByText("Encore has recorded none of this range's listening live"),
     ).not.toBeInTheDocument()
     expect(await findPlaylistChartCaption()).toHaveTextContent('led by Road Trip with 10')
   })
@@ -178,7 +178,7 @@ describe('the playlist/album context section of the Habits page', () => {
     await waitForPage()
 
     expect(
-      await screen.findByText('Encore has not recorded any plays live yet'),
+      await screen.findByText("Encore has recorded none of this range's listening live"),
     ).toBeInTheDocument()
     expect(screen.getByText('This fills in as it syncs.')).toBeInTheDocument()
 
@@ -186,6 +186,112 @@ describe('the playlist/album context section of the Habits page', () => {
     // state and must not also render here.
     expect(screen.queryByText(/no spotify export records/i)).not.toBeInTheDocument()
     expect(screen.queryByText('What you were playing from')).not.toBeInTheDocument()
+  })
+
+  it('says the zero is about this range, not the instance\'s history, when the instance has clearly synced or imported before', async () => {
+    // An import-heavy instance can carry real extended-export history for a
+    // range that predates when live sync started — skipRate/endReasonCoverage
+    // below are non-zero, so this is not a fresh install — while this same
+    // range's playlist/album context is still zero, because sync never ran
+    // during it. The old copy ("Encore has not recorded any plays live yet")
+    // read as if Encore had *never* recorded anything live, which is false
+    // here: it has, just not inside this particular range.
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload({
+        skipRate: { value: 0.1, covered: 800, total: 800 },
+        endReasonCoverage: { covered: 800, total: 800 },
+        playlistCoverage: { covered: 0, total: 800 },
+        playlists: [],
+      }),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    // The corrected, range-scoped sentence.
+    expect(
+      await screen.findByText("Encore has recorded none of this range's listening live"),
+    ).toBeInTheDocument()
+    expect(screen.getByText('This fills in as it syncs.')).toBeInTheDocument()
+
+    // Never the old sentence, which claimed this about Encore's whole
+    // history rather than about the selected range.
+    expect(
+      screen.queryByText('Encore has not recorded any plays live yet'),
+    ).not.toBeInTheDocument()
+
+    // And proof this is not a fresh instance: the extended-export section
+    // above it is showing real, non-zero coverage for this same range.
+    expect(await screen.findByText(/records how a play ended/)).toBeInTheDocument()
+  })
+
+  it('does not tell a screen reader "no playback detail" for the range while a full playlist chart renders', async () => {
+    // The mirror instance: a sync-only build has zero extended-export
+    // coverage (skip/shuffle/offline/incognito/platform/country all zero,
+    // i.e. `noContext`) but full playlist/album context, because live sync
+    // writes context_type/context_id independently of any export. The
+    // sr-only status line must not claim "no playback detail" here — it
+    // would be false the moment a screen-reader user reaches the chart this
+    // same response renders in full just below it.
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload({
+        playlistCoverage: { covered: 400, total: 400 },
+        playlists: [playlistEntry({ plays: 400 })],
+      }),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    // The corrected status line names the one figure it actually describes,
+    // rather than a blanket claim the rest of the page contradicts.
+    expect(
+      await screen.findByText('How a play ended is not known yet for this range.'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText('No playback detail is known yet for this range.'),
+    ).not.toBeInTheDocument()
+
+    // The playlist chart is not empty: this is the full-data half of the
+    // mismatch the corrected sentence must stay true against.
+    expect(
+      screen.queryByText("Encore has recorded none of this range's listening live"),
+    ).not.toBeInTheDocument()
+    expect(await findPlaylistChartCaption()).toHaveTextContent('led by Road Trip with 400')
+  })
+
+  it('shows how many rows are displayed, never a total the server-paginated response cannot substantiate', async () => {
+    // playlistContextSQL runs with a server-side LIMIT (clampLimit(0), the
+    // default page size), so a payload longer than TOP_PLAYLISTS is ordinary,
+    // not a sign the array holds every distinct context the listener has —
+    // exceeding TOP_PLAYLISTS over a long range is the common case, unlike
+    // `countries`, which has no server-side limit at all.
+    const manyPlaylists: PlaylistContextEntry[] = Array.from({ length: 15 }, (_, i) =>
+      playlistEntry({ contextId: `pl-${i}`, name: `Playlist ${i}`, plays: 15 - i }),
+    )
+
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload({
+        playlistCoverage: { covered: 500, total: 1000 },
+        playlists: manyPlaylists,
+      }),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    // Says how many are shown ("shown"), never claims the 15 in this payload
+    // is the listener's true total — the response itself cannot know that.
+    expect(
+      await screen.findByText('Ranked by plays in this range — the top 12 shown.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/the top 12 of/)).not.toBeInTheDocument()
   })
 
   it('names an unresolved playlist "Unknown playlist", never by its raw Spotify id, and still counts it', async () => {
