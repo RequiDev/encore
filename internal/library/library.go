@@ -17,11 +17,13 @@
 package library
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	stdsync "sync"
 	"sync/atomic"
 	"time"
@@ -592,6 +594,17 @@ func build(tracks []spotify.SavedTrack, albums []spotify.SavedAlbum, artists []s
 			b.artists = append(b.artists, a.ToDomainArtist())
 		}
 	}
+
+	// Sorted by id, not left in enumeration order (added_at desc, which differs
+	// per account): commit's two loops below call ReplaceTrackArtists and
+	// ReplaceAlbumArtists once per row, each taking row locks that survive to
+	// the end of the transaction. Two accounts sharing a track or album — a
+	// household, the ordinary self-hosted case — walking those rows in
+	// different orders is exactly how two concurrent transactions deadlock:
+	// each holds what the other wants next. A shared order removes that,
+	// the same reason UpsertTracks/UpsertAlbums's own input CTE sorts by id.
+	slices.SortFunc(b.tracks, func(x, y domain.Track) int { return cmp.Compare(x.ID, y.ID) })
+	slices.SortFunc(b.albums, func(x, y domain.Album) int { return cmp.Compare(x.ID, y.ID) })
 
 	return b
 }

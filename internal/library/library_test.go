@@ -577,6 +577,52 @@ func TestBuildDedupesAnAlbumAcrossTracksAndSavedAlbums(t *testing.T) {
 	}
 }
 
+// TestBuildSortsTracksAndAlbumsByID pins the deadlock-avoidance ordering:
+// commit's loops call ReplaceTrackArtists/ReplaceAlbumArtists once per row in
+// whatever order b.tracks/b.albums come back in, and two accounts sharing a
+// track or album walking those rows in different orders is how concurrent
+// transactions deadlock. build must hand commit a fixed order (by id) rather
+// than the enumeration's added-at-desc order, which differs per account.
+func TestBuildSortsTracksAndAlbumsByID(t *testing.T) {
+	tracks := []spotify.SavedTrack{
+		savedTrack("t9", "Nine", now),
+		savedTrack("t5", "Five", now.Add(-time.Minute)),
+		savedTrack("t7", "Seven", now.Add(-2*time.Minute)),
+	}
+	b := build(tracks, nil, nil)
+
+	if len(b.tracks) != 3 {
+		t.Fatalf("tracks = %d, want 3", len(b.tracks))
+	}
+	for i := 1; i < len(b.tracks); i++ {
+		if b.tracks[i-1].ID >= b.tracks[i].ID {
+			t.Fatalf("tracks not sorted by id: %+v", b.tracks)
+		}
+	}
+	if b.tracks[0].ID != "t5" || b.tracks[1].ID != "t7" || b.tracks[2].ID != "t9" {
+		t.Fatalf("tracks = %v, want [t5 t7 t9]", []string{b.tracks[0].ID, b.tracks[1].ID, b.tracks[2].ID})
+	}
+
+	albums := []spotify.SavedAlbum{
+		{Album: spotify.Album{ID: "alb9", Name: "Nine", AlbumType: "album", ReleaseDate: "2011-03-04", ReleaseDatePrecision: "day"}},
+		{Album: spotify.Album{ID: "alb5", Name: "Five", AlbumType: "album", ReleaseDate: "2011-03-04", ReleaseDatePrecision: "day"}},
+		{Album: spotify.Album{ID: "alb7", Name: "Seven", AlbumType: "album", ReleaseDate: "2011-03-04", ReleaseDatePrecision: "day"}},
+	}
+	b2 := build(nil, albums, nil)
+	if len(b2.albums) != 3 {
+		t.Fatalf("albums = %d, want 3", len(b2.albums))
+	}
+	for i := 1; i < len(b2.albums); i++ {
+		if b2.albums[i-1].ID >= b2.albums[i].ID {
+			t.Fatalf("albums not sorted by id: %+v", b2.albums)
+		}
+	}
+	if b2.albums[0].ID != "alb5" || b2.albums[1].ID != "alb7" || b2.albums[2].ID != "alb9" {
+		t.Fatalf("albums = %v, want [alb5 alb7 alb9]",
+			[]string{b2.albums[0].ID, b2.albums[1].ID, b2.albums[2].ID})
+	}
+}
+
 // TestBuildFollowedArtistsAreUpsertedAsResolved distinguishes the followed-
 // artists endpoint from the simplified artist objects embedded in a track or
 // album: the dedicated endpoint returns full detail, so it earns a resolved
