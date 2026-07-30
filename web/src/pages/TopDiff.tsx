@@ -257,8 +257,8 @@ export default function TopDiff(): ReactElement {
         </Panel>
       ) : (
         <Panel
-          title="Captured"
-          description={`Captured ${formatRelative(data.capturedAt)} — refreshed once a day, so this may be up to a day old.`}
+          title="Comparison"
+          description={`Last captured ${formatRelative(data.capturedAt)} — refreshed once a day, so this may be up to a day old.`}
           padded={false}
         >
           <DiffTable kind={kind} column={copy.column} entries={entries} />

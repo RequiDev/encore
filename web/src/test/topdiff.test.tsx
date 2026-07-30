@@ -138,7 +138,7 @@ describe('the top-diff page', () => {
     expect(
       screen.getByText(/checked once a day, alongside your library sync/i),
     ).toBeInTheDocument()
-    expect(screen.queryByText('Captured')).not.toBeInTheDocument()
+    expect(screen.queryByText('Comparison')).not.toBeInTheDocument()
   })
 
   it('says Spotify reported nothing for this window when captured but empty, distinct from never captured', async () => {
@@ -181,7 +181,7 @@ describe('the top-diff page', () => {
     await waitForPage()
 
     expect(
-      await screen.findByText(/captured 3 hours ago — refreshed once a day/i),
+      await screen.findByText(/last captured 3 hours ago — refreshed once a day/i),
     ).toBeInTheDocument()
 
     const bothRow = (await screen.findByText('On Both Sides')).closest('tr')
