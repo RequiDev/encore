@@ -998,6 +998,16 @@ func TestTopArtistIDsPreservesRankOrderAndDropsBlankIDs(t *testing.T) {
 	}
 }
 
+func TestTopArtistIDsDropsARepeatedIDKeepingItsFirstBestRankedOccurrence(t *testing.T) {
+	got := topArtistIDs([]spotify.Artist{{ID: "a1"}, {ID: "a2"}, {ID: "a1"}, {ID: "a3"}})
+	want := []string{"a1", "a2", "a3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("topArtistIDs = %v, want %v: a repeated id must collapse to its first, "+
+			"best-ranked position rather than produce a second row ReplaceTopSnapshot's "+
+			"position-keyed primary key would not otherwise deduplicate", got, want)
+	}
+}
+
 func TestTopArtistIDsOfAnEmptyRankingIsEmptyNotNil(t *testing.T) {
 	got := topArtistIDs(nil)
 	if got == nil {
@@ -1015,6 +1025,16 @@ func TestTopTrackIDsPreservesRankOrderAndDropsBlankIDs(t *testing.T) {
 	want := []string{"t1", "t2", "t3"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("topTrackIDs = %v, want %v", got, want)
+	}
+}
+
+func TestTopTrackIDsDropsARepeatedIDKeepingItsFirstBestRankedOccurrence(t *testing.T) {
+	got := topTrackIDs([]spotify.Track{{ID: "t1"}, {ID: "t2"}, {ID: "t1"}, {ID: "t3"}})
+	want := []string{"t1", "t2", "t3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("topTrackIDs = %v, want %v: a repeated id must collapse to its first, "+
+			"best-ranked position rather than produce a second row ReplaceTopSnapshot's "+
+			"position-keyed primary key would not otherwise deduplicate", got, want)
 	}
 }
 

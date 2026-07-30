@@ -815,12 +815,26 @@ func savedItem(id string, addedAt time.Time) libstore.SavedItem {
 // an id here — the ranking still has to say what Spotify put at that
 // position even when this run cannot yet mint its detail — only a blank id
 // is dropped, since ReplaceTopSnapshot has no row to place it at otherwise.
+//
+// A repeated id is also dropped, keeping its first (best-ranked) occurrence:
+// unlike the library tables, ReplaceTopSnapshot's primary key is
+// (user, kind, time_range, position), not entity id, so a duplicate id at two
+// positions is not collapsed by ON CONFLICT the way a duplicate saved-track id
+// is — it would instead write two rows for the same entity, which
+// internal/stats/topdiff.go's FULL OUTER JOIN would then read back as two
+// entries for one entity (a duplicate React key and the same play count shown
+// twice on the top-diff page).
 func topArtistIDs(artists []spotify.Artist) []string {
+	seen := make(map[string]struct{}, len(artists))
 	ids := make([]string, 0, len(artists))
 	for _, a := range artists {
 		if a.ID == "" {
 			continue
 		}
+		if _, dup := seen[a.ID]; dup {
+			continue
+		}
+		seen[a.ID] = struct{}{}
 		ids = append(ids, a.ID)
 	}
 	return ids
@@ -828,11 +842,16 @@ func topArtistIDs(artists []spotify.Artist) []string {
 
 // topTrackIDs is topArtistIDs for a top-tracks response.
 func topTrackIDs(tracks []spotify.Track) []string {
+	seen := make(map[string]struct{}, len(tracks))
 	ids := make([]string, 0, len(tracks))
 	for _, t := range tracks {
 		if t.ID == "" {
 			continue
 		}
+		if _, dup := seen[t.ID]; dup {
+			continue
+		}
+		seen[t.ID] = struct{}{}
 		ids = append(ids, t.ID)
 	}
 	return ids
