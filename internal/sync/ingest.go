@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -148,7 +149,7 @@ func simplifiedArtists(plays []spotify.PlayHistory) []domain.Artist {
 // real figure, the ingest path upgrades the stored row in place rather than
 // discarding the better record as a duplicate.
 func listenFrom(userID uuid.UUID, play spotify.PlayHistory) domain.Listen {
-	return domain.Listen{
+	l := domain.Listen{
 		UserID:    userID,
 		PlayedAt:  play.PlayedAt.UTC(),
 		Precision: domain.PrecisionMillisecond,
@@ -156,6 +157,36 @@ func listenFrom(userID uuid.UUID, play spotify.PlayHistory) domain.Listen {
 		MsPlayed:  msPlayed(play.Track),
 		Source:    domain.SourceSync,
 	}
+	// Context is a pointer because Spotify omits it often; a nil one must leave
+	// both fields at their zero value so the store writes NULL, not "". Neither
+	// feeds DedupeKey, so its presence can never change which rows are
+	// duplicates — see domain.Listen's own comment on this pair.
+	if play.Context != nil {
+		l.ContextType = play.Context.Type
+		l.ContextID = contextID(play.Context.URI)
+	}
+	return l
+}
+
+// contextID extracts the bare id from a context URI such as
+// "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", so the stored value joins directly
+// to user_playlists.playlist_id and the album/artist catalogues instead of
+// carrying the "spotify:" scheme and the type along for the ride.
+//
+// A URI is only accepted when it is exactly three colon-separated segments —
+// scheme, type, id — with the id non-empty. Anything else stores nothing rather
+// than a fragment of something that is not an id: an empty or absent URI; one
+// missing the "spotify" scheme; a bare "spotify:collection" that Spotify
+// sometimes sends for Liked Songs, which has no id at all; or a URI with extra
+// segments such as "spotify:user:<id>:collection", where the last segment is
+// not an id and taking it anyway would silently store a user id or the literal
+// word "collection" as if it were one.
+func contextID(uri string) string {
+	parts := strings.Split(uri, ":")
+	if len(parts) != 3 || parts[0] != "spotify" || parts[1] == "" || parts[2] == "" {
+		return ""
+	}
+	return parts[2]
 }
 
 // msPlayed narrows a track duration to what a listen may carry, so an absurd

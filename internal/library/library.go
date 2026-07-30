@@ -1,24 +1,32 @@
-// Package library enumerates what a listener has saved, who they follow, and
-// Spotify's own ranking of their top artists and tracks, and reconciles or
-// captures each against a local table, once a day rather than on every tick.
+// Package library enumerates what a listener has saved, who they follow,
+// Spotify's own ranking of their top artists and tracks, and the listener's
+// own playlists, and reconciles or captures each against a local table, once
+// a day rather than on every tick.
 //
-// Spotify exposes no "what changed" feed for saved tracks, saved albums or
-// followed artists — only a full listing — so every run reads all three
-// endpoints and reconciles the whole set against what is already stored. The
-// same run also captures Spotify's own top-artists and top-tracks rankings,
-// one call per (kind, time range) for six more requests total, as a latest-
-// capture snapshot rather than a reconciliation — see
+// Spotify exposes no "what changed" feed for saved tracks, saved albums,
+// followed artists or playlists — only a full listing — so every run reads
+// all four endpoints and reconciles the whole set against what is already
+// stored. The same run also captures Spotify's own top-artists and
+// top-tracks rankings, one call per (kind, time range) for six more requests
+// total, as a latest-capture snapshot rather than a reconciliation — see
 // internal/store/library/topsnapshots.go for why "absent" means past the end
 // of a rank-ordered list there rather than "id not in this set." The tables
-// both write to are internal/store/library's; the writing half lives here,
+// all write to are internal/store/library's; the writing half lives here,
 // alongside the scheduling that decides which account runs when and the scope
 // checks that keep an account from spending a request on an endpoint it never
 // granted.
 //
+// The playlist enumeration exists so a play's context_id (the playlist a
+// listen was played from, recorded live by internal/sync) can be given a
+// name; it reconciles the same delete-absent-plus-upsert way the three
+// library tables do, not the rank-position way the top snapshots do, since a
+// playlist has no rank, only an id.
+//
 // Nothing in this package is read by anything user-facing yet. The statistics
 // and the page that surface saved-but-never-played tracks, followed-but-
-// dormant artists, and how Spotify's own top rankings differ from Encore's
-// are a later phase; this one only has to get the tables right.
+// dormant artists, how Spotify's own top rankings differ from Encore's, and a
+// named playback context are a later phase; this one only has to get the
+// tables right.
 package library
 
 import (
@@ -59,13 +67,26 @@ const (
 // this worker also runs. It was added to DefaultScopes() alongside
 // scopeLibraryRead and scopeFollowRead, but it is checked on its own,
 // immediately before those six requests rather than folded into the check
-// above, because the two halves of one account's run are independent: a
-// grant carrying the library scopes but not this one must still get its
-// library enumerated, spending zero requests on top items, and the check
+// above, because the parts of one account's run are independent of each
+// other: a grant carrying the library scopes but not this one must still get
+// its library enumerated, spending zero requests on top items, and the check
 // above must keep gating the library three on its own two scopes regardless
-// of whether this one is present. Nothing about the library reconciliation
-// should ever depend on a scope it does not read.
+// of whether this one is present. scopePlaylistRead below repeats the same
+// pattern for the playlist enumeration, on its own third scope. Nothing about
+// the library reconciliation should ever depend on a scope it does not read.
 const scopeTopRead = "user-top-read"
+
+// scopePlaylistRead is playlist-read-private, required by the playlist
+// enumeration this worker also runs — the fifth, added so a listen's
+// playback-context id can eventually be given a name. It is checked on its
+// own, immediately before that one request, for exactly the reason
+// scopeTopRead is checked separately from the library pair: a grant carrying
+// any combination of the other two scope groups but not this one must still
+// reach commit with everything it earned from them, spending zero requests
+// on playlists, and this scope being present must never be read as
+// resurrecting the library gate for an account still missing
+// scopeLibraryRead or scopeFollowRead.
+const scopePlaylistRead = "playlist-read-private"
 
 // ErrNotConnected reports that the user has no Spotify grant at all, so there
 // is nothing to enumerate. It mirrors internal/sync's sentinel of the same
@@ -107,6 +128,7 @@ type SpotifyAPI interface {
 	FollowedArtists(ctx context.Context, accessToken string, maxPages int) ([]spotify.Artist, error)
 	TopArtists(ctx context.Context, accessToken string, tr spotify.TopTimeRange, limit int) ([]spotify.Artist, error)
 	TopTracks(ctx context.Context, accessToken string, tr spotify.TopTimeRange, limit int) ([]spotify.Track, error)
+	UserPlaylists(ctx context.Context, accessToken string, maxPages int) ([]spotify.UserPlaylist, error)
 }
 
 // topLimit asks TopArtists/TopTracks for the largest page they will ever
@@ -358,18 +380,19 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 	// ever, rather than the one check below.
 	//
 	// Known limitation: everything below this point, including the six
-	// top-item calls further down, sits behind this gate and behind all three
-	// library enumerations succeeding. A truncated or failed saved-tracks,
-	// saved-albums or followed-artists call returns before the top snapshot is
-	// ever captured (see the early `return nil`s below), so an account whose
-	// library exceeds MaxPages never gets a top snapshot either — on every
-	// tick, permanently, not just until the library catches up. The fix is to
-	// run the six top-item calls before the three library enumerations, so a
-	// cheap, independent capture is not hostage to an expensive one; that is
-	// real restructuring, deferred rather than done here, because it also
-	// requires commit (below) to tolerate a library-less batch — a top-only
-	// run must still be able to write its snapshot without a reconciled
-	// library alongside it.
+	// top-item calls and the playlist enumeration further down, sits behind
+	// this gate and behind all three library enumerations succeeding. A
+	// truncated or failed saved-tracks, saved-albums or followed-artists call
+	// returns before the top snapshot or the playlist list is ever captured
+	// (see the early `return nil`s below), so an account whose library
+	// exceeds MaxPages never gets either — on every tick, permanently, not
+	// just until the library catches up. The fix is to run the six top-item
+	// calls and the playlist enumeration before the three library
+	// enumerations, so a cheap, independent capture is not hostage to an
+	// expensive one; that is real restructuring, deferred rather than done
+	// here, because it also requires commit (below) to tolerate a
+	// library-less batch — a top-only or playlist-only run must still be able
+	// to write its snapshot without a reconciled library alongside it.
 	if !creds.HasScope(scopeLibraryRead) || !creds.HasScope(scopeFollowRead) {
 		log.Debug("account has not granted the library or follow scope; skipping")
 		return nil
@@ -469,23 +492,58 @@ func (w *Worker) sync(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 		log.Debug("account has not granted the top-items scope; skipping the six top-item requests")
 	}
 
+	// The playlist enumeration — the fifth this worker runs — is gated on its
+	// own scope too, independently of both the library pair above and
+	// scopeTopRead: an account that granted any combination of the other two
+	// scope groups but not this one must still reach commit with everything
+	// else it earned, having spent zero requests here. hasPlaylists records
+	// whether this run actually asked Spotify, as opposed to playlists simply
+	// staying empty: commit below must be able to tell "the account's grant
+	// lacks this scope, so nothing here is known" from "the scope is present
+	// and the listener genuinely has no playlists right now", because only
+	// the latter is licensed to reconcile user_playlists down to zero rows.
+	var (
+		playlists    []spotify.UserPlaylist
+		hasPlaylists bool
+	)
+	if creds.HasScope(scopePlaylistRead) {
+		playlists, err = w.dep.Spotify.UserPlaylists(ctx, token, w.cfg.MaxPages)
+		if forbidden(err) {
+			log.Warn("spotify refused user playlists despite the granted scope", logging.Err(err))
+			return nil
+		}
+		if truncated(err) {
+			w.warnTruncated(log, "user playlists")
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("enumerate user playlists: %w", err)
+		}
+		hasPlaylists = true
+	} else {
+		log.Debug("account has not granted the playlist scope; skipping the playlist request")
+	}
+
 	b := build(tracks, albums, artists, topTracksAll, topArtistsAll)
 	b.topSnapshots = topSnapshots
+	b.playlists = playlistRows(playlists)
+	b.hasPlaylists = hasPlaylists
 	if err := w.commit(ctx, userID, b); err != nil {
 		return fmt.Errorf("commit library sync: %w", err)
 	}
 	return nil
 }
 
-// commit writes one account's reconciled library and captured top snapshots
-// in a single transaction and advances its watermark.
+// commit writes one account's reconciled library, captured top snapshots and
+// reconciled playlists in a single transaction and advances its watermark.
 //
 // Everything here is in one Store.InTx: the catalogue rows the enumeration
 // referenced, the three library Replace* calls, up to six ReplaceTopSnapshot
-// calls, and the library_synced_at update. If any step fails the whole run
-// commits nothing, so a partial reconciliation never presents a half-empty
-// library — or a half-written top ranking — as fact, and never advances the
-// watermark past data that was not actually stored.
+// calls, one ReplaceUserPlaylists call, and the library_synced_at update. If
+// any step fails the whole run commits nothing, so a partial reconciliation
+// never presents a half-empty library — or a half-written top ranking, or a
+// half-written playlist list — as fact, and never advances the watermark past
+// data that was not actually stored.
 func (w *Worker) commit(ctx context.Context, userID uuid.UUID, b batch) error {
 	// Read once and reused for both the six snapshots and the watermark below,
 	// so a single run reports one consistent instant for "when this was
@@ -539,6 +597,21 @@ func (w *Worker) commit(ctx context.Context, userID uuid.UUID, b batch) error {
 			if err := w.dep.Library.ReplaceTopSnapshot(
 				ctx, tx, userID, snap.kind, snap.timeRange, snap.entityIDs, now,
 			); err != nil {
+				return err
+			}
+		}
+
+		// Skipped entirely, not called with an empty slice, when the account's
+		// grant lacks scopePlaylistRead: hasPlaylists is only ever true
+		// alongside the request in sync, so an account skipped for playlists
+		// leaves any previously reconciled user_playlists rows exactly as they
+		// were — the same reasoning the topSnapshots loop above gets for free
+		// from ranging over a nil slice, spelled out explicitly here because
+		// ReplaceUserPlaylists is one delete-absent call, not a per-item loop,
+		// and calling it with "nothing" would reconcile the table down to zero
+		// rows rather than leave it untouched.
+		if b.hasPlaylists {
+			if err := w.dep.Library.ReplaceUserPlaylists(ctx, tx, userID, b.playlists, now); err != nil {
 				return err
 			}
 		}
@@ -667,6 +740,15 @@ type batch struct {
 	// the account's grant lacks scopeTopRead. commit writes each with
 	// ReplaceTopSnapshot in the same transaction as everything else here.
 	topSnapshots []topSnapshot
+
+	// playlists is the listener's own playlists this run enumerated, ready to
+	// reconcile with libstore.Repo.ReplaceUserPlaylists. hasPlaylists is what
+	// commit actually checks: it distinguishes "scopePlaylistRead is present
+	// and this is the real, possibly-empty set Spotify returned" from "the
+	// grant lacks the scope, so nothing here is known" — playlists alone
+	// cannot, since both cases leave it empty.
+	playlists    []libstore.UserPlaylistRow
+	hasPlaylists bool
 }
 
 // build converts one account's raw enumeration into a batch.
@@ -869,4 +951,29 @@ func topTrackIDs(tracks []spotify.Track) []string {
 		ids = append(ids, t.ID)
 	}
 	return ids
+}
+
+// playlistRows converts one account's raw playlist enumeration into
+// libstore.UserPlaylistRow, dropping entries with a blank id — the same guard
+// libstore.Repo.ReplaceUserPlaylists' own row-transposing helper repeats
+// internally, kept here too since deciding what counts as a row at all is
+// this package's job, not the store's. Unlike build's catalogue-detail merge,
+// a blank name is not excluded: Spotify's own playlist object always carries
+// one, and a blank string is a legitimate (if unusual) playlist name, not a
+// signal that the object is partial.
+func playlistRows(playlists []spotify.UserPlaylist) []libstore.UserPlaylistRow {
+	out := make([]libstore.UserPlaylistRow, 0, len(playlists))
+	for _, p := range playlists {
+		if p.ID == "" {
+			continue
+		}
+		out = append(out, libstore.UserPlaylistRow{
+			ID:          p.ID,
+			Name:        p.Name,
+			OwnerID:     p.OwnerID,
+			SnapshotID:  p.SnapshotID,
+			TotalTracks: p.TotalTracks,
+		})
+	}
+	return out
 }

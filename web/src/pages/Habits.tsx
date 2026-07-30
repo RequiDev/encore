@@ -33,8 +33,9 @@ import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { qk } from '../lib/query'
 import { useRange } from '../lib/range'
+import { useSession } from '../lib/session'
 import { formatCount, formatPercent, formatRatio } from '../lib/format'
-import type { PlaybackContextResponse, Rate, TasteResponse } from '../lib/types'
+import type { PlaybackContextResponse, PlaylistContextEntry, Rate, TasteResponse } from '../lib/types'
 import {
   EmptyState,
   ErrorState,
@@ -99,6 +100,62 @@ function toBarData(slices: { key: string; plays: number }[], map?: Record<string
   }))
 }
 
+/**
+ * How many playlist/album/collection groups the ranked bar chart shows.
+ * Nothing bounds how many distinct contexts a listener can rack up, so this
+ * follows the same cap `TOP_COUNTRIES` above uses for the same reason.
+ */
+const TOP_PLAYLISTS = 12
+
+/** The one scope that names a playlist context; see `playlist-read-private` below. */
+const PLAYLIST_NAME_SCOPE = 'playlist-read-private'
+
+/**
+ * The noun an unnamed, non-playlist context renders as. Every one of these is
+ * *always* unnamed — the join behind `playlists` only ever matches
+ * `user_playlists`, and only a playlist id can appear in that table — so this
+ * is not a fallback for a lookup that merely failed, it is the only label
+ * these context types ever get.
+ */
+const CONTEXT_TYPE_NOUNS: Record<string, string> = {
+  album: 'album',
+  artist: 'artist',
+  show: 'podcast',
+}
+
+/**
+ * Names a playlist-context row honestly when `name` did not resolve.
+ *
+ * Three cases never reach the generic "unnamed" fallback, because each has a
+ * fact worth stating on its own: "collection" is Spotify's own encoding for
+ * Liked Songs and needs no lookup to say so; an unnamed *playlist* is a real
+ * playlist Encore simply cannot currently name (deleted, or never the
+ * listener's own, or the read scope below is missing) rather than a context
+ * type that is structurally never named, so it reads as "Unknown playlist"
+ * rather than "an unnamed playlist". Everything else — every album, artist,
+ * and any future context type Spotify adds — falls back to a plain noun built
+ * from `contextType` itself, so a row is never dropped and never shows a raw
+ * Spotify id.
+ */
+function playlistContextLabel(entry: PlaylistContextEntry): string {
+  if (entry.name) return entry.name
+  if (entry.contextType === 'collection') return 'Liked Songs'
+  if (entry.contextType === 'playlist') return 'Unknown playlist'
+  const noun = CONTEXT_TYPE_NOUNS[entry.contextType] ?? entry.contextType
+  return `An unnamed ${noun}`
+}
+
+function toPlaylistBarData(entries: PlaylistContextEntry[]): BarDatum[] {
+  return entries.map((entry) => ({
+    // contextId alone collides across types (an album and a playlist could
+    // reuse the same Spotify id), and contextType alone collides across ids —
+    // the pair together is what playlistContextSQL actually groups by.
+    key: `${entry.contextType}:${entry.contextId}`,
+    label: playlistContextLabel(entry),
+    value: entry.plays,
+  }))
+}
+
 /** What a rate's own hint reads while its query is still in flight or done. */
 function rateHint(rate: Rate | undefined, pending: boolean): string {
   if (pending) return 'Looking for it'
@@ -134,6 +191,8 @@ function ChartLoading({ label }: { label: string }): ReactElement {
 
 export default function Habits(): ReactElement {
   const { range, label } = useRange()
+  const { spotify } = useSession()
+  const missingPlaylistNames = (spotify?.missingScopes ?? []).includes(PLAYLIST_NAME_SCOPE)
 
   const context = useQuery({
     queryKey: qk.playbackContext(range),
@@ -161,18 +220,34 @@ export default function Habits(): ReactElement {
     (data?.platformCoverage.covered ?? 0) === 0 &&
     (data?.countryCoverage.covered ?? 0) === 0
 
+  // Playlist/album context is written only by live sync, never by any
+  // Spotify export — the opposite lineage from the six figures `noContext`
+  // gates above — so its own coverage is checked on its own rather than
+  // folded into that flag. A sync-only instance can have full context
+  // coverage while `noContext` above is true, and an import-only one can have
+  // full coverage above while this is true; neither implies the other.
+  const playlistNoContext = context.isSuccess && (data?.playlistCoverage.covered ?? 0) === 0
+
   const taste = useQuery({
     queryKey: qk.taste(range),
     queryFn: ({ signal }) =>
       api.get<TasteResponse>('/stats/taste', { from: range.from, to: range.to }, signal),
   })
 
+  // `noContext` gates only the six extended-export columns (see the doc
+  // comment above it) — it says nothing about playlist/album context, which
+  // renders independent of it and can be fully populated even when this is
+  // true (a sync-only instance is exactly that case). A blanket "no playback
+  // detail" here would be announced by a screen reader while a full playlist
+  // chart sits on screen below, so this names the one figure the sentence
+  // actually has an opinion about — the same one the `data` branch below
+  // already reports on — rather than a claim that reaches past it.
   const status = context.isPending
     ? `Loading listening habits for ${label.toLowerCase()}.`
     : context.isError
       ? 'Your listening habits could not be loaded.'
       : noContext
-        ? 'No playback detail is known yet for this range.'
+        ? 'How a play ended is not known yet for this range.'
         : data
           ? `How a play ended is known for ${formatRatio(data.skipRate.covered, data.skipRate.total)} of your listening in ${label.toLowerCase()}.`
           : ''
@@ -191,6 +266,23 @@ export default function Habits(): ReactElement {
     countries.length > TOP_COUNTRIES
       ? `Connection countries, from plays that recorded one — the top ${TOP_COUNTRIES} of ${formatCount(countries.length)}.`
       : 'Connection countries, from plays that recorded one.'
+
+  const playlists = useMemo(() => data?.playlists ?? [], [data])
+  const playlistData = useMemo(
+    () => toPlaylistBarData(playlists.slice(0, TOP_PLAYLISTS)),
+    [playlists],
+  )
+  // Unlike `countries` above, `playlists` is never the listener's true total
+  // of distinct contexts: playlistContextSQL runs with a server-side LIMIT
+  // (clampLimit(0), the default page size), so `playlists.length` is already
+  // capped before it gets here. Saying "the top 12 of N" would print N as if
+  // it were a total the response actually counted, when it is only "however
+  // many rows fit under that limit" — so this names how many are shown and
+  // never claims a total the payload cannot substantiate.
+  const playlistsDescription =
+    playlists.length > TOP_PLAYLISTS
+      ? `Ranked by plays in this range — the top ${TOP_PLAYLISTS} shown.`
+      : 'Ranked by plays in this range.'
 
   return (
     <div className="space-y-4">
@@ -331,6 +423,78 @@ export default function Habits(): ReactElement {
           <p className="text-xs text-ink-faint">
             A skip is a track ended with the forward button. Going back is counted separately.
           </p>
+        </>
+      )}
+
+      {/*
+       * Playlist and album context: which playlist, album, or Liked Songs a
+       * play came from — the narrowest-coverage figure on this whole page.
+       * context_type/context_id are written only by live sync; no Spotify
+       * export, of any vintage, ever records what a listen was playing from,
+       * so this can read a small, honest percentage forever on an
+       * import-heavy instance while every rate above it reads normally. It
+       * renders independent of `noContext` for exactly the reason Taste below
+       * does — the two coverages do not imply each other in either
+       * direction — and it renders nothing of its own when the shared
+       * request itself failed, since the error panel above already covers
+       * that for the whole page.
+       */}
+      {context.isError ? null : (
+        <>
+          {context.isPending ? (
+            <SkeletonText lines={2} className="max-w-2xl" />
+          ) : !playlistNoContext && data ? (
+            <Panel bodyClassName="flex items-start gap-3 p-4">
+              <Icon name="info" size={20} className="mt-0.5 shrink-0 text-ink-muted" />
+              <p className="text-sm text-ink">
+                Based on the{' '}
+                {formatRatio(data.playlistCoverage.covered, data.playlistCoverage.total)} of your
+                listening Encore recorded live. No Spotify export records what you were playing
+                from, so imported history cannot contribute.
+              </p>
+            </Panel>
+          ) : null}
+
+          {playlistNoContext ? (
+            // `playlistCoverage.covered === 0` is a property of *this range*,
+            // not of the instance's whole history — an instance that has
+            // synced live for months reads this the moment somebody picks a
+            // range that predates when sync started. The title says so
+            // explicitly; the reassurance that it fills in as sync
+            // accumulates is unchanged, since that remains true regardless.
+            <Panel padded={false}>
+              <EmptyState
+                icon="habits"
+                title="Encore has recorded none of this range's listening live"
+                description="This fills in as it syncs."
+              />
+            </Panel>
+          ) : (
+            <>
+              <ChartCard title="What you were playing from" description={playlistsDescription}>
+                {context.isPending ? (
+                  <ChartLoading label="Loading playlist and album context" />
+                ) : (
+                  <BarChart
+                    data={playlistData}
+                    label="Plays by playlist, album or collection"
+                    valueName="plays"
+                    slot={3}
+                    busy={context.isFetching}
+                    emptyDescription="No play in this range recorded a playlist, album or collection."
+                  />
+                )}
+              </ChartCard>
+
+              {missingPlaylistNames ? (
+                <p className="text-xs text-ink-faint">
+                  Playlist names aren't available without playlist-read-private, which this
+                  account has not granted. The counts above still work: they come from what
+                  Encore has synced, not from a request to your Spotify playlists.
+                </p>
+              ) : null}
+            </>
+          )}
         </>
       )}
 

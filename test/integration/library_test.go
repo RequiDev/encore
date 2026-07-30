@@ -312,6 +312,210 @@ func TestLibraryDeletingUserCascadesAllThreeTables(t *testing.T) {
 	}
 }
 
+// playlistItems builds a UserPlaylistRow for each id, with distinct detail
+// per row so a test can tell rows apart by more than just id.
+func playlistItems(ids ...string) []library.UserPlaylistRow {
+	items := make([]library.UserPlaylistRow, len(ids))
+	for i, id := range ids {
+		items[i] = library.UserPlaylistRow{
+			ID:          id,
+			Name:        "Playlist " + id,
+			OwnerID:     "owner-" + id,
+			SnapshotID:  "snap-" + id,
+			TotalTracks: i + 1,
+		}
+	}
+	return items
+}
+
+// playlistFetchedAt is a fixed instant every playlist test writes with, so a
+// re-replace can assert the stored value moved (or did not) deliberately
+// rather than by accident of wall-clock time.
+var playlistFetchedAt = time.Date(2025, time.June, 1, 9, 0, 0, 0, time.UTC)
+
+// TestLibraryReplaceUserPlaylistsInsertsIntoEmptySet is the base case: nothing
+// stored, three playlists offered, three rows land with their full detail.
+func TestLibraryReplaceUserPlaylistsInsertsIntoEmptySet(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("playlists-insert")
+	repo := library.New(env.Store)
+
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID,
+		playlistItems("pl1", "pl2", "pl3"), playlistFetchedAt); err != nil {
+		t.Fatalf("replace user playlists: %v", err)
+	}
+
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 3 {
+		t.Fatalf("%d playlists after replacing an empty set with three, want 3", got)
+	}
+
+	var name, ownerID, snapshotID string
+	var totalTracks int
+	var fetchedAt time.Time
+	if err := env.Pool.QueryRow(env.Ctx(),
+		`SELECT name, owner_id, snapshot_id, total_tracks, fetched_at
+		 FROM user_playlists WHERE user_id = $1 AND playlist_id = 'pl1'`,
+		user.ID.String()).Scan(&name, &ownerID, &snapshotID, &totalTracks, &fetchedAt); err != nil {
+		t.Fatalf("read playlist row: %v", err)
+	}
+	if name != "Playlist pl1" || ownerID != "owner-pl1" || snapshotID != "snap-pl1" || totalTracks != 1 {
+		t.Fatalf("playlist row = (%q, %q, %q, %d), want (%q, %q, %q, %d)",
+			name, ownerID, snapshotID, totalTracks, "Playlist pl1", "owner-pl1", "snap-pl1", 1)
+	}
+	if !fetchedAt.Equal(playlistFetchedAt) {
+		t.Fatalf("fetched_at = %v, want %v", fetchedAt, playlistFetchedAt)
+	}
+}
+
+// TestLibraryReplacingUserPlaylistsDeletesTheAbsentID is the delete-absent
+// property the brief calls out specifically: a playlist present in the first
+// replace and missing from the second must not survive the second, or a
+// listener who deletes or leaves a playlist would see it linger forever.
+func TestLibraryReplacingUserPlaylistsDeletesTheAbsentID(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("playlists-shrink")
+	repo := library.New(env.Store)
+
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID,
+		playlistItems("pl1", "pl2", "pl3"), playlistFetchedAt); err != nil {
+		t.Fatalf("first replace: %v", err)
+	}
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID,
+		playlistItems("pl1", "pl2"), playlistFetchedAt.Add(time.Hour)); err != nil {
+		t.Fatalf("second replace: %v", err)
+	}
+
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 2 {
+		t.Fatalf("%d playlists after dropping one of three, want 2", got)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1 AND playlist_id = 'pl3'`,
+		user.ID.String()); got != 0 {
+		t.Fatal("pl3 survived even though the second replace omitted it — a naive " +
+			"upsert-only implementation would get this wrong")
+	}
+}
+
+// TestLibraryReplacingUserPlaylistsRefreshesEveryColumnOnConflict proves that,
+// unlike ReplaceFollowedArtists' DO NOTHING, a playlist already known gets
+// every one of its columns refreshed — a rename, a total-track-count change
+// and a new snapshot_id all take effect on the row that already existed
+// rather than silently keeping the first values ever written.
+func TestLibraryReplacingUserPlaylistsRefreshesEveryColumnOnConflict(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("playlists-refresh")
+	repo := library.New(env.Store)
+
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID, []library.UserPlaylistRow{
+		{ID: "pl1", Name: "Old Name", OwnerID: "owner-old", SnapshotID: "snap-old", TotalTracks: 5},
+	}, playlistFetchedAt); err != nil {
+		t.Fatalf("first replace: %v", err)
+	}
+	second := playlistFetchedAt.Add(24 * time.Hour)
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID, []library.UserPlaylistRow{
+		{ID: "pl1", Name: "New Name", OwnerID: "owner-new", SnapshotID: "snap-new", TotalTracks: 9},
+	}, second); err != nil {
+		t.Fatalf("second replace: %v", err)
+	}
+
+	var name, ownerID, snapshotID string
+	var totalTracks int
+	var fetchedAt time.Time
+	if err := env.Pool.QueryRow(env.Ctx(),
+		`SELECT name, owner_id, snapshot_id, total_tracks, fetched_at
+		 FROM user_playlists WHERE user_id = $1 AND playlist_id = 'pl1'`,
+		user.ID.String()).Scan(&name, &ownerID, &snapshotID, &totalTracks, &fetchedAt); err != nil {
+		t.Fatalf("read playlist row: %v", err)
+	}
+	if name != "New Name" || ownerID != "owner-new" || snapshotID != "snap-new" || totalTracks != 9 {
+		t.Fatalf("playlist row after refresh = (%q, %q, %q, %d), want (%q, %q, %q, %d)",
+			name, ownerID, snapshotID, totalTracks, "New Name", "owner-new", "snap-new", 9)
+	}
+	if !fetchedAt.Equal(second) {
+		t.Fatalf("fetched_at = %v, want %v", fetchedAt, second)
+	}
+}
+
+// TestLibraryReplacingUserPlaylistsWithEmptyRemovesEverything: a listener who
+// deleted or left every playlist they had is a real, representable state,
+// distinct from one who has never had this enumerated at all.
+func TestLibraryReplacingUserPlaylistsWithEmptyRemovesEverything(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("playlists-empty")
+	repo := library.New(env.Store)
+
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID,
+		playlistItems("pl1", "pl2"), playlistFetchedAt); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID, nil, playlistFetchedAt.Add(time.Hour)); err != nil {
+		t.Fatalf("replace with empty: %v", err)
+	}
+
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("%d playlists survived a replace with an empty set, want 0", got)
+	}
+}
+
+// TestLibraryDeletingUserCascadesUserPlaylists mirrors
+// TestLibraryDeletingUserCascadesAllThreeTables for the fourth table this
+// package now reconciles.
+func TestLibraryDeletingUserCascadesUserPlaylists(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("playlists-cascade")
+	repo := library.New(env.Store)
+
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), user.ID,
+		playlistItems("pl1"), playlistFetchedAt); err != nil {
+		t.Fatalf("replace user playlists: %v", err)
+	}
+
+	env.Exec(`DELETE FROM users WHERE id = $1`, user.ID.String())
+
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1`, user.ID.String()); got != 0 {
+		t.Fatalf("%d playlists survived the user's deletion, want 0", got)
+	}
+}
+
+// TestLibraryTwoUsersPlaylistsDoNotInterfere guards the scoping in the DELETE
+// half of the reconciliation statement: without "WHERE user_id = $1" a shrink
+// for one user would also erase a playlist id another user happens to share
+// (a household following the same public playlist, for instance).
+func TestLibraryTwoUsersPlaylistsDoNotInterfere(t *testing.T) {
+	env := harness.New(t)
+	a := env.NewUser("playlistuser-a")
+	b := env.NewUser("playlistuser-b")
+	repo := library.New(env.Store)
+
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), a.ID,
+		playlistItems("pl1", "pl2"), playlistFetchedAt); err != nil {
+		t.Fatalf("replace for a: %v", err)
+	}
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), b.ID,
+		playlistItems("pl1"), playlistFetchedAt); err != nil {
+		t.Fatalf("replace for b: %v", err)
+	}
+
+	if err := repo.ReplaceUserPlaylists(env.Ctx(), env.Store.DB(), a.ID,
+		playlistItems("pl2"), playlistFetchedAt.Add(time.Hour)); err != nil {
+		t.Fatalf("shrink a: %v", err)
+	}
+
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1`, a.ID.String()); got != 1 {
+		t.Fatalf("user a has %d playlists, want 1", got)
+	}
+	if got := env.ScalarInt(
+		`SELECT count(*) FROM user_playlists WHERE user_id = $1 AND playlist_id = 'pl1'`,
+		b.ID.String()); got != 1 {
+		t.Fatal("user a's replace deleted user b's playlist sharing the same playlist id")
+	}
+}
+
 // TestTwoUsersLibrariesDoNotInterfere guards the scoping in the DELETE half of
 // the reconciliation statement: without "WHERE user_id = $1" a shrink for one
 // user would also erase a track id another user happens to share.

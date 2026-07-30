@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -127,6 +129,80 @@ func (c *Client) ReplacePlaylistItems(
 		}
 	}
 	return nil
+}
+
+// UserPlaylist is one entry of a listener's own playlist library — enough to
+// give a bare playlist id (recorded against a play by an earlier phase) a
+// name, plus the bookkeeping fields a reconciliation needs to tell whether
+// that name is stale.
+type UserPlaylist struct {
+	ID          string
+	Name        string
+	OwnerID     string
+	SnapshotID  string
+	TotalTracks int
+}
+
+// userPlaylistPage is one response from /v1/me/playlists.
+type userPlaylistPage struct {
+	Items []struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		SnapshotID string `json:"snapshot_id"`
+		Owner      struct {
+			ID string `json:"id"`
+		} `json:"owner"`
+		Tracks struct {
+			Total int `json:"total"`
+		} `json:"tracks"`
+	} `json:"items"`
+	Next string `json:"next"`
+}
+
+// UserPlaylists reads every playlist the listener owns or follows.
+//
+// Offset paginated, the identical shape to SavedTracks and SavedAlbums in
+// internal/spotify/library.go: same page size, same "next" sentinel, same
+// ErrTruncated signal when the page budget runs out before Spotify says
+// there is nothing left. That signal exists for the same reason there as
+// here — an earlier phase shipped a bug where a partial list came back with
+// a nil error, and a caller reconciling it against a local table deleted the
+// tail as though the short list were the whole of it, quietly losing rows
+// for any listener whose library was larger than one page budget could
+// cover. Task 4's playlist-context backfill reconciles this result the same
+// way, so it needs the same warning, not a different one invented for this
+// endpoint.
+//
+// Background rather than interactive: this runs on a worker tick, so it
+// queues behind the catalogue budget rather than competing with somebody
+// signing in.
+func (c *Client) UserPlaylists(ctx context.Context, accessToken string, maxPages int) ([]UserPlaylist, error) {
+	out := []UserPlaylist{}
+	for page := range pageBudget(maxPages) {
+		q := url.Values{}
+		q.Set("limit", strconv.Itoa(maxLibraryPageSize))
+		q.Set("offset", strconv.Itoa(page*maxLibraryPageSize))
+
+		var p userPlaylistPage
+		if err := c.get(ctx, "/v1/me/playlists", "get user playlists", q, accessToken, &p); err != nil {
+			return nil, fmt.Errorf("spotify: user playlists: %w", err)
+		}
+		for _, item := range p.Items {
+			out = append(out, UserPlaylist{
+				ID:          item.ID,
+				Name:        item.Name,
+				OwnerID:     item.Owner.ID,
+				SnapshotID:  item.SnapshotID,
+				TotalTracks: item.Tracks.Total,
+			})
+		}
+		if len(p.Items) == 0 || strings.TrimSpace(p.Next) == "" {
+			return out, nil
+		}
+	}
+	// Every page read was full and still pointed at a next one: the budget ran
+	// out before the playlist list did, so out is a prefix, not the whole thing.
+	return out, fmt.Errorf("spotify: user playlists: %w", ErrTruncated)
 }
 
 // HasScope reports whether a granted scope string includes one Encore needs.

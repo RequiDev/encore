@@ -307,6 +307,102 @@ func TestListenFromValidates(t *testing.T) {
 	}
 }
 
+// TestListenFromCarriesThePlaybackContext pins that a play-history entry's
+// Context is no longer discarded: the type is kept as reported and the id is
+// extracted from the URI rather than stored as the URI itself, so it joins
+// directly to user_playlists.playlist_id and the album/artist catalogues.
+func TestListenFromCarriesThePlaybackContext(t *testing.T) {
+	play := track("t1", "Song", 200000, now.Add(-time.Minute))
+	play.Context = &spotify.PlayContext{Type: "playlist", URI: "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"}
+
+	l := listenFrom(uuid.New(), play)
+
+	if l.ContextType != "playlist" {
+		t.Errorf("context type = %q, want %q", l.ContextType, "playlist")
+	}
+	if l.ContextID != "37i9dQZF1DXcBWIGoYBM5M" {
+		t.Errorf("context id = %q, want the bare id extracted from the URI", l.ContextID)
+	}
+}
+
+// TestListenFromWithNoContextStoresNeitherField pins the other half: Spotify
+// omits context often enough that PlayHistory.Context is a pointer, and a nil
+// one must leave both domain fields at their zero value so the store writes
+// NULL — "not reported" — rather than empty strings.
+func TestListenFromWithNoContextStoresNeitherField(t *testing.T) {
+	play := track("t1", "Song", 200000, now.Add(-time.Minute))
+	// play.Context is left nil, which is the ordinary case.
+
+	l := listenFrom(uuid.New(), play)
+
+	if l.ContextType != "" || l.ContextID != "" {
+		t.Errorf("context = (%q, %q), want both empty so the store writes NULL in both columns",
+			l.ContextType, l.ContextID)
+	}
+}
+
+// TestListenFromStoresEveryContextKind pins that all four kinds Spotify
+// reports are kept, not just playlists: "played from your Liked Songs" is as
+// interesting as a playlist, and filtering at write time would throw away
+// information the read side could use.
+func TestListenFromStoresEveryContextKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		uri  string
+		want string
+	}{
+		{"playlist", "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", "37i9dQZF1DXcBWIGoYBM5M"},
+		{"album", "spotify:album:1DFixLWuPkv3KT3TnV35m3", "1DFixLWuPkv3KT3TnV35m3"},
+		{"artist", "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF", "0OdUWJ0sBjDrqHygGUXeCF"},
+		// Liked Songs is sometimes reported with no id in the URI at all; the
+		// type must still be kept even though there is nothing to extract.
+		{"collection", "spotify:collection", ""},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			play := track("t1", "Song", 200000, now.Add(-time.Minute))
+			play.Context = &spotify.PlayContext{Type: tc.kind, URI: tc.uri}
+
+			l := listenFrom(uuid.New(), play)
+
+			if l.ContextType != tc.kind {
+				t.Errorf("context type = %q, want %q", l.ContextType, tc.kind)
+			}
+			if l.ContextID != tc.want {
+				t.Errorf("context id = %q, want %q", l.ContextID, tc.want)
+			}
+		})
+	}
+}
+
+// TestContextIDRejectsAMalformedURI pins what "malformed" means for a context
+// URI: anything other than exactly "spotify:<type>:<id>" stores nothing rather
+// than a fragment of something that is not an id — a scheme, a bare type with
+// no id, or a URI with extra segments (Spotify's "spotify:user:<id>:collection"
+// shape) where the last segment is a user id, not a playlist id.
+func TestContextIDRejectsAMalformedURI(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{"empty", "", ""},
+		{"no scheme or type", "37i9dQZF1DXcBWIGoYBM5M", ""},
+		{"wrong scheme", "not-spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", ""},
+		{"type with no id", "spotify:collection", ""},
+		{"empty id", "spotify:playlist:", ""},
+		{"empty type", "spotify::37i9dQZF1DXcBWIGoYBM5M", ""},
+		{"extra segments", "spotify:user:abc123:collection", ""},
+		{"well formed", "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", "37i9dQZF1DXcBWIGoYBM5M"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := contextID(tc.uri); got != tc.want {
+				t.Errorf("contextID(%q) = %q, want %q", tc.uri, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNotAfter(t *testing.T) {
 	past := now.Add(-time.Hour)
 	if got := notAfter(past, now); !got.Equal(past) {
