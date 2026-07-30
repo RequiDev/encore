@@ -126,7 +126,11 @@ export default function AlbumDetail(): ReactElement {
                   </span>
                 </Entry>
                 <Entry label="Tracks">
-                  <span className="tabular text-ink">{formatCount(album.totalTracks)}</span>
+                  {album.totalTracks > 0 ? (
+                    <span className="tabular text-ink">{formatCount(album.totalTracks)}</span>
+                  ) : (
+                    <span className="text-ink-muted">Not known</span>
+                  )}
                 </Entry>
                 <Entry label="Kind">
                   {album.albumType ? (
