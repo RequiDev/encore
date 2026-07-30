@@ -68,7 +68,10 @@ The bootstrap call the client makes on load. Returns `401` when signed out.
   "spotify": {
     "connected": true, "syncState": "ok",
     "lastSyncAt": "2026-07-26T08:11:03Z", "lastSyncError": "",
-    "scopes": ["user-read-recently-played", "user-read-private", "user-read-email"]
+    "scopes": ["user-read-recently-played", "user-read-private", "user-read-email",
+      "user-top-read", "user-library-read", "user-follow-read",
+      "playlist-read-private", "user-read-playback-state"],
+    "missingScopes": []
   },
   "csrfToken": "…",
   "instance": { "registrationsEnabled": false, "version": "1.0.0" },
@@ -77,6 +80,12 @@ The bootstrap call the client makes on load. Returns `401` when signed out.
   }
 }
 ```
+
+`missingScopes` is what the account's stored grant lacks against the scopes Encore currently
+asks for at sign-in, computed server-side rather than in the client so the two copies of the
+required list cannot drift. Empty means the grant is current. An account with no Spotify
+connection at all reports `[]`, not the full scope list — that state is `connected: false`, not a
+scope shortfall.
 
 | Method | Path | Description |
 |---|---|---|

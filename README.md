@@ -149,8 +149,11 @@ To stop: `docker compose down`. To stop and delete all data: `docker compose dow
 
 Your app starts in *development mode*, which allows up to 25 listeners that you add explicitly under
 **Settings → User Management**. That is normally plenty for a self-hosted instance. Encore requests
-only read scopes (`user-read-recently-played`, `user-read-private`, `user-read-email`) and never
-modifies your Spotify account, library or playlists.
+eight read scopes at sign-in (`user-read-recently-played`, `user-read-private`, `user-read-email`,
+`user-top-read`, `user-library-read`, `user-follow-read`, `playlist-read-private`,
+`user-read-playback-state`) and never holds a grant that can modify your Spotify account unless you
+use a feature that needs one. Creating a playlist is the only such feature; it asks for its own write
+scope separately, at the moment you use it.
 
 ---
 
