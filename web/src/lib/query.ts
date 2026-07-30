@@ -11,6 +11,7 @@
 import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query'
 import { ApiError } from './api'
 import type { DateRange } from './range'
+import type { SpotifyTimeRange, TopDiffKind } from './types'
 
 /**
  * Retries only what is worth retrying. A 4xx is a statement about the request
@@ -100,6 +101,7 @@ export const qk = {
   summary: (range: DateRange) => ['stats', 'summary', range] as const,
   top: (kind: 'tracks' | 'artists' | 'albums', range: DateRange, page: PageKey) =>
     ['stats', 'top', kind, range, page] as const,
+  topDiff: (kind: TopDiffKind, range: SpotifyTimeRange) => ['stats', 'top-diff', kind, range] as const,
   timeline: (range: DateRange, interval: string | null) =>
     ['stats', 'timeline', range, interval] as const,
   repartition: (kind: 'hour' | 'weekday' | 'heatmap', range: DateRange) =>

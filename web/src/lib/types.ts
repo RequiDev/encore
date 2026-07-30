@@ -588,6 +588,49 @@ export interface LibraryStatsResponse {
   dormantFollows: LibraryDormantArtist[]
 }
 
+// --- top diff ------------------------------------------------------------
+
+/** The two entity kinds Spotify's own top-items endpoint knows. Spotify has no top-albums endpoint. */
+export type TopDiffKind = 'track' | 'artist'
+
+/**
+ * Spotify's own three rolling top-items windows. See `TopDiffResponse` for
+ * why this is the only "range" the top-diff page has — there is no `from`/
+ * `to` picker here.
+ */
+export type SpotifyTimeRange = 'short_term' | 'medium_term' | 'long_term'
+
+/**
+ * One entity in the comparison between Spotify's own top ranking and
+ * Encore's, for one `(kind, range)` pair.
+ *
+ * `spotifyRank` and `encoreRank` are null exactly when the entity is absent
+ * from that side, never zero — an entity present on only one side is the
+ * disagreement this comparison exists to surface. `plays` is Encore's own
+ * play count for the window; Spotify's side carries no play count at all,
+ * only a rank, so `plays` is meaningless when `encoreRank` is null.
+ */
+export interface TopDiffEntry<T> {
+  entity: T
+  spotifyRank: number | null
+  encoreRank: number | null
+  plays: number
+}
+
+/**
+ * Answers `GET /api/stats/top-diff`.
+ *
+ * `capturedAt` is null exactly when nothing has ever been captured for this
+ * `(kind, range)` set — an account without `user-top-read`, or one whose
+ * daily capture has not run since they granted it — and `entries` is then
+ * always `[]`, never Encore's ranking shown on its own.
+ */
+export interface TopDiffResponse<T> {
+  capturedAt: Timestamp | null
+  timeRange: SpotifyTimeRange
+  entries: TopDiffEntry<T>[]
+}
+
 /**
  * One track, artist or album on its detail page.
  *
