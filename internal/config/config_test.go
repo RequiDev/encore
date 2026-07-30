@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -74,13 +73,32 @@ func TestDefaultScopesAreTheEightReadScopes(t *testing.T) {
 	}
 }
 
-// TestDefaultScopesAreAllReadOnly is the property that matters more than the
-// list itself: nothing here can alter a listener's Spotify account. Every write
-// scope Encore ever requests is asked for at the point of use instead.
+// TestDefaultScopesGrantNoWriteAccess is the property that matters more than
+// the list itself: nothing Encore asks for at sign-in can alter a listener's
+// Spotify account, or act on their behalf.
+//
+// An allow-list, not a deny-list. Substring rules miss what they were not
+// written for — app-remote-control and streaming both let a client take a real
+// action and contain neither "modify" nor "ugc-". Naming the read scopes that
+// are permitted means a future addition has to be added here deliberately,
+// which is the review step this guard exists to force.
 func TestDefaultScopesGrantNoWriteAccess(t *testing.T) {
+	readOnly := map[string]bool{
+		"user-read-recently-played":   true,
+		"user-read-private":           true,
+		"user-read-email":             true,
+		"user-top-read":               true,
+		"user-library-read":           true,
+		"user-follow-read":            true,
+		"playlist-read-private":       true,
+		"playlist-read-collaborative": true,
+		"user-read-playback-state":    true,
+		"user-read-currently-playing": true,
+		"user-read-playback-position": true,
+	}
 	for _, s := range DefaultScopes() {
-		if strings.Contains(s, "modify") || strings.Contains(s, "ugc-") {
-			t.Errorf("%q is a write scope and must not be in the sign-in grant", s)
+		if !readOnly[s] {
+			t.Errorf("%q is not a known read-only scope and must not be in the sign-in grant", s)
 		}
 	}
 }
