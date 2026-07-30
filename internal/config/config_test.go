@@ -172,3 +172,48 @@ func TestLibrarySyncConcurrencyRejectsOutOfRange(t *testing.T) {
 		t.Errorf("error %q does not mention ENCORE_LIBRARY_SYNC_CONCURRENCY", err)
 	}
 }
+
+// TestAlbumTracksDefaults pins the on-by-default posture and the thirty-day
+// TTL. The service (a later task) trusts both without re-deriving them.
+func TestAlbumTracksDefaults(t *testing.T) {
+	cfg, err := LoadFrom(libraryTestEnv(nil))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	want := AlbumTracks{Enabled: true, TTL: 30 * 24 * time.Hour}
+	if cfg.AlbumTracks != want {
+		t.Errorf("AlbumTracks = %+v, want %+v", cfg.AlbumTracks, want)
+	}
+}
+
+// TestAlbumTracksCanBeTurnedOff is the operator's switch, round-tripped. The
+// default is true, so a parser that never read the key at all would pass a test
+// that only checked the default.
+func TestAlbumTracksCanBeTurnedOff(t *testing.T) {
+	cfg, err := LoadFrom(libraryTestEnv(map[string]string{
+		"ENCORE_ALBUM_TRACKS_ENABLED": "false",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.AlbumTracks.Enabled {
+		t.Error("AlbumTracks.Enabled = true after ENCORE_ALBUM_TRACKS_ENABLED=false")
+	}
+	if _, ok := cfg.Redacted()["album_tracks_enabled"]; !ok {
+		t.Error(`Redacted() has no "album_tracks_enabled"; the startup log is the ` +
+			`only place an operator can confirm the switch took effect`)
+	}
+}
+
+// TestAlbumTracksTTLRejectsNonPositive matches every other duration: a zero TTL
+// would refetch an album's listing on every single page view, which is a quota
+// bill discovered in production rather than a configuration error at startup.
+func TestAlbumTracksTTLRejectsNonPositive(t *testing.T) {
+	_, err := LoadFrom(libraryTestEnv(map[string]string{"ENCORE_ALBUM_TRACKS_TTL": "0"}))
+	if err == nil {
+		t.Fatal("LoadFrom: want an error for a non-positive TTL, got nil")
+	}
+	if !strings.Contains(err.Error(), "ENCORE_ALBUM_TRACKS_TTL") {
+		t.Errorf("error %q does not mention ENCORE_ALBUM_TRACKS_TTL", err)
+	}
+}

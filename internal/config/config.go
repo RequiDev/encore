@@ -34,6 +34,8 @@ type Config struct {
 	Enrich   Enrich
 	Metrics  Metrics
 	Worker   Worker
+	// AlbumTracks governs the cache of album track listings.
+	AlbumTracks AlbumTracks
 	// MetadataFallback is an optional second source of catalogue metadata.
 	MetadataFallback MetadataFallback
 }
@@ -174,6 +176,43 @@ type Library struct {
 	// follow, so a misbehaving upstream cannot spend a whole day's quota
 	// enumerating one account.
 	MaxPages int
+}
+
+// AlbumTracks governs the cache of album track listings that lets the album
+// page name the tracks somebody has never played.
+//
+// Unlike Library there is no worker and no interval: a background sweep is
+// rejected explicitly, because most albums in a large history are never opened
+// and enumerating them all would spend the instance's quota on questions nobody
+// asked. A listing is read the first time somebody opens that album's page and
+// then kept, so the cost is one request per album *viewed*, per TTL.
+type AlbumTracks struct {
+	// Enabled controls whether this instance ever asks Spotify what is on an
+	// album. On by default, so the feature works out of the box.
+	//
+	// It has a switch at all because this is the one Spotify request Encore's
+	// API makes that is not the direct consequence of somebody clicking a thing:
+	// signing in, "sync now" and playlist creation are each an action a person
+	// took, whereas this fires as a side effect of *viewing a page*. Unattended
+	// egress is an operator's decision, the same judgement that made the
+	// now-playing poller opt-in.
+	//
+	// Off means "do not fetch", not "forget what is on disk": a listing already
+	// stored is still served, with the date it was read, and the album page says
+	// plainly that this instance does not fetch them rather than reporting a
+	// Spotify failure that did not happen.
+	Enabled bool
+	// TTL is how long a stored listing is trusted before the next page view
+	// refreshes it. Ignored entirely when Enabled is false — nothing refreshes,
+	// so nothing expires.
+	//
+	// Thirty days by default, and long on purpose: an album's track list is
+	// effectively immutable once released, because Spotify mints a new album id
+	// for a deluxe edition or a re-issue rather than changing the old one. The
+	// cases a refresh does catch — a pre-release that gained tracks, a market
+	// change — are all caught within a month, and a shorter TTL would multiply
+	// the request count for no observable gain.
+	TTL time.Duration
 }
 
 type Import struct {
@@ -373,6 +412,11 @@ func parse(get lookup) (*Config, error) {
 		MaxPages:    p.intRange("ENCORE_LIBRARY_SYNC_MAX_PAGES", 200, 1, 10000),
 	}
 
+	c.AlbumTracks = AlbumTracks{
+		Enabled: p.boolean("ENCORE_ALBUM_TRACKS_ENABLED", true),
+		TTL:     p.duration("ENCORE_ALBUM_TRACKS_TTL", 30*24*time.Hour),
+	}
+
 	c.Import = Import{
 		Dir:               p.str("ENCORE_IMPORT_DIR", "/var/lib/encore/imports"),
 		BatchSize:         p.intRange("ENCORE_IMPORT_BATCH_SIZE", 1000, 1, 100000),
@@ -483,11 +527,16 @@ func (c *Config) Redacted() map[string]any {
 		"sync_interval":      c.Sync.Interval.String(),
 		"library_enabled":    c.Library.Enabled,
 		"library_interval":   c.Library.Interval.String(),
-		"import_dir":         c.Import.Dir,
-		"import_batch_size":  c.Import.BatchSize,
-		"import_workers":     c.Import.Workers,
-		"import_min_ms":      c.Import.MinMsPlayed,
-		"enrich_enabled":     c.Enrich.Enabled,
+		// The startup log is the one line that says what this process believes
+		// its configuration to be, and "why is the album page saying it is turned
+		// off" is answerable from here or from nowhere.
+		"album_tracks_enabled": c.AlbumTracks.Enabled,
+		"album_tracks_ttl":     c.AlbumTracks.TTL.String(),
+		"import_dir":           c.Import.Dir,
+		"import_batch_size":    c.Import.BatchSize,
+		"import_workers":       c.Import.Workers,
+		"import_min_ms":        c.Import.MinMsPlayed,
+		"enrich_enabled":       c.Enrich.Enabled,
 		// The URL is operational information worth having in a startup log; the
 		// token is a credential and only its presence is reported.
 		"metadata_fallback":      c.MetadataFallback.URL,
