@@ -94,6 +94,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Play button / Spotify remote control | **Deferred** | Needs `user-modify-playback-state` and an active device; same read-only reasoning. |
 | Genre statistics | **Implemented** | Top genres, genre timeline and an obscurity score, from `artists.genres` and `artists.popularity`. Not in the reference project. Every figure reports what share of the range's listening it could see, because genres exist only where enrichment has resolved the artist. |
 | Playback-context statistics | **Implemented** | Skip rate, shuffle share, how tracks ended, platform and country. Not in the reference project. Only extended-export rows carry these columns, so each figure reports its own denominator. |
+| Library vs. listening history | **Implemented** | Not in the reference project. Crosses what the account has saved and followed on Spotify against what it has actually played: tracks saved but never played (all time), tracks played heavily but never saved, and followed artists gone quiet — each over a range picker for the latter two, never for the first. Needs `user-library-read` and `user-follow-read`; an account that connected before Encore asked for them is told its library is not shared and offered relink, not shown an empty one. Reads a daily background enumeration (`ENCORE_LIBRARY_SYNC_INTERVAL`) rather than Spotify directly, so it is a snapshot up to a day stale by design, and the page says when it was last read. |
 
 ## 5. Optional enhancements (built after the required scope)
 
