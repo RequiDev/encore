@@ -220,6 +220,70 @@ func TestSyncIsDuplicateSafe(t *testing.T) {
 	}
 }
 
+// TestSyncKeepsTheFirstContextWhenTheSameEventReportsAnother is the
+// discriminating test TestSyncWithContextIsDuplicateSafe below cannot be: that
+// test polls the identical context twice, so it cannot distinguish "context is
+// excluded from DedupeKey" from "nothing changed, so of course the hash
+// matches" — both would make that test pass.
+//
+// This polls the *same* event (same track, same played_at, so the same
+// UserID/Identity/PlayedAt DedupeKey inputs) twice, with a different context
+// each time, and asserts exactly one row survives. If context were ever folded
+// into DedupeKey, the two polls would compute different hashes and both rows
+// would land.
+//
+// It also pins which context survives: first write wins, via
+// ON CONFLICT DO NOTHING — see the longer explanation on
+// TestInsertListensKeepsTheFirstContextOnDuplicateKey in listens_test.go,
+// which pins the same property one layer down, directly against the store.
+func TestSyncKeepsTheFirstContextWhenTheSameEventReportsAnother(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("syncfirstcontext")
+	connect(t, env, user.ID, time.Now().Add(time.Hour))
+
+	at := time.Now().Add(-7 * time.Hour).Truncate(time.Second)
+	first := syncPlay("sync0000000000000000bk", at)
+	first.Context = &spotify.PlayContext{Type: "playlist", URI: "spotify:playlist:playlist-one"}
+	second := syncPlay("sync0000000000000000bk", at)
+	second.Context = &spotify.PlayContext{Type: "artist", URI: "spotify:artist:artist-two"}
+
+	api := &fakeRecentlyPlayed{pages: [][]spotify.PlayHistory{
+		{first},
+		{second},
+	}}
+	poller := newPoller(t, env, api)
+
+	if _, err := poller.SyncUser(env.Ctx(), user.ID); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if got := env.CountListens(user.ID); got != 1 {
+		t.Fatalf("database holds %d listens after the first sync, want 1", got)
+	}
+
+	res, err := poller.SyncUser(env.Ctx(), user.ID)
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if res.Imported != 0 {
+		t.Fatalf("the same event reported with a different context imported %d rows, want 0 — "+
+			"context must not be an input to DedupeKey", res.Imported)
+	}
+	if got := env.CountListens(user.ID); got != 1 {
+		t.Fatalf("database holds %d listens, want 1", got)
+	}
+
+	var contextType, contextID *string
+	if err := env.Pool.QueryRow(env.Ctx(),
+		`SELECT context_type, context_id FROM listens WHERE user_id = $1 AND played_at = $2`,
+		user.ID.String(), at.UTC()).Scan(&contextType, &contextID); err != nil {
+		t.Fatalf("read context: %v", err)
+	}
+	if contextType == nil || *contextType != "playlist" || contextID == nil || *contextID != "playlist-one" {
+		t.Fatalf("context = (%v, %v), want the first sync's (playlist, playlist-one) to survive",
+			contextType, contextID)
+	}
+}
+
 // TestSyncWithContextIsDuplicateSafe pins the property this task must not
 // break: context is not an input to DedupeKey, so re-syncing the same page
 // still inserts zero rows even when the plays carry a playback context. It

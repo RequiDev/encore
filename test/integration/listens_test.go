@@ -75,6 +75,82 @@ func TestInsertListensIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestInsertListensKeepsTheFirstContextOnDuplicateKey is the discriminating
+// test TestInsertListensWithContextIsIdempotent below cannot be: that test
+// resubmits the *same* context on both calls, so it cannot tell "context is
+// excluded from DedupeKey" (correct) apart from "context happens to match, so
+// the hash collides anyway" (a test that would pass for the wrong reason).
+//
+// This submits two different contexts for the same (UserID, Identity,
+// PlayedAt) and asserts exactly one row survives: if context were ever folded
+// into DedupeKey, the two hashes would differ, the unique constraint would not
+// fire, and both rows would land.
+//
+// It also pins which context wins: ON CONFLICT DO NOTHING means whichever
+// insert reaches Postgres first keeps its row untouched — there is no
+// COALESCE or "improve" step for these two columns, because context can only
+// ever come from a synced row in the first place (see the comment on the
+// improve CTE in listens.go), so there is nothing to reconcile. Asserting that
+// explicitly here means a future change to the conflict clause is caught by a
+// test rather than discovered in production.
+func TestInsertListensKeepsTheFirstContextOnDuplicateKey(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("contextfirstwins")
+	ensure(t, e, "track-a")
+
+	id := domain.TrackIdentityFromID("track-a")
+	at := base()
+
+	first := listens.Stage(domain.Listen{
+		UserID:      user.ID,
+		PlayedAt:    at,
+		Precision:   domain.PrecisionMillisecond,
+		Identity:    id,
+		MsPlayed:    200_000,
+		Source:      domain.SourceSync,
+		ContextType: "playlist",
+		ContextID:   "playlist-one",
+	}, nil)
+	if n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), []listens.StagedListen{first}, "UTC"); err != nil || n != 1 {
+		t.Fatalf("seed first: n=%d err=%v", n, err)
+	}
+
+	// Same user, identity and played_at — the exact three DedupeKey inputs — but
+	// a different context.
+	second := listens.Stage(domain.Listen{
+		UserID:      user.ID,
+		PlayedAt:    at,
+		Precision:   domain.PrecisionMillisecond,
+		Identity:    id,
+		MsPlayed:    200_000,
+		Source:      domain.SourceSync,
+		ContextType: "artist",
+		ContextID:   "artist-two",
+	}, nil)
+	n, err := e.Listens.InsertListens(e.Ctx(), e.Store.DB(), []listens.StagedListen{second}, "UTC")
+	if err != nil {
+		t.Fatalf("insert second: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("the same event with a different context inserted %d rows, want 0 — "+
+			"context must not be an input to DedupeKey", n)
+	}
+	if got := e.CountListens(user.ID); got != 1 {
+		t.Fatalf("database holds %d listens, want 1", got)
+	}
+
+	var gotType, gotID *string
+	if err := e.Pool.QueryRow(e.Ctx(),
+		`SELECT context_type, context_id FROM listens WHERE user_id = $1`, user.ID.String(),
+	).Scan(&gotType, &gotID); err != nil {
+		t.Fatalf("read context: %v", err)
+	}
+	if gotType == nil || *gotType != "playlist" || gotID == nil || *gotID != "playlist-one" {
+		t.Fatalf("context = (%v, %v), want the first insert's (playlist, playlist-one) to survive: "+
+			"ON CONFLICT DO NOTHING keeps whichever row got there first", gotType, gotID)
+	}
+}
+
 // TestInsertListensWithContextIsIdempotent pins, at the store layer directly,
 // the property this task must not break: DedupeKey does not read context, so
 // inserting the same batch twice — this time carrying a playback context —
