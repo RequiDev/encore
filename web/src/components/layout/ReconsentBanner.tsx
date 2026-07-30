@@ -91,8 +91,8 @@ export function ReconsentBanner(): ReactElement | null {
             Spotify permissions
           </p>
           <p className="mt-1 max-w-prose text-sm text-ink">
-            Encore has gained a few statistics that need read access it did not previously
-            request. Reconnecting with Spotify lets it:
+            Encore is adding a few statistics that will need read access it does not yet have.
+            Reconnecting with Spotify now means it will be ready to:
           </p>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink">
             {missingScopes.map((scope) => (
