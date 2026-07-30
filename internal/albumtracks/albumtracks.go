@@ -74,12 +74,16 @@ const (
 	// older than the TTL, in which case a refresh is already running behind it.
 	StateReady State = "ready"
 	// StatePending means nothing is stored yet and a fetch is running, or is due
-	// and will be started by the next view.
+	// and nothing has recorded a reason it should not be.
 	//
 	// Everything that merely *delays* a fetch reports this: a lease somebody else
 	// holds, no free local slot, a claim that errored, a shutdown in progress.
-	// None of them records an outcome, so the listing is still due and the very
-	// next view starts it — which is what makes "keep polling" the right advice.
+	// None of them records an *outcome*, which is what makes "keep polling" the
+	// right advice — but they do not all resolve the same way. Most leave the row
+	// untouched, so the listing is still due and the very next view starts it. A
+	// claim this process wins and then abandons at shutdown leaves the row
+	// 'fetching' with a fresh attempted_at, so the next view waits out leaseTTL
+	// before anybody reclaims it. Still pending, just not immediately.
 	StatePending State = "pending"
 	// StateUnavailable means nothing is stored and the last attempt to read a
 	// listing failed, recently enough that no new one has been started.
@@ -282,12 +286,14 @@ func (s *Service) Listing(ctx context.Context, q store.Querier, albumID string) 
 	if !pending && s.enabled && s.due(st, now) {
 		s.start(ctx, q, albumID, now)
 		// Pending regardless of what start managed to do, and that is not
-		// optimism. Every way start can decline — no free slot, a lease somebody
-		// else holds, a claim that errored — leaves the row untouched, so this
-		// listing is still due and the next view starts it. Reporting those as
-		// unavailable would blame Spotify for local backpressure and, worse, would
-		// tell a page whose job is to stop polling on unavailable to give up on an
-		// album that one more poll would have fetched.
+		// optimism: not one of its decline paths records an outcome. Most — no
+		// free slot, a lease somebody else holds, a claim that errored — leave the
+		// row untouched, so the listing is still due and the next view starts it.
+		// The one that does not is a claim won and then abandoned at shutdown,
+		// which leaves the row 'fetching' and resolves when that lease expires.
+		// Both are "not yet". Reporting either as unavailable would blame Spotify
+		// for a local condition and, worse, would tell a page whose job is to stop
+		// polling on unavailable to give up on an album that was still coming.
 		pending = true
 	}
 
@@ -343,9 +349,12 @@ func (s *Service) due(st catalog.AlbumTrackState, now time.Time) bool {
 // start begins a detached fetch if it can.
 //
 // It reports nothing, on purpose. Every way it can decline is a "not yet"
-// rather than a "no": none of them writes anything, so due is still true and
-// the next view tries again. There is no outcome here the page should be told
-// about beyond "keep polling", which its caller says unconditionally.
+// rather than a "no", because none of them records an outcome: the ones that
+// return before the claim leave the row untouched, so it is still due and the
+// next view starts it, and the one that returns after a won claim leaves the
+// row 'fetching', so it resolves when that lease expires. There is no outcome
+// here the page should be told about beyond "keep polling", which its caller
+// says unconditionally.
 func (s *Service) start(ctx context.Context, q store.Querier, albumID string, now time.Time) {
 	if s.base.Err() != nil {
 		// Close has already been called. Claiming a lease this process is about
@@ -395,6 +404,12 @@ func (s *Service) start(ctx context.Context, q store.Querier, albumID string, no
 		s.log.Debug("album track fetch abandoned; shutting down", "album", albumID)
 		return
 	}
+	// Nothing may go between these two statements. track has already done
+	// wg.Add(1), and only the goroutine below calls the matching Done — so
+	// anything inserted here that can panic leaves the WaitGroup one short and
+	// Close waits on it for ever, which is a worse failure than the slot leak
+	// the defer above exists to prevent. Whatever a future change needs to do,
+	// it belongs before track or inside the goroutine.
 	started = true
 	go func() {
 		defer s.wg.Done()
@@ -508,6 +523,12 @@ func (s *Service) record(albumID string, cause error) {
 // anyway, leaving the album 'fetching' until its lease expires. Deferring
 // Close after the pool is opened gets the LIFO order right.
 func (s *Service) Close() {
+	// Before the Wait, necessarily: that is what stops a wg.Add landing against
+	// a registered waiter. Before the cancel too, which Close does not need but
+	// TestCloseRefusesNewFetchesBeforeItWaits does — it takes base.Done() as the
+	// signal that Close has begun, and that is only sound while this comes
+	// first. Moving it below the cancel leaves Close correct and quietly turns
+	// that test into one that cannot fail.
 	s.mu.Lock()
 	s.closing = true
 	s.mu.Unlock()
