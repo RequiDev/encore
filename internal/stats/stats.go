@@ -33,10 +33,23 @@ import (
 // Service is the statistics repository. Like every repository in Encore it holds
 // only the store; each method takes an explicit Querier so exactly the same code
 // runs inside and outside a transaction.
-type Service struct{ db *store.Store }
+//
+// Almost nothing here calls time.Now directly - every range-scoped statistic is
+// handed a domain.TimeRange by its caller instead, which is what makes the
+// package testable without waiting for real time to pass. Now is the one
+// exception, injectable for exactly the same reason the rest of the package
+// avoids needing it: TopDiff must derive its own window from the current
+// instant (see topdiff.go) rather than from a caller-supplied range, and a
+// clock is the only way to make that derivation reproducible in a test.
+type Service struct {
+	db  *store.Store
+	Now func() time.Time
+}
 
-// New builds the service.
-func New(db *store.Store) *Service { return &Service{db: db} }
+// New builds the service. The clock defaults to time.Now; tests that need a
+// fixed "now" - TopDiff's window in particular - override Service.Now
+// directly after construction.
+func New(db *store.Store) *Service { return &Service{db: db, Now: time.Now} }
 
 // Page-size bounds shared by every paginated statistic. The maximum exists
 // because a page is materialised in memory on both sides of the wire.

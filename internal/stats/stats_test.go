@@ -77,6 +77,9 @@ func statements() []statement {
 		{name: "savedNeverPlayed", sql: savedNeverPlayedSQL, params: 2},
 		{name: "playedNeverSaved", sql: playedNeverSavedSQL, params: 4},
 		{name: "dormantFollows", sql: dormantFollowsSQL, params: 4},
+		{name: "topDiffCapturedAt", sql: topDiffCapturedAtSQL, params: 3},
+		{name: "topDiffTracks", sql: topDiffTracksSQL, params: 6},
+		{name: "topDiffArtists", sql: topDiffArtistsSQL, params: 6},
 	}
 }
 
