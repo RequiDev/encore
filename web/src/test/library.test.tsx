@@ -244,8 +244,14 @@ describe('the library page', () => {
     if (!playedSection) throw new Error('the "Played but never saved" heading is not inside a panel')
     expect(within(playedSection).getByText('A Played Track')).toBeInTheDocument()
     // Range-scoped, unlike the panel above: the description names the range
-    // rather than saying "all time".
-    expect(within(playedSection).getByText(/last 30 days/i)).toBeInTheDocument()
+    // rather than saying "all time". Pinned as the full sentence, not just
+    // the range fragment, so a grammatically broken interpolation (missing
+    // its preposition) cannot pass this assertion the way it previously did.
+    expect(
+      within(playedSection).getByText(
+        'Tracks you played that are not in your saved library, most played first — last 30 days.',
+      ),
+    ).toBeInTheDocument()
 
     const dormantSection = (
       await screen.findByRole('heading', { name: 'Dormant follows' })
@@ -253,6 +259,10 @@ describe('the library page', () => {
     if (!dormantSection) throw new Error('the "Dormant follows" heading is not inside a panel')
     expect(within(dormantSection).getByText('A Dormant Artist')).toBeInTheDocument()
     expect(within(dormantSection).getByText('Never played')).toBeInTheDocument()
-    expect(within(dormantSection).getByText(/last 30 days/i)).toBeInTheDocument()
+    expect(
+      within(dormantSection).getByText(
+        'Artists you follow but did not play, most dormant first — last 30 days.',
+      ),
+    ).toBeInTheDocument()
   })
 })

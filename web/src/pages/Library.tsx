@@ -251,13 +251,13 @@ function LibraryBody({ data, syncedAt, label, timeZone, busy }: LibraryBodyProps
 
       <Panel
         title="Played but never saved"
-        description={`Tracks you played ${label.toLowerCase()} that are not in your saved library, most played first.`}
+        description={`Tracks you played that are not in your saved library, most played first — ${label.toLowerCase()}.`}
         padded={false}
       >
         {data.playedNeverSaved.length === 0 ? (
           <EmptyState
             icon="track"
-            title={`Every track you played ${label.toLowerCase()} is already saved to your library`}
+            title={`Every track you played is already saved to your library — ${label.toLowerCase()}`}
           />
         ) : (
           <PlayedNeverSavedTable rows={data.playedNeverSaved} />
@@ -266,7 +266,7 @@ function LibraryBody({ data, syncedAt, label, timeZone, busy }: LibraryBodyProps
 
       <Panel
         title="Dormant follows"
-        description={`Artists you follow but did not play ${label.toLowerCase()}, most dormant first.`}
+        description={`Artists you follow but did not play, most dormant first — ${label.toLowerCase()}.`}
         padded={false}
       >
         {data.dormantFollows.length === 0 ? (
@@ -275,7 +275,7 @@ function LibraryBody({ data, syncedAt, label, timeZone, busy }: LibraryBodyProps
             title={
               data.followedArtists === 0
                 ? 'You are not following any artists on Spotify'
-                : `Every artist you follow was played ${label.toLowerCase()}`
+                : `Every artist you follow was played — ${label.toLowerCase()}`
             }
           />
         ) : (
