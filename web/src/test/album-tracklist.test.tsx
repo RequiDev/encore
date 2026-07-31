@@ -551,7 +551,7 @@ describe('the panel description, read together with the body under it', () => {
 
     expect(
       within(section).getByText(
-        'Which tracks on this record have no plays in your history, all time.',
+        'Which tracks on this album have no plays in your history, all time.',
       ),
     ).toBeInTheDocument()
     expect(within(section).queryByText(/read once and kept/i)).not.toBeInTheDocument()
@@ -634,7 +634,7 @@ describe('the tracklist poll', () => {
     expect(within(capped).getByText('No track list for this album yet')).toBeInTheDocument()
     expect(
       within(capped).getByText(
-        "Encore has been waiting two minutes for this album's track list and has stopped waiting for now \u2014 it may still arrive. Every other figure on this page comes from your own history and is unaffected.",
+        "Encore waited two minutes for this album's track list and has stopped for now; it may still arrive \u2014 reopen this page to check. Every other figure on this page comes from your own history and is unaffected.",
       ),
     ).toBeInTheDocument()
     expect(

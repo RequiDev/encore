@@ -462,7 +462,7 @@ function NeverPlayedPanel({
             // that keeps those two states apart in the first place. So it says
             // only what the panel is for, and carries the all-time qualifier
             // that the count line opposite it carries.
-            'Which tracks on this record have no plays in your history, all time.'
+            'Which tracks on this album have no plays in your history, all time.'
       }
       padded={false}
     >
@@ -496,7 +496,7 @@ function missingSummary(missing: number, listed: number): string {
 }
 
 /**
- * Which tracks on this record have never been played.
+ * Which tracks on this album have never been played.
  *
  * Everything else on this page is computed from listening Encore already holds.
  * This is not: it needs Spotify's own list of what is on the album, which Encore
@@ -571,7 +571,7 @@ function MissingTracks({
     return (
       <EmptyState
         title="No track list for this album yet"
-        description={`Encore has been waiting ${TRACKLIST_POLL_CAP_LABEL} for this album's track list and has stopped waiting for now — it may still arrive. Every other figure on this page comes from your own history and is unaffected.`}
+        description={`Encore waited ${TRACKLIST_POLL_CAP_LABEL} for this album's track list and has stopped for now; it may still arrive — reopen this page to check. Every other figure on this page comes from your own history and is unaffected.`}
       />
     )
   }
