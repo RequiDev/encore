@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, api } from '../lib/api'
+import { clearPollStart, lazyPollInterval, pollStartKey, pollStartedAt } from '../lib/fetchpoll'
 import { qk } from '../lib/query'
 import { useRange } from '../lib/range'
 import { EMPTY, formatCount, formatDate, formatPlural } from '../lib/format'
@@ -75,15 +76,9 @@ const TRACKLIST_POLL_CAP_LABEL = 'two minutes'
 
 /**
  * How old a recorded poll start may be before it is treated as a different
- * visit rather than a continuation of this one.
- *
- * The window is persisted so that reloading a stuck page does not restart the
- * cap — but only for as long as it is plausibly the same sitting. Without an
- * expiry the key outlives its usefulness: an album capped at ten o'clock would
- * still be showing "no track list yet" on the first frame at twenty past, with
- * no request made, even though the server may have started a healthy fetch in
- * between. Twice the cap is comfortably longer than any reload-and-read cycle
- * near the cap and short enough that coming back later means a real attempt.
+ * visit rather than a continuation of this one. Twice the cap: comfortably
+ * longer than any reload-and-read cycle near the cap, and short enough that
+ * coming back later means a real attempt.
  */
 const TRACKLIST_POLL_WINDOW_MS = 2 * TRACKLIST_POLL_CAP_MS
 
@@ -98,55 +93,14 @@ export const TRACKLIST_POLL_START_KEY = 'encore.tracklist-poll-start.'
  * The next poll delay, or `false` to stop.
  *
  * Exported so it can be tested without driving a real timer through TanStack
- * Query. `gaveUp` is the cap above having passed; everything other than a
- * running fetch stops immediately, and "disabled" never polls at all because
- * there is no fetch to wait for.
+ * Query. The mechanism is in ../lib/fetchpoll, shared with the artist page's
+ * discography panel; this is the album page's interval applied to it.
  */
 export function tracklistPollInterval(
   state: AlbumTrackListState | undefined,
   gaveUp = false,
 ): number | false {
-  return state === 'pending' && !gaveUp ? TRACKLIST_POLL_MS : false
-}
-
-/**
- * When this tab first saw `pending` for this album, in epoch milliseconds,
- * recording `now` the first time it is asked.
- *
- * In `sessionStorage` rather than component state on purpose: an in-memory
- * clock restarts with the component, so somebody who reloads a stuck page a few
- * seconds before the cap gets a fresh two minutes every time and the cap never
- * arrives. Anything unreadable — private browsing, storage disabled — falls
- * back to now, which still caps the poll, just per page load.
- */
-function pollStartedAt(albumId: string, now: number): number {
-  const key = TRACKLIST_POLL_START_KEY + albumId
-  try {
-    const stored = Number(window.sessionStorage.getItem(key))
-    // A start in the future is a clock that moved under us, and one older than
-    // the window belongs to an earlier visit; both open a fresh window rather
-    // than granting an unbounded one or refusing to try again for ever.
-    if (
-      Number.isFinite(stored) &&
-      stored > 0 &&
-      stored <= now &&
-      now - stored < TRACKLIST_POLL_WINDOW_MS
-    ) {
-      return stored
-    }
-    window.sessionStorage.setItem(key, String(now))
-  } catch {
-    // See above: a per-load cap is a much smaller problem than no cap.
-  }
-  return now
-}
-
-function clearPollStart(albumId: string): void {
-  try {
-    window.sessionStorage.removeItem(TRACKLIST_POLL_START_KEY + albumId)
-  } catch {
-    // Nothing was stored, so there is nothing to clear.
-  }
+  return lazyPollInterval(state, gaveUp, TRACKLIST_POLL_MS)
 }
 
 export default function AlbumDetail(): ReactElement {
@@ -432,14 +386,16 @@ function NeverPlayedPanel({
   // it. Hence a timer for the moment the cap passes, sized from the persisted
   // start so a reload resumes the same window rather than opening a new one.
   useEffect(() => {
+    const key = pollStartKey(TRACKLIST_POLL_START_KEY, albumId)
     if (state !== 'pending') {
       // A settled answer closes the window, so an album that returns to
       // "pending" much later — a failure left alone long enough for the server
       // to try again — is given its own full two minutes.
-      if (state) clearPollStart(albumId)
+      if (state) clearPollStart(key)
       return
     }
-    const remaining = pollStartedAt(albumId, Date.now()) + TRACKLIST_POLL_CAP_MS - Date.now()
+    const remaining =
+      pollStartedAt(key, Date.now(), TRACKLIST_POLL_WINDOW_MS) + TRACKLIST_POLL_CAP_MS - Date.now()
     const timer = window.setTimeout(() => setGaveUp(true), Math.max(remaining, 0))
     return () => {
       window.clearTimeout(timer)

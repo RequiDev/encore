@@ -6,6 +6,8 @@
  * so change all three together.
  */
 
+import type { LazyFetchState } from './fetchpoll'
+
 // --- primitives ------------------------------------------------------------
 
 /** RFC 3339 timestamp with a `Z` offset. */
@@ -739,7 +741,7 @@ export interface AlbumDetail {
  * request. A client that polls this state must therefore cap itself; see
  * `tracklistPollInterval` on the album page.
  */
-export type AlbumTrackListState = 'ready' | 'pending' | 'unavailable' | 'disabled'
+export type AlbumTrackListState = LazyFetchState
 
 export interface AlbumTrackRef {
   id: string
@@ -765,6 +767,68 @@ export interface AlbumTrackList {
    * no refresh is ever coming — a date says how old an answer is without
    * claiming anything about how current it is.
    */
+  fetchedAt?: Timestamp
+}
+
+export interface DiscographyAlbumRef {
+  id: string
+  name: string
+  /** "2016", "2016-05" or "2016-05-20", at whatever precision Spotify knew. */
+  releaseDate: string | null
+  releasePrecision: string
+}
+
+/**
+ * What discography coverage did *not* count.
+ *
+ * Coverage counts `album_group = "album"` only, because "you have heard 4 of 340
+ * releases" is not a useful sentence. That makes coverage alone an overclaim by
+ * omission, so **a panel that renders the coverage must also name these**: an
+ * artist with 340 singles otherwise looks like an artist with 11 releases.
+ *
+ * `other` is any group Spotify sends that is none of the four it documents. It
+ * is zero today and exists so the four buckets plus `coverage.total` always
+ * account for every release stored, rather than a new group vanishing from both
+ * the count and the sentence describing the rest.
+ */
+export interface DiscographyExcluded {
+  singles: number
+  compilations: number
+  appearsOn: number
+  other: number
+}
+
+/**
+ * How much of an artist's own catalogue has been played.
+ *
+ * Not computed from data on disk: Encore has to ask Spotify what the artist
+ * released, which it does the first time somebody opens the page and then
+ * caches. So `missing` being empty is ambiguous, and `state` resolves it — an
+ * empty `missing` under anything but `ready` means "Encore does not know", never
+ * "you have played everything".
+ *
+ * `disabled` is the operator having turned fetching off
+ * (`ENCORE_ARTIST_ALBUMS_ENABLED=false`), separate from `unavailable` for the
+ * reason it is on the album tracklist: one is a local choice and the other is
+ * Spotify failing to answer.
+ *
+ * Two things have no counterpart on the album page. `ready` with
+ * `coverage.total === 0` is a real answer — an artist whose every release is a
+ * single — and `excluded` is then the only thing that describes them. And
+ * `covered` counts albums with *any* play, not albums played in full, so a panel
+ * must say so or "4 of 11 albums" reads as four albums heard end to end.
+ *
+ * `pending` carries no clock and nothing bounds it, exactly as on the album
+ * tracklist; a client that polls it must cap itself.
+ */
+export interface ArtistDiscography {
+  state: LazyFetchState
+  /** Albums with any play, over albums Spotify lists in the `album` group. */
+  coverage: Coverage
+  /** The counted albums with no play, newest release first. Never null. */
+  missing: DiscographyAlbumRef[]
+  excluded: DiscographyExcluded
+  /** When the discography was read. Absent until one has succeeded. */
   fetchedAt?: Timestamp
 }
 
