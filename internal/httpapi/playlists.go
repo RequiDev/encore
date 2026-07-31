@@ -12,24 +12,25 @@ import (
 
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/playlistcover"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store"
 )
 
-// playlistDescription is what Spotify shows under the name. It says where the
-// playlist came from, because a listener scrolling their library months later
-// should not have to guess which application made it.
-func playlistDescription(def domain.PlaylistDefinition) string {
-	switch def.Mode {
-	case domain.PlaylistModeMinPlays:
-		return fmt.Sprintf("Built by Encore: everything played at least %d times.", def.MinPlays)
-	case domain.PlaylistModeDiscoveries:
-		return "Built by Encore: tracks heard for the first time in this period."
-	case domain.PlaylistModeForgotten:
-		return "Built by Encore: played heavily before this period, and not during it."
-	default:
-		return "Built by Encore: most played in this period."
-	}
+// maxPlaylistDescription is Spotify's ceiling, minus the three bytes
+// store.Truncate appends when it cuts.
+//
+// domain.Describe is already bounded well under this by its own test, so the
+// clamp is a guard rather than a working part: it exists so that a future
+// clause added to a description without re-running that test is truncated
+// rather than silently rejected by Spotify, which would fail a rename for a
+// reason nobody could see.
+const maxPlaylistDescription = 297
+
+// playlistDescription is what Spotify shows under the name.
+func playlistDescription(def domain.PlaylistDefinition, builtAt time.Time) string {
+	return store.Truncate(def.Describe(builtAt), maxPlaylistDescription)
 }
 
 // handleCreatePlaylist answers POST /api/playlists.
@@ -81,7 +82,8 @@ func (s *Server) handleCreatePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := s.spotify.CreatePlaylist(ctx, token, user.SpotifyUserID, name, playlistDescription(def))
+	created, err := s.spotify.CreatePlaylist(ctx, token, user.SpotifyUserID, name,
+		playlistDescription(def, s.now()))
 	if err != nil {
 		writeError(w, r, playlistError(err))
 		return
@@ -109,9 +111,171 @@ func (s *Server) handleCreatePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Best effort, and it can never fail what has already been made. coverFor
+	// returns a state rather than an error precisely so this line cannot be
+	// written any other way.
+	cover := s.coverFor(ctx, user, stored, ids)
+	s.recordCover(ctx, user.ID, stored.ID, cover)
+	stored.Cover = cover
+
 	out := toPlaylist(stored)
 	out.Matched = sel.Matched
 	writeJSON(w, r, http.StatusCreated, out)
+}
+
+// handleRenamePlaylist answers PATCH /api/playlists/{id}.
+//
+// The project's first write to a listener's real Spotify account that is not
+// the creation of a new object, and the ordering below is the whole of its
+// safety story:
+//
+//  1. Spotify first. PUT /v1/playlists/{id} sets the name and the description
+//     in one request, so there is no half-renamed state to reconcile.
+//  2. Encore second, and only on a 2xx. The listener's Spotify account is the
+//     authority on what their playlist is called.
+//  3. Every message names what is true of the playlist right now. A refusal
+//     says the old name is still in place, because it is. A transport failure
+//     says Encore cannot tell, because it cannot — flattening that into
+//     "nothing has changed" would be a claim about somebody else's account
+//     that this process is in no position to make. And the one case where
+//     Spotify accepted and the local write did not says exactly that, rather
+//     than reporting a failure that would send somebody to rename it again.
+//
+// The Spotify playlist id comes from the stored row, never from the request
+// body: Get is scoped by user, so a caller cannot address a playlist that is
+// not theirs and no field can widen what this writes to.
+func (s *Server) handleRenamePlaylist(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, ErrInvalidRequest("That is not a valid playlist id.", nil))
+		return
+	}
+
+	var body RenamePlaylistRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if body.Name == nil {
+		writeError(w, r, ErrFieldInvalid("name", `"name" is required.`))
+		return
+	}
+	name := strings.TrimSpace(*body.Name)
+	if err := domain.ValidatePlaylistName(name); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	ctx := r.Context()
+	// Before anything is sent. A playlist that is not the caller's is not found
+	// here, on the same sentence a missing one gets, and Spotify is never asked
+	// about an id the caller could not otherwise name.
+	stored, err := s.playlists.Get(ctx, s.querier, user.ID, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	token, err := s.playlistToken(ctx, user)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// The description is rewritten alongside the name, because it is derived
+	// from the definition and the last build rather than from the name, and
+	// because one request that sets both is one fewer state to be in.
+	description := playlistDescription(stored.Definition, stored.BuiltAt)
+	if err := s.spotify.UpdatePlaylistDetails(ctx, token, stored.SpotifyID, name, description); err != nil {
+		refusal, unknown := renameError(err)
+		if unknown {
+			// The one outcome nobody can reconstruct afterwards. The listener is
+			// told Encore cannot tell what happened; if this were not logged, an
+			// operator asked "why is my playlist called something I did not
+			// choose" would have no record that Encore ever tried.
+			logging.FromContext(ctx).Warn("could not tell whether a rename reached spotify",
+				"playlist", stored.SpotifyID, logging.Err(err))
+		}
+		writeError(w, r, refusal)
+		return
+	}
+
+	updated, err := s.playlists.Rename(ctx, s.querier, user.ID, stored.ID, name)
+	if err != nil {
+		logging.FromContext(ctx).Error("spotify accepted a rename that could not be recorded",
+			"playlist", stored.SpotifyID, logging.Err(err))
+		writeError(w, r, ErrConflictf(
+			"Spotify has the new name, but Encore could not record it, so this page still "+
+				"shows the old one. Renaming it again to the same name is safe and will fix that."))
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toPlaylist(updated))
+}
+
+// renameError turns a Spotify refusal into something a person can act on, and
+// every branch states what is true of the playlist afterwards. The second
+// return value is whether this is the outcome Encore cannot see through, which
+// is the one — and the only one — worth a log line: the caller is being told
+// that nobody knows what happened to their playlist.
+//
+// The last branch is the one that matters most and is the easiest to get
+// wrong. A transport error means the request may have reached Spotify and the
+// answer may have been lost; "the playlist has not been renamed" reads like
+// the cautious thing to say and is in fact an unverified claim about somebody
+// else's account. Encore says what it knows, which is nothing, and says that
+// trying again is safe — which is true, because a rename is idempotent.
+//
+// The symmetry matters as much as the caution, which is what the answered-4xx
+// branch is for. "Encore did not get an answer" is a positive assertion about
+// Encore's own state, and for a status it read and branched on it is simply
+// false — it would also send somebody to check a playlist Encore already knows
+// was not renamed, and invite a retry that will fail identically for ever.
+// Admitting ignorance is only the safe answer while it is the true one.
+func renameError(err error) (error, bool) {
+	var paused *spotify.PausedError
+	if errors.As(err, &paused) {
+		return ErrConflictf(
+			"Spotify is rate limiting this instance until %s, so it would not accept the "+
+				"rename. Your listening data is unaffected and the playlist still has the "+
+				"name it had before; try again after that.",
+			paused.Until.UTC().Format(time.RFC3339)), false
+	}
+	if apiErr, ok := spotify.AsAPIError(err); ok {
+		switch {
+		case apiErr.IsForbidden():
+			return ErrForbiddenf(
+				"Spotify refused the rename. The permission may have been revoked; granting " +
+					"it again from Settings restores it. The playlist still has the name it had before."), false
+		case apiErr.StatusCode == http.StatusNotFound:
+			return ErrNotFoundf(
+				"Spotify no longer has that playlist — it may have been deleted from your " +
+					"account. Encore still has the definition, so you can build it again."), false
+		case apiErr.StatusCode < http.StatusInternalServerError:
+			// Spotify answered and refused. Which status it chose is nothing a
+			// listener can act on, but "Encore did not get an answer" would be a
+			// false account of what happened — and a 4xx never applied the write,
+			// so the old name is a fact here rather than a guess.
+			return ErrConflictf(
+				"Spotify would not accept the rename and did not say why. The playlist still " +
+					"has the name it had before. If it keeps happening, signing in again from " +
+					"Settings is the usual fix.").WithCause(err), false
+		}
+	}
+	// A 5xx that outlived the retry budget, or no answer at all. The cause is
+	// attached rather than dropped, and only here: this is the branch where
+	// nobody knows what happened, so it is the one where an operator has nothing
+	// else to go on. It never reaches the response — writeError sends Message
+	// and logs the chain — and it keeps a caller that simply hung up
+	// recognisable as context.Canceled, which writeError answers by writing
+	// nothing at all rather than a 409 nobody is left to read.
+	return ErrConflictf(
+		"Encore did not get an answer from Spotify, so it cannot tell whether the rename " +
+			"went through. Open the playlist in Spotify to check — renaming it again is safe " +
+			"either way.").WithCause(err), true
 }
 
 // handleListPlaylists answers GET /api/playlists.
@@ -181,9 +345,199 @@ func (s *Server) handleRebuildPlaylist(w http.ResponseWriter, r *http.Request) {
 	stored.TrackCount = len(ids)
 	stored.BuiltAt = now
 
+	// Best effort, on the same terms as a create: coverFor returns a state and
+	// no error, so a rebuild that otherwise succeeded cannot be failed by a
+	// picture.
+	cover := s.coverFor(ctx, user, stored, ids)
+	s.recordCover(ctx, user.ID, stored.ID, cover)
+	stored.Cover = cover
+
+	// The description names the date of the last build, so a rebuild has just
+	// made the stored one false. Refreshed best-effort: the tracks are already
+	// replaced and recorded, and failing a rebuild that succeeded — over a
+	// sentence — would be a worse outcome than a description that is one build
+	// behind.
+	//
+	// The description and nothing else. Nobody pressing "rebuild" asked for
+	// anything about the name, and a listener who renamed this playlist in the
+	// Spotify app has an edit Encore never recorded and could not restore. The
+	// description is different in kind: it is Encore's own sentence, whose only
+	// factual claim this rebuild has just invalidated. Somebody who rewrote
+	// that in Spotify does lose it here, which is the narrower cost of keeping
+	// the sentence true.
+	if err := s.spotify.UpdatePlaylistDescription(ctx, token, stored.SpotifyID,
+		playlistDescription(stored.Definition, now)); err != nil {
+		logging.FromContext(ctx).Warn("could not refresh a rebuilt playlist's description",
+			"playlist", stored.SpotifyID, logging.Err(err))
+	}
+
 	out := toPlaylist(stored)
 	out.Matched = sel.Matched
 	writeJSON(w, r, http.StatusOK, out)
+}
+
+// coverFor builds and uploads a cover, and reports what happened.
+//
+// It returns a state to record and **no error**, which is what makes best
+// effort structural rather than a convention somebody has to remember: there
+// is no error value for a caller to propagate by accident, so a create or a
+// rebuild cannot be failed by a picture. Every failure below becomes a state
+// the playlist row renders and offers a retry for.
+//
+// The scope is checked before anything is fetched or encoded. A 403 from the
+// image endpoint is an optional-scope refusal in exactly the sense
+// internal/sync/account.go:296 describes: it must never park the account and
+// must never be retried, so it is far better not to spend the request at all.
+func (s *Server) coverFor(
+	ctx context.Context, user domain.User, p domain.Playlist, trackIDs []string,
+) domain.PlaylistCover {
+	now := s.now()
+	lg := logging.FromContext(ctx)
+
+	if s.covers == nil || s.userToken == nil {
+		// At stays zero. domain.PlaylistCover's own doc says At is "zero while
+		// State is CoverNone", and migration 00016's
+		// playlists_cover_at_matches_state CHECK enforces exactly that in the
+		// database: (cover_state = 'none') = (cover_at IS NULL). A non-zero At
+		// here would make SetCover's UPDATE fail against a real Postgres —
+		// silently, since recordCover only logs a write failure — every time
+		// this process runs with no fetcher or no user-token function wired.
+		return domain.PlaylistCover{State: domain.CoverNone}
+	}
+
+	creds, err := s.credentials.Get(ctx, s.querier, user.ID)
+	if err != nil {
+		lg.Warn("could not read credentials for a playlist cover", logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not check its Spotify permissions.",
+		}
+	}
+	if !spotify.HasScope(creds.Scopes, spotify.ScopeImageUpload) {
+		return domain.PlaylistCover{State: domain.CoverUnauthorised, At: now}
+	}
+
+	urls, err := s.stats.CoverArtURLs(ctx, s.querier, trackIDs, playlistcover.Tiles)
+	if err != nil {
+		lg.Warn("could not select cover art", logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not work out which album covers to use.",
+		}
+	}
+	var slots [playlistcover.Tiles]string
+	copy(slots[:], urls)
+
+	tiles := s.covers.Fetch(ctx, slots)
+	rendered, err := playlistcover.Render(p.Name, coverSeed(p.Definition), tiles)
+	if err != nil {
+		lg.Warn("could not render a playlist cover", "playlist", p.SpotifyID, logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not build a cover image.",
+		}
+	}
+
+	token, err := s.userToken(ctx, user.ID)
+	if err != nil {
+		lg.Warn("could not get a token for a playlist cover", logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not reach Spotify to set the cover.",
+		}
+	}
+	if err := s.spotify.SetPlaylistCover(ctx, token, p.SpotifyID, rendered.JPEG); err != nil {
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now, Error: coverFailureReason(err),
+		}
+	}
+	return domain.PlaylistCover{State: domain.CoverReady, Tiles: rendered.Covered, At: now}
+}
+
+// coverFailureReason turns a Spotify refusal into a sentence a listener can
+// act on. It is stored, so it is bounded by store.Truncate at the repository.
+//
+// A 403 here is recorded as a failure rather than as CoverUnauthorised on
+// purpose: the scope check above already handled "never granted", so a 403 at
+// this point means the grant was revoked between the check and the call, and
+// the row should say the permission may need granting again rather than
+// silently reverting to the never-asked state.
+func coverFailureReason(err error) string {
+	var paused *spotify.PausedError
+	if errors.As(err, &paused) {
+		return "Spotify is rate limiting this instance, so it would not accept the cover."
+	}
+	if apiErr, ok := spotify.AsAPIError(err); ok && apiErr.IsForbidden() {
+		return "Spotify refused the cover. The permission may have been revoked."
+	}
+	return "Spotify would not accept the cover."
+}
+
+// coverSeed is the canonical form of a definition, and the only input to the
+// fallback pattern.
+//
+// Written out field by field rather than derived from the struct, so adding a
+// field to PlaylistDefinition does not silently change every existing
+// playlist's cover the next time it is rebuilt.
+func coverSeed(d domain.PlaylistDefinition) string {
+	from, to := "", ""
+	if !d.From.IsZero() {
+		from = d.From.UTC().Format(time.RFC3339)
+	}
+	if !d.To.IsZero() {
+		to = d.To.UTC().Format(time.RFC3339)
+	}
+	return fmt.Sprintf("%s|%s|%d|%d|%s|%s", d.Mode, d.Sort, d.Limit, d.MinPlays, from, to)
+}
+
+// recordCover stores a cover outcome and never fails the request that produced
+// it. The playlist and its tracks are already correct; losing the record of a
+// picture is not worth a 500.
+func (s *Server) recordCover(ctx context.Context, userID, id uuid.UUID, cover domain.PlaylistCover) {
+	if err := s.playlists.SetCover(ctx, s.querier, userID, id, cover); err != nil {
+		logging.FromContext(ctx).Warn("could not record a playlist cover state",
+			"playlist", id.String(), logging.Err(err))
+	}
+}
+
+// handlePlaylistCover answers POST /api/playlists/{id}/cover.
+//
+// The retry the playlist row offers. It re-selects the tracks rather than
+// storing them, because the cover should reflect what is in the playlist now:
+// a rebuild between the failure and the retry changed the answer.
+//
+// It always returns 200 with the playlist. A cover attempt cannot fail this
+// endpoint any more than it can fail a create — the state is the result, and
+// the row renders it.
+func (s *Server) handlePlaylistCover(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, ErrInvalidRequest("That is not a valid playlist id.", nil))
+		return
+	}
+
+	ctx := r.Context()
+	stored, err := s.playlists.Get(ctx, s.querier, user.ID, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sel, err := s.selectPlaylistTracks(ctx, user, stored.Definition)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	cover := s.coverFor(ctx, user, stored, sel.IDs())
+	s.recordCover(ctx, user.ID, stored.ID, cover)
+	stored.Cover = cover
+
+	writeJSON(w, r, http.StatusOK, toPlaylist(stored))
 }
 
 // handleForgetPlaylist answers DELETE /api/playlists/{id}.
@@ -297,9 +651,17 @@ func (s *Server) playlistToken(ctx context.Context, user domain.User) (string, e
 	if err != nil {
 		return "", err
 	}
+	// One sentence for both writes this scope covers. It is now reached by a
+	// rename as well as a creation, and "create playlists" shown to somebody
+	// renaming one describes a permission they are not being asked for.
+	//
+	// Deliberately not markNeedsReauth and never retried (see
+	// internal/sync/account.go): the listener simply never granted this, so
+	// parking their account over it would stop the synchronisation they did
+	// grant.
 	if !spotify.HasScope(creds.Scopes, spotify.ScopePlaylistPrivate) {
 		return "", ErrForbiddenf(
-			"Encore needs permission to create playlists on your Spotify account. " +
+			"Encore needs permission to create and change playlists on your Spotify account. " +
 				"Grant it from Settings — nothing else changes, and you can revoke it in Spotify.")
 	}
 	token, err := s.userToken(ctx, user.ID)

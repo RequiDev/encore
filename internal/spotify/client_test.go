@@ -312,3 +312,49 @@ func TestErrorMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestRequestRefusesBothRawAndJSON pins that a request carrying both body
+// shapes is a hard, immediate failure rather than a silently resolved
+// precedence.
+//
+// This is a state no current caller reaches (UpdatePlaylistDetails sets only
+// json, SetPlaylistCover sets only raw), but one the struct no longer
+// prevents now that it carries three body shapes instead of two. Picking one
+// silently — raw winning over json, say — is exactly the shape of this
+// project's three prior data-loss incidents: a wrong body reaches the wire
+// with no diagnostic signal at all. attempt() refuses to send anything in
+// that state instead, and the error names the mistake and the endpoint that
+// made it, so whoever copy-pastes their way into this learns immediately
+// rather than at 3am from a support ticket about a clobbered field.
+//
+// Fails when: the guard at the top of attempt() is removed — the request
+// then falls through to the body switch, the raw body is sent silently, and
+// this test's error check finds nothing.
+func TestRequestRefusesBothRawAndJSON(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	err := c.do(context.Background(), request{
+		method:      http.MethodPut,
+		url:         srv.URL + "/v1/example",
+		label:       "test request with both raw and json set",
+		bearer:      "user-token",
+		raw:         []byte("raw-body"),
+		contentType: "image/jpeg",
+		json:        map[string]any{"this": "must not be sent"},
+	})
+	if err == nil {
+		t.Fatal("do: want an error when both raw and json are set, got nil")
+	}
+	if !strings.Contains(err.Error(), "both a raw and a json body") {
+		t.Errorf("error = %q, want it to name the double-body mistake", err.Error())
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("server calls = %d, want 0: a malformed request must never reach the wire", got)
+	}
+}

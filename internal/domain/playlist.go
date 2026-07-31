@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,51 @@ const (
 	// listened to fully over short ones skipped through.
 	SortByTime PlaylistSort = "time"
 )
+
+// CoverState is what happened the last time Encore tried to give a playlist a
+// cover image.
+type CoverState string
+
+const (
+	// CoverNone means no attempt has been made. Every playlist made before
+	// covers existed is in this state, and stays in it until somebody asks.
+	CoverNone CoverState = "none"
+	// CoverReady means Spotify accepted an uploaded cover.
+	CoverReady CoverState = "ready"
+	// CoverFailed means an attempt was made and did not finish.
+	CoverFailed CoverState = "failed"
+	// CoverUnauthorised means the account has not granted ugc-image-upload.
+	//
+	// Deliberately not CoverFailed. The fix is a trip through Spotify's
+	// consent screen, not a retry, and offering a retry button for it would
+	// invite somebody to press a thing that cannot work.
+	CoverUnauthorised CoverState = "unauthorised"
+)
+
+// CoverTileTotal is how many tiles the mosaic asks for, and so the denominator
+// of every sentence about a cover's coverage.
+//
+// A constant rather than the number of distinct albums in the playlist: "built
+// from 2 of 4 album covers" is the honest report of a grid that wanted four and
+// got two, whereas "2 of 2" would describe a full mosaic that was never built.
+const CoverTileTotal = 4
+
+// PlaylistCover records the outcome of the last cover attempt.
+type PlaylistCover struct {
+	State CoverState
+	// Tiles is how many of CoverTileTotal came from real album artwork. Zero
+	// means the cover is the generated pattern.
+	Tiles int
+	// Error is why the last attempt failed, in the listener's own terms. Empty
+	// in every state but CoverFailed.
+	Error string
+	// At is when State was last written. Zero while State is CoverNone.
+	At time.Time
+}
+
+// Mosaic reports whether the stored cover is built from real artwork rather
+// than being the generated pattern.
+func (c PlaylistCover) Mosaic() bool { return c.State == CoverReady && c.Tiles > 0 }
 
 // Playlist bounds. Spotify's own ceiling is 10,000 items; the lower cap here is
 // about what a playlist stays useful at, and keeps a rebuild to a handful of
@@ -78,7 +124,12 @@ type Playlist struct {
 	Definition PlaylistDefinition
 	TrackCount int
 	BuiltAt    time.Time
-	CreatedAt  time.Time
+	// Cover is the outcome of the last attempt to give this playlist a picture.
+	// It is not part of the definition: two playlists with the same recipe can
+	// have different covers, because one of them was made when the catalogue
+	// had less artwork in it.
+	Cover     PlaylistCover
+	CreatedAt time.Time
 }
 
 // Valid reports whether m is a mode Encore implements.
@@ -151,6 +202,109 @@ func (d PlaylistDefinition) Range(now, firstListen time.Time) TimeRange {
 	}
 	return TimeRange{From: from, To: now}
 }
+
+// Describe renders the sentence Spotify shows beneath a playlist's name.
+//
+// It is meant to be regenerated on every rename and every rebuild, and never
+// on a schedule — the same rule migrations/00009_playlists.sql states for the
+// tracks. A playlist that changed under its owner would be worse than one that
+// is merely out of date. Creation, rebuild and rename all call it now.
+//
+// Every branch is written out rather than assembled from interchangeable
+// fragments. This is the only prose Encore writes into somebody else's Spotify
+// account, where it outlives the session that made it and is read by whoever
+// they show the playlist to; a sentence stitched together from clauses reads
+// like one, and the two singular cases below cannot be got right at all
+// without branching.
+func (d PlaylistDefinition) Describe(builtAt time.Time) string {
+	ranged := !d.From.IsZero() && !d.To.IsZero()
+	// TimeRange is the half-open interval [From, To) — see timerange.go and
+	// rangeFilter's "played_at < to" in stats.go — so To itself is one moment
+	// after the range's last included instant, never a moment a listen can
+	// fall on. Printing To as-is would show the day after the range actually
+	// ends: a "my 2025" playlist (From 1 Jan 2025, To 1 Jan 2026, per
+	// Settings.tsx) would read as running into a January on which nothing in
+	// it could have been played. web/src/lib/range.ts labels a range the same
+	// way, at its own one-millisecond resolution ("`to` is exclusive, so the
+	// last day a person sees is the instant before it").
+	lastIncluded := d.To.Add(-time.Nanosecond)
+	period := "between " + playlistDate(d.From) + " and " + playlistDate(lastIncluded)
+
+	rank := "ranked by play count"
+	if d.Sort == SortByTime {
+		rank = "ranked by listening time"
+	}
+	built := "Built by Encore on " + playlistDate(builtAt) + "."
+
+	var what string
+	switch {
+	case d.Mode == PlaylistModeMinPlays && ranged:
+		what = tracksUpTo(d.Limit) + " you played " + atLeastTimes(d.MinPlays) + " " + period
+	case d.Mode == PlaylistModeMinPlays:
+		what = tracksUpTo(d.Limit) + " you have ever played " + atLeastTimes(d.MinPlays)
+	case d.Mode == PlaylistModeDiscoveries && ranged:
+		what = "Tracks you heard for the first time " + period
+	case d.Mode == PlaylistModeDiscoveries:
+		what = "Tracks you heard for the first time, across your whole history"
+	case d.Mode == PlaylistModeForgotten:
+		// Validate refuses this mode without a range, so period is always real
+		// here. The first date is the same From: "before it, and not during it".
+		what = "Tracks you played heavily before " + playlistDate(d.From) + " and not once " + period
+	case ranged:
+		what = "Your " + mostPlayed(d.Limit) + " " + period
+	default:
+		what = "Your " + mostPlayed(d.Limit) + " of all time"
+	}
+	return what + ", " + rank + ". " + built
+}
+
+// atLeastTimes avoids "at least 1 times".
+//
+// n <= 1 is floored to the singular rather than only n == 1: Validate refuses
+// a MinPlays below 1, but migrations/00009_playlists.sql's own check
+// (min_plays >= 0) is looser, and a row written by some other route — or read
+// back by a rebuild, which loads the stored definition without re-validating
+// it — could carry a 0. That is not merely a cosmetic floor: the query behind
+// this mode groups listens per track and keeps groups with
+// "HAVING count(*) >= n", and a track can only be in that grouping at all if
+// it has at least one listen, so n <= 1 and n == 1 already select exactly the
+// same tracks. "At least once" is the true description of both.
+func atLeastTimes(n int) string {
+	if n <= 1 {
+		return "at least once"
+	}
+	return "at least " + strconv.Itoa(n) + " times"
+}
+
+// mostPlayed avoids "Your 1 most played tracks".
+func mostPlayed(limit int) string {
+	if limit == 1 {
+		return "single most played track"
+	}
+	return strconv.Itoa(limit) + " most played tracks"
+}
+
+// tracksUpTo phrases a MinPlays limit honestly.
+//
+// stats/playlist.go applies "LIMIT $4" (def.Limit) identically across every
+// mode, MinPlays included, so a playlist built from this definition can
+// contain fewer tracks than qualify — Describe has no way to know the true
+// count in advance, only the cap. "Every track ..." is a claim the query does
+// not keep for any listener whose history clears the limit, which is the
+// common case at the mode's own 100-track default. "Up to N tracks ..." is
+// true whether fewer tracks qualify than N or more do.
+func tracksUpTo(limit int) string {
+	if limit == 1 {
+		return "Up to 1 track"
+	}
+	return "Up to " + strconv.Itoa(limit) + " tracks"
+}
+
+// playlistDate is the one date format Encore writes into a Spotify account:
+// unambiguous between the two hemispheres of date convention, no ordinal
+// suffix to get wrong, and no locale, because the reader is whoever the
+// listener shows the playlist to rather than the listener's own browser.
+func playlistDate(t time.Time) string { return t.UTC().Format("2 January 2006") }
 
 // ValidatePlaylistName checks the name Spotify will show.
 func ValidatePlaylistName(name string) error {

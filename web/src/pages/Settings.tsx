@@ -32,6 +32,7 @@ import type {
   CreateShareRequest,
   EntityProgress,
   Playlist,
+  PlaylistCover,
   PlaylistMode,
   PlaylistPreview,
   ShareLink,
@@ -65,10 +66,20 @@ import {
  */
 const STATUS_POLL_MS = 30_000
 
-/** What each mode does, in the words the form uses. */
+/**
+ * What each mode does, in the words the form uses.
+ *
+ * `min_plays` is a threshold rather than a ranking, but the track limit applies
+ * to it exactly as it does to the others — so the hint may not promise
+ * "however many that is", which is a sentence the query does not keep for
+ * anyone whose history clears the limit. It is also the sentence Encore writes
+ * into the playlist's own description ("Up to 50 tracks you played at least 3
+ * times…"), and the form and the account must not disagree about what was
+ * asked for.
+ */
 const MODE_HINTS: Record<PlaylistMode, string> = {
   top: 'The most played tracks of the period.',
-  min_plays: 'Everything that reached a play count, however many that is.',
+  min_plays: 'Whatever reached a play count, up to the track limit.',
   discoveries: 'Tracks you heard for the first time ever in the period.',
   forgotten: 'Played heavily before the period, and not during it.',
 }
@@ -103,6 +114,55 @@ function supportedTimeZones(current: string): string[] {
     zones = [local, 'UTC']
   }
   return [...new Set([current, ...zones])].filter(Boolean).sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * coverLine is the row's coverage prose, and the honest report of what the
+ * mosaic managed.
+ *
+ * `4` is written out rather than taken from cover.total: it is a constant on
+ * both sides of the API, and interpolating it is how a future change produces
+ * "2 of 2", which describes a full mosaic that was never built.
+ */
+export function coverLine(cover: PlaylistCover): string {
+  switch (cover.state) {
+    case 'ready':
+      if (cover.kind === 'pattern' || cover.covered === 0) {
+        return 'Cover is a generated pattern — Encore does not have artwork for these tracks yet.'
+      }
+      if (cover.covered >= 4) {
+        return 'Cover built from 4 of 4 album covers.'
+      }
+      return `Cover built from ${cover.covered} of 4 album covers; the rest is a generated pattern.`
+    case 'failed':
+      // Not "cover not generated": SetCover overwrites the whole cover block,
+      // so this branch is also reached by a *replacement* that failed after a
+      // mosaic was already sitting on the account. "Not generated" would be a
+      // false claim about the playlist's actual artwork in that case; naming
+      // the attempt rather than the account is true in both.
+      return `Encore's last attempt to set a cover did not finish. ${cover.reason}`
+    case 'unauthorised':
+      // Same reasoning as CoverFailed above: this state can follow a
+      // previously-successful cover if the permission was revoked since, so
+      // the sentence must not claim there is no cover on the account.
+      return 'Encore does not have permission to set a cover for this playlist.'
+    default:
+      return ''
+  }
+}
+
+/**
+ * What the cover button says. `Replace`, never `Rebuild`: the row already has
+ * a `Rebuild` button for the tracks, and two buttons a word apart is how
+ * somebody replaces a playlist's contents when they wanted a new picture.
+ *
+ * `unauthorised` has no entry here — it renders a consent link instead of a
+ * button, because a retry cannot fix a permission nobody granted.
+ */
+function coverButtonLabel(cover: PlaylistCover): string {
+  if (cover.state === 'none') return 'Add cover'
+  if (cover.state === 'failed') return 'Try again'
+  return 'Replace cover'
 }
 
 /** What a manual sync found, said so that "nothing new" reads as a normal result. */
@@ -264,6 +324,37 @@ export default function Settings(): ReactElement {
         title: 'Encore stopped managing it',
         description: 'The playlist itself is still in your Spotify library.',
       })
+    },
+  })
+
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+
+  const renamePlaylist = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      api.patch<Playlist>(`/playlists/${id}`, { name }),
+    onSuccess: (updated) => {
+      setRenaming(null)
+      setRenameDraft('')
+      void queryClient.invalidateQueries({ queryKey: qk.playlists() })
+      toast.notify({
+        tone: 'success',
+        title: `Renamed to ${updated.name}`,
+        description: 'Spotify has the new name and the description has been rewritten.',
+      })
+    },
+  })
+
+  // Deliberately no success toast: the endpoint always answers 200 once
+  // handlePlaylistCover is reached, and the outcome is the state on the
+  // refreshed row, so a "success" toast would fire for a cover that failed.
+  // A failure *before* that point — an expired session, a playlist Spotify
+  // no longer has — is a real request failure, not a cover outcome, and is
+  // surfaced through isError below like every other playlist mutation.
+  const rebuildCover = useMutation({
+    mutationFn: (id: string) => api.post<Playlist>(`/playlists/${id}/cover`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.playlists() })
     },
   })
 
@@ -613,7 +704,7 @@ export default function Settings(): ReactElement {
               </Select>
             </Field>
             {playlistMode === 'min_plays' ? (
-              <Field label="Minimum plays" hint="Every track that reached this count.">
+              <Field label="Minimum plays" hint="How many plays a track needs to qualify.">
                 <Input
                   type="number"
                   min={1}
@@ -622,17 +713,26 @@ export default function Settings(): ReactElement {
                   onChange={(event) => setPlaylistMinPlays(event.target.value)}
                 />
               </Field>
-            ) : (
-              <Field label="How many tracks" hint="At most 500.">
-                <Input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={playlistLimit}
-                  onChange={(event) => setPlaylistLimit(event.target.value)}
-                />
-              </Field>
-            )}
+            ) : null}
+            {/*
+              Shown for every mode, min_plays included. The limit is applied to
+              all four of them by the query, so hiding the field here left
+              somebody choosing a threshold under a cap of 100 they could
+              neither see nor change — while the description Encore writes into
+              their Spotify account said "Up to 100 tracks".
+            */}
+            <Field
+              label="How many tracks"
+              hint="At most 500. It caps every mode, so a playlist can hold fewer tracks than qualify."
+            >
+              <Input
+                type="number"
+                min={1}
+                max={500}
+                value={playlistLimit}
+                onChange={(event) => setPlaylistLimit(event.target.value)}
+              />
+            </Field>
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -716,47 +816,133 @@ export default function Settings(): ReactElement {
 
         {(playlists.data?.length ?? 0) === 0 ? null : (
           <ul className="mt-4 divide-y divide-seam border-t border-seam">
-            {(playlists.data ?? []).map((playlist) => (
-              <li key={playlist.id} className="flex flex-wrap items-center gap-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <a
-                    className="text-sm text-ink hover:text-lamp"
-                    href={playlist.spotifyUrl}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                  >
-                    {playlist.name}
-                  </a>
-                  <p className="text-xs text-ink-faint">
-                    <span className="tabular">{formatPlural(playlist.trackCount, 'track')}</span>
-                    {' \u00b7 '}
-                    {MODE_LABELS[playlist.mode]}
-                    {playlist.builtAt ? ` \u00b7 built ${formatRelative(playlist.builtAt)}` : ''}
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  busy={rebuildPlaylist.isPending && rebuildPlaylist.variables === playlist.id}
-                  aria-label={`Rebuild ${playlist.name}`}
-                  onClick={() => rebuildPlaylist.mutate(playlist.id)}
-                >
-                  Rebuild
-                </Button>
-                <Button
-                  size="sm"
-                  busy={forgetPlaylist.isPending && forgetPlaylist.variables === playlist.id}
-                  aria-label={`Stop managing ${playlist.name}`}
-                  onClick={() => forgetPlaylist.mutate(playlist.id)}
-                >
-                  Stop managing
-                </Button>
-              </li>
-            ))}
+            {(playlists.data ?? []).map((playlist) => {
+              const isRenaming = renaming === playlist.id
+              const buildingCover = rebuildCover.isPending && rebuildCover.variables === playlist.id
+
+              return (
+                <li key={playlist.id} className="flex flex-wrap items-center gap-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    {isRenaming ? (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          const name = renameDraft.trim()
+                          if (name) renamePlaylist.mutate({ id: playlist.id, name })
+                        }}
+                      >
+                        <Field label="New name" hint="This renames it in your Spotify account too.">
+                          <Input
+                            value={renameDraft}
+                            maxLength={100}
+                            required
+                            className="max-w-sm"
+                            onChange={(event) => setRenameDraft(event.target.value)}
+                          />
+                        </Field>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Button type="submit" size="sm" variant="primary" busy={renamePlaylist.isPending}>
+                            Save
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={renamePlaylist.isPending}
+                            onClick={() => {
+                              setRenaming(null)
+                              setRenameDraft('')
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                        <p role="status" className="mt-2 min-h-5 text-sm text-ink-muted">
+                          {renamePlaylist.isPending ? 'Renaming\u2026' : ''}
+                        </p>
+                        {renamePlaylist.isError ? (
+                          <p role="alert" className="mt-2 text-sm text-ember">
+                            {errorMessage(renamePlaylist.error)}
+                          </p>
+                        ) : null}
+                      </form>
+                    ) : (
+                      <>
+                        <a
+                          className="text-sm text-ink hover:text-lamp"
+                          href={playlist.spotifyUrl}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                        >
+                          {playlist.name}
+                        </a>
+                        <p className="text-xs text-ink-faint">
+                          <span className="tabular">{formatPlural(playlist.trackCount, 'track')}</span>
+                          {' \u00b7 '}
+                          {MODE_LABELS[playlist.mode]}
+                          {playlist.builtAt ? ` \u00b7 built ${formatRelative(playlist.builtAt)}` : ''}
+                        </p>
+                        {buildingCover ? (
+                          <p role="status" className="text-xs text-ink-faint">
+                            {'Building the cover\u2026'}
+                          </p>
+                        ) : playlist.cover.state !== 'none' ? (
+                          <p className="text-xs text-ink-faint">{coverLine(playlist.cover)}</p>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                  {isRenaming ? null : (
+                    <>
+                      <Button
+                        size="sm"
+                        aria-label={`Rename ${playlist.name}`}
+                        onClick={() => {
+                          setRenaming(playlist.id)
+                          setRenameDraft(playlist.name)
+                        }}
+                      >
+                        Rename
+                      </Button>
+                      {playlist.cover.state === 'unauthorised' ? (
+                        <a className={buttonClass('primary')} href="/api/auth/spotify/playlists">
+                          <Icon name="refresh" />
+                          Allow Encore to set covers
+                        </a>
+                      ) : (
+                        <Button
+                          size="sm"
+                          busy={buildingCover}
+                          aria-label={`${coverButtonLabel(playlist.cover)} for ${playlist.name}`}
+                          onClick={() => rebuildCover.mutate(playlist.id)}
+                        >
+                          {coverButtonLabel(playlist.cover)}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        busy={rebuildPlaylist.isPending && rebuildPlaylist.variables === playlist.id}
+                        aria-label={`Rebuild ${playlist.name}`}
+                        onClick={() => rebuildPlaylist.mutate(playlist.id)}
+                      >
+                        Rebuild
+                      </Button>
+                      <Button
+                        size="sm"
+                        busy={forgetPlaylist.isPending && forgetPlaylist.variables === playlist.id}
+                        aria-label={`Stop managing ${playlist.name}`}
+                        onClick={() => forgetPlaylist.mutate(playlist.id)}
+                      >
+                        Stop managing
+                      </Button>
+                    </>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
-        {rebuildPlaylist.isError || forgetPlaylist.isError ? (
+        {rebuildPlaylist.isError || forgetPlaylist.isError || rebuildCover.isError ? (
           <p role="alert" className="mt-2 text-sm text-ember">
-            {errorMessage(rebuildPlaylist.error ?? forgetPlaylist.error)}
+            {errorMessage(rebuildPlaylist.error ?? forgetPlaylist.error ?? rebuildCover.error)}
           </p>
         ) : null}
       </Panel>

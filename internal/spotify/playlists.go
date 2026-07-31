@@ -2,6 +2,7 @@ package spotify
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +17,28 @@ import (
 // whoever they choose to show it to, which is a decision that belongs to them
 // and not to a statistics application.
 const ScopePlaylistPrivate = "playlist-modify-private"
+
+// ScopeImageUpload is the grant needed to set a playlist's cover image.
+//
+// Requested together with ScopePlaylistPrivate at the existing
+// playlist-creation consent moment, so there is no new interruption: an
+// account that never makes a playlist is never asked for either.
+//
+// Deliberately absent from config.DefaultScopes(), and it must stay absent for
+// two reasons. It is a write scope, and the sign-in grant is read-only by
+// design. And the reconsent banner is driven by MissingScopes against
+// DefaultScopes(), so a scope that is not in that list can never appear there
+// — which keeps the banner's closing sentence, "None of these let Encore
+// change anything on your Spotify account", true.
+const ScopeImageUpload = "ugc-image-upload"
+
+// MaxPlaylistCoverBytes is the largest binary JPEG Spotify will accept.
+//
+// The documented limit is 256 KB of *base64*, and base64 is four bytes out for
+// every three in, so the binary ceiling is 256 x 3/4 = 192 KB. Encore aims
+// below that rather than at it: the encoder measures the JPEG, not its base64,
+// and 2 KB of headroom is cheaper than a rejected upload.
+const MaxPlaylistCoverBytes = 190 * 1024
 
 // MaxPlaylistItemsPerRequest is Spotify's cap on one add or replace call.
 const MaxPlaylistItemsPerRequest = 100
@@ -77,6 +100,114 @@ func (c *Client) CreatePlaylist(
 		return nil, fmt.Errorf("spotify: create playlist: response carried no id")
 	}
 	return &out, nil
+}
+
+// UpdatePlaylistDetails renames a playlist and rewrites its description.
+//
+// One request sets both, so there is no state in which Spotify has the new
+// name beside a description describing the old one.
+//
+// Interactive: somebody pressed a button and is waiting. That also means a 429
+// here pauses the sign-in budget rather than the catalogue one, and never
+// records an instance-wide pause — see the comment on Client.signin.
+func (c *Client) UpdatePlaylistDetails(
+	ctx context.Context, accessToken, playlistID, name, description string,
+) error {
+	if accessToken == "" {
+		return fmt.Errorf("update playlist details: no access token")
+	}
+	if playlistID == "" {
+		return fmt.Errorf("update playlist details: no playlist id")
+	}
+	if err := c.do(ctx, request{
+		method:      http.MethodPut,
+		url:         c.endpoint("/v1/playlists/"+playlistID, nil),
+		label:       "update playlist details",
+		bearer:      accessToken,
+		json:        map[string]any{"name": name, "description": description},
+		interactive: true,
+	}); err != nil {
+		return fmt.Errorf("spotify: update playlist details: %w", err)
+	}
+	return nil
+}
+
+// UpdatePlaylistDescription rewrites a playlist's description and nothing else.
+//
+// PUT /v1/playlists/{id} takes a partial body, so omitting "name" leaves the
+// name Spotify holds exactly as it is. That is the whole reason this exists
+// beside UpdatePlaylistDetails rather than as an argument to it: a rebuild has
+// to refresh the description, because it names the date of the last build and
+// has just been made false, and it must do that without touching a name the
+// listener may have changed in the Spotify app since. Encore never recorded
+// that edit, so overwriting it would destroy something nothing here could
+// restore — and nobody pressing "rebuild" asked for anything about the name.
+//
+// Sending an empty name rather than omitting it is not the same thing: Spotify
+// would take it, and the playlist would lose its name entirely.
+//
+// Interactive, for the reason UpdatePlaylistDetails is: somebody pressed a
+// button and is waiting on the rebuild this belongs to.
+func (c *Client) UpdatePlaylistDescription(
+	ctx context.Context, accessToken, playlistID, description string,
+) error {
+	if accessToken == "" {
+		return fmt.Errorf("update playlist description: no access token")
+	}
+	if playlistID == "" {
+		return fmt.Errorf("update playlist description: no playlist id")
+	}
+	if err := c.do(ctx, request{
+		method:      http.MethodPut,
+		url:         c.endpoint("/v1/playlists/"+playlistID, nil),
+		label:       "update playlist description",
+		bearer:      accessToken,
+		json:        map[string]any{"description": description},
+		interactive: true,
+	}); err != nil {
+		return fmt.Errorf("spotify: update playlist description: %w", err)
+	}
+	return nil
+}
+
+// SetPlaylistCover replaces a playlist's cover image.
+//
+// An empty image is refused here rather than sent. Spotify would answer 400,
+// but a write path whose only guard against a zero-length body is the remote
+// server's opinion of it is one refactor away from replacing a listener's
+// cover with nothing at all — and this call replaces, it does not add.
+func (c *Client) SetPlaylistCover(
+	ctx context.Context, accessToken, playlistID string, jpeg []byte,
+) error {
+	if accessToken == "" {
+		return fmt.Errorf("set playlist cover: no access token")
+	}
+	if playlistID == "" {
+		return fmt.Errorf("set playlist cover: no playlist id")
+	}
+	if len(jpeg) == 0 {
+		return fmt.Errorf("set playlist cover: refusing to upload an empty image")
+	}
+	if len(jpeg) > MaxPlaylistCoverBytes {
+		return fmt.Errorf("set playlist cover: image is %d bytes, over the %d ceiling",
+			len(jpeg), MaxPlaylistCoverBytes)
+	}
+
+	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(jpeg)))
+	base64.StdEncoding.Encode(encoded, jpeg)
+
+	if err := c.do(ctx, request{
+		method:      http.MethodPut,
+		url:         c.endpoint("/v1/playlists/"+playlistID+"/images", nil),
+		label:       "set playlist cover",
+		bearer:      accessToken,
+		raw:         encoded,
+		contentType: "image/jpeg",
+		interactive: true,
+	}); err != nil {
+		return fmt.Errorf("spotify: set playlist cover: %w", err)
+	}
+	return nil
 }
 
 // ReplacePlaylistItems sets a playlist's contents to exactly the given tracks.

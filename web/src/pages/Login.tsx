@@ -116,7 +116,8 @@ export default function Login(): ReactElement {
 
           <p className="mt-4 text-center text-xs text-ink-faint">
             Encore asks Spotify for read access to your profile, your listening history and
-            library, and what you&rsquo;re playing now. It never writes anything to your account.
+            library, and what you&rsquo;re playing now. It writes to your account only if you ask
+            it to build a playlist, and only to playlists it created itself.
           </p>
         </div>
       </div>

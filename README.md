@@ -57,7 +57,7 @@ Spotify.*
   produces about 3,500 named artists before a single request is made.
 - **Builds Spotify playlists** from what you actually played: most played, everything over a play
   count, first-heard-in-a-period, or forgotten favourites — over any range, ranked by plays or by
-  listening time. Every definition can be previewed first, and the write permission is asked for only
+  listening time. Every definition can be previewed first, and the two write scopes are asked for only
   when you create one, so an account that never makes a playlist keeps a read-only grant.
 - **Shares a read-only link** to your statistics with somebody who has no account here. Aggregates
   only: totals, charts and rankings, never individual plays or when they happened. Revocable, and
@@ -152,8 +152,8 @@ Your app starts in *development mode*, which allows up to 25 listeners that you 
 eight read scopes at sign-in (`user-read-recently-played`, `user-read-private`, `user-read-email`,
 `user-top-read`, `user-library-read`, `user-follow-read`, `playlist-read-private`,
 `user-read-playback-state`) and never holds a grant that can modify your Spotify account unless you
-use a feature that needs one. Creating a playlist is the only such feature; it asks for its own write
-scope separately, at the moment you use it.
+use a feature that needs one. Creating or renaming a playlist, and giving it a cover, are the only
+such features; they ask for their two write scopes together, at the moment you first use one of them.
 
 ---
 

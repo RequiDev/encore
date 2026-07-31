@@ -1,7 +1,9 @@
 package spotify
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // --- User playlists: /v1/me/playlists, offset paginated ---
@@ -285,5 +288,279 @@ func TestUserPlaylistsEmptyIsEmptySlice(t *testing.T) {
 				t.Fatalf("got %d items, want 0", len(items))
 			}
 		})
+	}
+}
+
+// TestUpdatePlaylistDetailsSendsBothFields pins that one request carries the
+// name and the description together, so there is no state in which Spotify has
+// the new name and the old description.
+//
+// Fails when: the two are split into separate requests, or either key is
+// dropped from the body.
+func TestUpdatePlaylistDetailsSendsBothFields(t *testing.T) {
+	var (
+		gotMethod, gotPath, gotAuth string
+		gotBody                     map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	err := c.UpdatePlaylistDetails(context.Background(), "user-token", "playlist01",
+		"Heavy rotation", "Your 100 most played tracks of all time.")
+	if err != nil {
+		t.Fatalf("UpdatePlaylistDetails: %v", err)
+	}
+
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/v1/playlists/playlist01" {
+		t.Errorf("path = %q, want /v1/playlists/playlist01", gotPath)
+	}
+	if gotAuth != "Bearer user-token" {
+		t.Errorf("authorization = %q, want the listener's own token", gotAuth)
+	}
+	if gotBody["name"] != "Heavy rotation" {
+		t.Errorf("name = %v, want Heavy rotation", gotBody["name"])
+	}
+	if gotBody["description"] != "Your 100 most played tracks of all time." {
+		t.Errorf("description = %v, want the generated sentence", gotBody["description"])
+	}
+}
+
+// TestUpdatePlaylistDescriptionSendsNoName pins the one property this call
+// exists for.
+//
+// A rebuild refreshes the description, because it names the date of the last
+// build and the rebuild has just made it false. It must do that without
+// touching the name: the listener may have renamed the playlist in the Spotify
+// app, Encore never recorded that, and overwriting it would destroy something
+// nothing here could restore.
+//
+// The absence of the key is the assertion. An empty name is not "leave it
+// alone" — Spotify takes it, and the playlist ends up with no name at all.
+//
+// Fails when: "name" is added to the body under any value, including "".
+func TestUpdatePlaylistDescriptionSendsNoName(t *testing.T) {
+	var (
+		gotMethod, gotPath, gotAuth string
+		gotBody                     map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	err := c.UpdatePlaylistDescription(context.Background(), "user-token", "playlist01",
+		"Your 100 most played tracks of all time.")
+	if err != nil {
+		t.Fatalf("UpdatePlaylistDescription: %v", err)
+	}
+
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/v1/playlists/playlist01" {
+		t.Errorf("path = %q, want /v1/playlists/playlist01", gotPath)
+	}
+	if gotAuth != "Bearer user-token" {
+		t.Errorf("authorization = %q, want the listener's own token", gotAuth)
+	}
+	if gotBody["description"] != "Your 100 most played tracks of all time." {
+		t.Errorf("description = %v, want the generated sentence", gotBody["description"])
+	}
+	if name, present := gotBody["name"]; present {
+		t.Errorf("the body carries name = %q; a partial update must omit it entirely, or "+
+			"a name the listener chose in Spotify is overwritten by this call", name)
+	}
+}
+
+// TestSetPlaylistCoverSendsBase64UnderImageJPEG pins the body shape Spotify
+// documents: base64 text, Content-Type image/jpeg, not multipart and not JSON.
+//
+// Fails when: the raw JPEG is sent instead of its base64 (the decoded bytes
+// then differ), or the content type reverts to application/json.
+func TestSetPlaylistCoverSendsBase64UnderImageJPEG(t *testing.T) {
+	want := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F'}
+
+	var gotType string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	if err := c.SetPlaylistCover(context.Background(), "user-token", "playlist01", want); err != nil {
+		t.Fatalf("SetPlaylistCover: %v", err)
+	}
+
+	if gotType != "image/jpeg" {
+		t.Errorf("content-type = %q, want image/jpeg", gotType)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(string(gotBody))
+	if err != nil {
+		t.Fatalf("body is not base64: %v", err)
+	}
+	if !bytes.Equal(decoded, want) {
+		t.Errorf("decoded body = %v, want %v", decoded, want)
+	}
+}
+
+// TestSetPlaylistCoverRefusesAnEmptyImage is the delete-absent rule wearing a
+// different hat: this call *replaces* whatever cover the playlist has, so a
+// zero-length body is a partial input reaching a replace.
+//
+// Fails when: the length guard is removed — the request then reaches Spotify,
+// which answers 400 *after* the listener has been told a cover was set.
+func TestSetPlaylistCoverRefusesAnEmptyImage(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	for _, empty := range [][]byte{nil, {}} {
+		if err := c.SetPlaylistCover(context.Background(), "user-token", "playlist01", empty); err == nil {
+			t.Errorf("SetPlaylistCover(%v): want an error, got nil", empty)
+		}
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("%d requests reached Spotify, want 0", got)
+	}
+}
+
+// TestSetPlaylistCoverRefusesAnOversizedImage is the other end of the same
+// delete-absent discipline as the empty-image guard: a binary JPEG over
+// MaxPlaylistCoverBytes is refused before it is ever base64-encoded or sent,
+// rather than reaching Spotify and being told no after the fact.
+//
+// Fails when: the len(jpeg) > MaxPlaylistCoverBytes guard is removed, or its
+// comparison is inverted so an oversized image passes instead of a
+// within-bounds one.
+func TestSetPlaylistCoverRefusesAnOversizedImage(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	oversized := make([]byte, MaxPlaylistCoverBytes+1)
+	if err := c.SetPlaylistCover(context.Background(), "user-token", "playlist01", oversized); err == nil {
+		t.Error("SetPlaylistCover: want an error for an image over MaxPlaylistCoverBytes, got nil")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("%d requests reached Spotify, want 0", got)
+	}
+}
+
+// TestSetPlaylistCoverRebuildsTheBodyOnRetry pins that the raw body survives a
+// retry.
+//
+// This is the specific bug a raw []byte body invites: an io.Reader built once
+// and handed to a retry loop is drained by the first attempt, so the second
+// sends nothing — and "nothing" here means replacing a cover with an empty
+// image. attempt() must build the reader from r.raw on every call.
+//
+// Fails when: the body reader is hoisted out of attempt() into do(), which is
+// the natural-looking refactor that breaks it.
+func TestSetPlaylistCoverRebuildsTheBodyOnRetry(t *testing.T) {
+	want := []byte{0xFF, 0xD8, 0xFF, 0xDB, 1, 2, 3, 4}
+
+	var calls atomic.Int32
+	var lastLen atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		lastLen.Store(int32(len(body)))
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	if err := c.SetPlaylistCover(context.Background(), "user-token", "playlist01", want); err != nil {
+		t.Fatalf("SetPlaylistCover: %v", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+	if got := int(lastLen.Load()); got != base64.StdEncoding.EncodedLen(len(want)) {
+		t.Fatalf("the last attempt sent %d bytes, want %d — the body was not rebuilt",
+			got, base64.StdEncoding.EncodedLen(len(want)))
+	}
+}
+
+// TestPlaylistWritesDrawOnTheSignInBudget is the instance-wide safety property
+// of this whole feature.
+//
+// A 429 on a background request pauses the catalogue limiter *and* records
+// app_settings.spotify_paused_until, which 409s "sync now" for every user on
+// the instance and stops enrichment. Both playlist writes are interactive, so
+// a 429 on either pauses only the sign-in budget and never reaches the pause
+// observer at all.
+//
+// Fails when: interactive: true is dropped from either request — the pause
+// observer then fires and the assertion below catches it.
+func TestPlaylistWritesDrawOnTheSignInBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	var paused atomic.Int32
+	c := newTestClient(t, srv, newFakeClock(),
+		WithPauseObserver(func(time.Time) { paused.Add(1) }))
+
+	if err := c.UpdatePlaylistDetails(context.Background(), "user-token", "playlist01", "n", "d"); err == nil {
+		t.Fatal("UpdatePlaylistDetails: want an error on a 429")
+	}
+	if err := c.SetPlaylistCover(context.Background(), "user-token", "playlist01", []byte{1, 2, 3}); err == nil {
+		t.Fatal("SetPlaylistCover: want an error on a 429")
+	}
+	if got := paused.Load(); got != 0 {
+		t.Fatalf("the pause observer fired %d times; a playlist write must never "+
+			"pause Spotify instance-wide", got)
+	}
+}
+
+// TestPlaylistWriteForbiddenIsNotRetried pins that a missing scope costs one
+// request, not six.
+//
+// Fails when: classify stops wrapping non-429 4xx in retry.Stop, or a caller
+// grows its own retry around these methods.
+func TestPlaylistWriteForbiddenIsNotRetried(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	err := c.SetPlaylistCover(context.Background(), "user-token", "playlist01", []byte{1, 2, 3})
+	apiErr, ok := AsAPIError(err)
+	if !ok || !apiErr.IsForbidden() {
+		t.Fatalf("error = %v, want a 403 APIError", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1: a scope failure spends quota to fail identically", got)
 	}
 }

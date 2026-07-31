@@ -36,6 +36,7 @@ import (
 	"github.com/RequiDev/encore/internal/httpapi"
 	"github.com/RequiDev/encore/internal/importer"
 	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/playlistcover"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
 	encoresync "github.com/RequiDev/encore/internal/sync"
@@ -59,6 +60,14 @@ type spotifyStub struct {
 	// on the tracks rather than only on the response.
 	playlistItems map[string][]string
 	playlistCalls int
+	// playlistDetails is the name and description Spotify holds for each
+	// playlist. A rename is the one thing Encore changes about an object the
+	// listener already had, so a test needs to see what actually reached the
+	// account rather than only what Encore said afterwards.
+	playlistDetails map[string]playlistDetail
+	// refusePlaylistDetails, when non-zero, is the status PUT /v1/playlists/{id}
+	// answers with instead of accepting the change.
+	refusePlaylistDetails int
 
 	// albumTracks is what GET /v1/albums/{id}/tracks answers for one album,
 	// keyed by id. A test sets it directly rather than driving pagination,
@@ -83,14 +92,21 @@ type spotifyStub struct {
 	artistAlbumReqs atomic.Int64
 }
 
+// playlistDetail is what Spotify holds under a playlist's name.
+type playlistDetail struct {
+	name        string
+	description string
+}
+
 func newSpotifyStub(t *testing.T) *spotifyStub {
 	t.Helper()
 	s := &spotifyStub{
-		profile:       meProfile("listener-one", "Listener One"),
-		grantedScopes: config.DefaultScopes(),
-		playlistItems: map[string][]string{},
-		albumTracks:   map[string][]map[string]any{},
-		artistAlbums:  map[string][]map[string]any{},
+		profile:         meProfile("listener-one", "Listener One"),
+		grantedScopes:   config.DefaultScopes(),
+		playlistItems:   map[string][]string{},
+		playlistDetails: map[string]playlistDetail{},
+		albumTracks:     map[string][]map[string]any{},
+		artistAlbums:    map[string][]map[string]any{},
 	}
 	mux := http.NewServeMux()
 
@@ -156,6 +172,40 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 	}
 	mux.HandleFunc("PUT /v1/playlists/{id}/tracks", playlistTracks)
 	mux.HandleFunc("POST /v1/playlists/{id}/tracks", playlistTracks)
+
+	// The name and the description, set in one request. A refusal is recorded
+	// before it is answered, so a test can prove Encore asked and was told no
+	// rather than never asking at all.
+	//
+	// The body is partial, exactly as Spotify's is: the fields are pointers, and
+	// a key that is absent leaves what Spotify holds alone. That distinction is
+	// the whole point — a caller that sends "name": "" is not leaving the name
+	// alone, it is clearing it, and a stub that could not tell the two apart
+	// would let a rebuild wipe a name the listener chose and still pass.
+	mux.HandleFunc("PUT /v1/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name        *string `json:"name"`
+			Description *string `json:"description"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if s.refusePlaylistDetails != 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(s.refusePlaylistDetails)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"status": s.refusePlaylistDetails, "message": "Refused",
+			}})
+			return
+		}
+		held := s.playlistDetails[r.PathValue("id")]
+		if body.Name != nil {
+			held.name = *body.Name
+		}
+		if body.Description != nil {
+			held.description = *body.Description
+		}
+		s.playlistDetails[r.PathValue("id")] = held
+		writeJSON(w, map[string]any{"snapshot_id": "snap"})
+	})
 
 	mux.HandleFunc("/v1/me/player/recently-played", func(w http.ResponseWriter, r *http.Request) {
 		items := s.plays
@@ -323,6 +373,14 @@ func newInstanceWith(t *testing.T, overrides map[string]string) *instance {
 		UserToken:    poller.AccessToken,
 		AlbumTracks:  albumTracks,
 		ArtistAlbums: artistAlbums,
+		// The real fetcher, on the same terms cmd/encore-api wires it: it holds
+		// its own http.Client and never touches the Spotify Web API stub above.
+		// Every album this suite seeds carries an empty image_url (the fixtures
+		// in playItem/samePlayItem/artistPlayItem never set one), so every fetch
+		// this fetcher attempts finds an empty slot and is skipped before any
+		// network call is made -- covers are exercised here without needing a
+		// second fake CDN server.
+		Covers: playlistcover.NewFetcher(),
 		SyncNow: func(ctx context.Context, userID uuid.UUID) (httpapi.SyncOutcome, error) {
 			res, err := poller.SyncUser(ctx, userID)
 			out := httpapi.SyncOutcome{
@@ -1776,6 +1834,12 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 		}
 	}
 
+	// The listener renames it in the Spotify app. Encore never hears about that
+	// and has no record of it, so a rebuild that wrote its own stored name back
+	// would destroy an edit nothing here could restore — and nobody pressing
+	// "rebuild" asked for anything about the name.
+	inst.stub.playlistDetails[spotifyID] = playlistDetail{name: "Gym"}
+
 	// A rebuild replaces in place: the same playlist, not a second one.
 	id := created["id"].(string)
 	rebuilt := decode[map[string]any](t, b.postJSON("/api/playlists/"+id+"/rebuild", nil), http.StatusOK)
@@ -1790,6 +1854,19 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 		t.Fatalf("after a rebuild the playlist holds %d uris, want 2 — the replace did not "+
 			"clear the previous contents", len(inst.stub.playlistItems[spotifyID]))
 	}
+	// The description names the date of the last build, so a rebuild that left it
+	// alone would leave a sentence in somebody's Spotify account claiming the
+	// playlist was built on a day it was not.
+	held := inst.stub.playlistDetails[spotifyID]
+	if !strings.Contains(held.description, "Built by Encore on") {
+		t.Fatalf("a rebuild did not refresh the description; Spotify holds %q", held.description)
+	}
+	// And it refreshed the description *only*. The name is the listener's.
+	if held.name != "Gym" {
+		t.Fatalf("a rebuild changed the playlist's name to %q, want the listener's own "+
+			"%q: Encore overwrote an edit it never recorded and cannot restore",
+			held.name, "Gym")
+	}
 
 	// Listed, and forgetting it leaves Spotify alone.
 	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
@@ -1803,6 +1880,155 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 	}
 	if _, gone := inst.stub.playlistItems[spotifyID]; !gone {
 		t.Fatal("forgetting a playlist deleted it from Spotify; it belongs to the listener")
+	}
+}
+
+// TestPlaylistCoverFailureDoesNotFailTheCreate proves the defining property of
+// this whole feature end to end, against a real track selection: a create
+// returns 201 with the tracks it actually holds even when generating its
+// cover fails completely.
+//
+// The fake Spotify server deliberately does not implement
+// PUT /v1/playlists/{id}/images at all -- see newSpotifyStub -- so the upload
+// this instance attempts gets net/http's default "404 page not found" rather
+// than a 2xx: an ordinary refusal, not a crafted one. Every album this suite's
+// fixtures produce also carries an empty image_url (see the Covers comment on
+// newInstanceWith), so the fetch stage finds nothing either. The whole
+// pipeline -- fetch, render, upload -- runs, fails at the last step, and the
+// create still answers 201 with the right track count.
+//
+// This is the counterpart to internal/httpapi's own TestAFailingCoverDoesNot-
+// FailTheCreate, which proves the same property with coverFor called directly
+// because that package's tests carry no database; this is where a real track
+// selection lives.
+//
+// Fails when: coverFor's failure is allowed to reach handleCreatePlaylist as
+// an error instead of a domain.PlaylistCover, or the create checks
+// cover.state and fails the request over it.
+func TestPlaylistCoverFailureDoesNotFailTheCreate(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(),
+		"playlist-modify-private", "ugc-image-upload")
+	b := inst.browser()
+	inst.signIn(b)
+
+	seedPlays(t, inst, b, map[string]int{
+		"pl000000000000000021a": 5,
+		"pl000000000000000022b": 3,
+	})
+
+	created := decode[map[string]any](t, b.postJSON("/api/playlists", map[string]any{
+		"name": "Heavy rotation", "mode": "top", "limit": 10,
+	}), http.StatusCreated)
+
+	if n, _ := created["trackCount"].(float64); int(n) != 2 {
+		t.Fatalf("playlist holds %v tracks, want 2 -- a cover failure must not "+
+			"touch the tracks", created["trackCount"])
+	}
+	spotifyID, _ := created["spotifyId"].(string)
+	if spotifyID == "" {
+		t.Fatal("no spotify id recorded; a cover failure must not stop the playlist existing")
+	}
+	if got := len(inst.stub.playlistItems[spotifyID]); got != 2 {
+		t.Fatalf("spotify holds %d tracks, want 2", got)
+	}
+
+	cover, _ := created["cover"].(map[string]any)
+	if cover == nil {
+		t.Fatal("the response carries no cover block at all")
+	}
+	if cover["state"] != "failed" {
+		t.Fatalf("cover.state = %v, want %q -- the fixture is not actually exercising a "+
+			"failure (has the stub grown a route for the image upload?)", cover["state"], "failed")
+	}
+	if reason, _ := cover["reason"].(string); reason == "" {
+		t.Error("a failed cover carries no reason for the listener to read")
+	}
+
+	// The outcome was recorded, not just returned once: reloading the list
+	// shows the same state rather than a create that quietly reverted to
+	// "none".
+	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
+	if len(list) != 1 {
+		t.Fatalf("%d playlists listed, want 1", len(list))
+	}
+	if c, _ := list[0]["cover"].(map[string]any); c["state"] != "failed" {
+		t.Fatalf("the stored cover state is %v, want %q", c["state"], "failed")
+	}
+}
+
+// TestPlaylistRenameGoesToSpotifyFirst is the ordering, end to end and against
+// a real row.
+//
+// This is the only thing Encore changes about an object a listener already had,
+// and the unit tests for it run against a fake repository. Here the row is real,
+// so "the local row was not written" is read back out of Postgres through the
+// API rather than asserted against a double.
+func TestPlaylistRenameGoesToSpotifyFirst(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(), "playlist-modify-private")
+	b := inst.browser()
+	inst.signIn(b)
+
+	seedPlays(t, inst, b, map[string]int{
+		"pl000000000000000011a": 5,
+		"pl000000000000000012b": 3,
+	})
+
+	created := decode[map[string]any](t, b.postJSON("/api/playlists", map[string]any{
+		"name": "Heavy rotation", "mode": "top", "limit": 10,
+	}), http.StatusCreated)
+	id, _ := created["id"].(string)
+	spotifyID, _ := created["spotifyId"].(string)
+	if id == "" || spotifyID == "" {
+		t.Fatalf("the playlist has no ids to rename: %v", created)
+	}
+
+	renamed := decode[map[string]any](t, b.patchJSON("/api/playlists/"+id, map[string]any{
+		"name": "Quiet hours",
+	}), http.StatusOK)
+	if renamed["name"] != "Quiet hours" {
+		t.Fatalf("the response is still called %v, want the new name", renamed["name"])
+	}
+	if renamed["spotifyId"] != spotifyID {
+		t.Fatalf("a rename changed the Spotify playlist to %v, want the same one",
+			renamed["spotifyId"])
+	}
+
+	held := inst.stub.playlistDetails[spotifyID]
+	if held.name != "Quiet hours" {
+		t.Fatalf("Spotify holds the name %q, want %q: Encore recorded a rename the "+
+			"account never got", held.name, "Quiet hours")
+	}
+	if !strings.Contains(held.description, "Built by Encore on") {
+		t.Fatalf("the description was not rewritten alongside the name: %q", held.description)
+	}
+
+	// Now Spotify refuses. The answer must say the old name still stands, and
+	// the stored row must not have moved — read back through the API, out of the
+	// database rather than out of a fake.
+	inst.stub.refusePlaylistDetails = http.StatusForbidden
+	resp := b.patchJSON("/api/playlists/"+id, map[string]any{"name": "Something else"})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a refused rename returned %d, want 403: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "still has the name it had before") {
+		t.Fatalf("the refusal does not say what the playlist is called now: %s", body)
+	}
+
+	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
+	if len(list) != 1 {
+		t.Fatalf("%d playlists listed, want 1", len(list))
+	}
+	if list[0]["name"] != "Quiet hours" {
+		t.Fatalf("the stored name is now %v, want %q: Encore recorded a rename Spotify "+
+			"refused", list[0]["name"], "Quiet hours")
+	}
+	if inst.stub.playlistDetails[spotifyID].name != "Quiet hours" {
+		t.Fatalf("Spotify's own name changed to %q despite refusing the request",
+			inst.stub.playlistDetails[spotifyID].name)
 	}
 }
 

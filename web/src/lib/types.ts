@@ -190,6 +190,30 @@ export interface PlaylistPreview {
   limit: number
 }
 
+/** The body of PATCH /api/playlists/{id}. */
+export interface RenamePlaylistRequest {
+  name: string
+}
+
+/**
+ * What happened the last time Encore tried to give a playlist a picture.
+ *
+ * `unauthorised` is separate from `failed` because the fix is a consent journey
+ * rather than a retry, and the two must not share a button.
+ */
+export interface PlaylistCover {
+  state: 'none' | 'ready' | 'failed' | 'unauthorised'
+  /** `mosaic` or `pattern`, and empty unless `state` is `ready`. */
+  kind: '' | 'mosaic' | 'pattern'
+  /** How many of `total` tiles came from real album artwork. */
+  covered: number
+  total: number
+  /** Why the last attempt failed. Empty unless `state` is `failed`. */
+  reason: string
+  /** When `state` was last written. Null while it is `none`. */
+  at: Timestamp | null
+}
+
 export interface Playlist {
   id: string
   name: string
@@ -205,6 +229,7 @@ export interface Playlist {
   /** How many tracks qualified before the limit. Only on a build response. */
   matched?: number
   builtAt: Timestamp | null
+  cover: PlaylistCover
   createdAt: Timestamp
 }
 

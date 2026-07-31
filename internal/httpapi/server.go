@@ -15,6 +15,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"image"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/importer"
 	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/playlistcover"
 	"github.com/RequiDev/encore/internal/postgres"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
@@ -76,6 +78,10 @@ type Deps struct {
 	// /api/artists/{id}/discography could only answer "unavailable" for ever,
 	// which is a broken instance wearing the mask of a working one.
 	ArtistAlbums artistDiscographySource
+	// Covers reads album artwork for a playlist cover. Optional: a nil Covers
+	// means this process does not generate covers, and coverFor reports that as
+	// domain.CoverNone rather than attempting anything.
+	Covers coverFetcher
 }
 
 // The narrow interfaces below are the only view the HTTP layer takes of the
@@ -131,6 +137,8 @@ type playlistStore interface {
 	Get(ctx context.Context, q store.Querier, userID, id uuid.UUID) (domain.Playlist, error)
 	RecordBuild(ctx context.Context, q store.Querier, id uuid.UUID, trackCount int, at time.Time) error
 	Forget(ctx context.Context, q store.Querier, userID, id uuid.UUID) error
+	Rename(ctx context.Context, q store.Querier, userID, id uuid.UUID, name string) (domain.Playlist, error)
+	SetCover(ctx context.Context, q store.Querier, userID, id uuid.UUID, cover domain.PlaylistCover) error
 }
 
 // shareStore is the sharing repository as this package needs it.
@@ -165,6 +173,15 @@ type albumTrackSource interface {
 // exercised without a Spotify client behind it.
 type artistDiscographySource interface {
 	Discography(ctx context.Context, q store.Querier, artistID string) (artistalbums.Discography, error)
+}
+
+// coverFetcher reads album artwork for a playlist cover.
+//
+// An interface rather than the concrete *playlistcover.Fetcher so a handler
+// test can supply one that fails every tile, which is the case that proves a
+// cover cannot fail a create.
+type coverFetcher interface {
+	Fetch(ctx context.Context, urls [playlistcover.Tiles]string) [playlistcover.Tiles]image.Image
 }
 
 // Server owns the routing table and the middleware chain.
@@ -211,6 +228,9 @@ type Server struct {
 	// catalogue the caller has heard. See artistDiscographySource for why this
 	// is an interface rather than *artistalbums.Service.
 	artistAlbums artistDiscographySource
+	// covers reads album artwork for a playlist cover. Optional: nil means this
+	// process does not generate covers. See coverFetcher.
+	covers coverFetcher
 
 	syncNow func(ctx context.Context, userID uuid.UUID) (SyncOutcome, error)
 	syncing *inFlight
@@ -297,6 +317,7 @@ func New(deps Deps) (*Server, error) {
 		metrics:      deps.Metrics,
 		albumTracks:  deps.AlbumTracks,
 		artistAlbums: deps.ArtistAlbums,
+		covers:       deps.Covers,
 		syncNow:      syncNow,
 		syncing:      newInFlight(),
 		touched:      newTouchTracker(),

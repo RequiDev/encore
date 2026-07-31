@@ -27,7 +27,13 @@ func NewPlaylists(db *store.Store) *Playlists { return &Playlists{db: db} }
 
 const playlistColumns = `id, user_id, name, spotify_id, spotify_url,
                          mode, sort, track_limit, min_plays, range_from, range_to,
-                         track_count, built_at, created_at`
+                         track_count, built_at, created_at,
+                         cover_state, cover_tiles, cover_error, cover_at`
+
+// coverErrorLimit bounds what reaches playlists.cover_error. Long enough for a
+// sentence a listener reads, short enough that a Spotify error body cannot fill
+// the column.
+const coverErrorLimit = 200
 
 // Create records a playlist Encore has just made on Spotify.
 func (r *Playlists) Create(ctx context.Context, q store.Querier, p domain.Playlist) (domain.Playlist, error) {
@@ -109,6 +115,53 @@ func (r *Playlists) RecordBuild(
 	return nil
 }
 
+// Rename records a name Spotify has already accepted.
+//
+// Called only after PUT /v1/playlists/{id} has returned 2xx, never before. The
+// listener's Spotify account is the authority on what their playlist is
+// called; a local row that ran ahead of it would make every screen in Encore
+// a claim about somebody else's account that nobody had confirmed.
+func (r *Playlists) Rename(
+	ctx context.Context, q store.Querier, userID, id uuid.UUID, name string,
+) (domain.Playlist, error) {
+	row := q.QueryRow(ctx,
+		`UPDATE playlists SET name = $3 WHERE id = $1 AND user_id = $2
+         RETURNING `+playlistColumns, id, userID, name)
+
+	p, err := scanPlaylist(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Playlist{}, fmt.Errorf("%w: no such playlist", domain.ErrNotFound)
+	}
+	if err != nil {
+		return domain.Playlist{}, postgres.Classify("rename playlist", err)
+	}
+	return p, nil
+}
+
+// SetCover records the outcome of a cover attempt.
+//
+// Scoped by owner like every other write here, and the reason is not
+// hypothetical: this is reached from a handler that has already resolved the
+// playlist, and a second predicate costs nothing to keep the invariant true at
+// the only layer that can enforce it.
+func (r *Playlists) SetCover(
+	ctx context.Context, q store.Querier, userID, id uuid.UUID, cover domain.PlaylistCover,
+) error {
+	tag, err := q.Exec(ctx,
+		`UPDATE playlists
+            SET cover_state = $3, cover_tiles = $4, cover_error = $5, cover_at = $6
+          WHERE id = $1 AND user_id = $2`,
+		id, userID, string(cover.State), cover.Tiles,
+		store.Truncate(cover.Error, coverErrorLimit), nullTime(cover.At))
+	if err != nil {
+		return postgres.Classify("record playlist cover", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: no such playlist", domain.ErrNotFound)
+	}
+	return nil
+}
+
 // Forget removes Encore's record of a playlist.
 //
 // It deliberately does not delete anything on Spotify. The playlist belongs to
@@ -127,17 +180,19 @@ func (r *Playlists) Forget(ctx context.Context, q store.Querier, userID, id uuid
 
 func scanPlaylist(row rowScanner) (domain.Playlist, error) {
 	var (
-		p                 domain.Playlist
-		mode, sortBy      string
-		from, to, builtAt *time.Time
+		p                          domain.Playlist
+		mode, sortBy, coverState   string
+		from, to, builtAt, coverAt *time.Time
 	)
 	if err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.SpotifyID, &p.SpotifyURL,
 		&mode, &sortBy, &p.Definition.Limit, &p.Definition.MinPlays,
-		&from, &to, &p.TrackCount, &builtAt, &p.CreatedAt); err != nil {
+		&from, &to, &p.TrackCount, &builtAt, &p.CreatedAt,
+		&coverState, &p.Cover.Tiles, &p.Cover.Error, &coverAt); err != nil {
 		return domain.Playlist{}, err
 	}
 	p.Definition.Mode = domain.PlaylistMode(mode)
 	p.Definition.Sort = domain.PlaylistSort(sortBy)
+	p.Cover.State = domain.CoverState(coverState)
 	if from != nil {
 		p.Definition.From = from.UTC()
 	}
@@ -146,6 +201,9 @@ func scanPlaylist(row rowScanner) (domain.Playlist, error) {
 	}
 	if builtAt != nil {
 		p.BuiltAt = builtAt.UTC()
+	}
+	if coverAt != nil {
+		p.Cover.At = coverAt.UTC()
 	}
 	return p, nil
 }

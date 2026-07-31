@@ -649,17 +649,21 @@ Responses carry `X-Robots-Tag: noindex, nofollow, noarchive`.
 
 ## Playlists
 
-Builds a Spotify playlist from the caller's own listening. Requires the
-`playlist-modify-private` scope, which Encore asks for **only when somebody uses
-this feature** — the sign-in grant stays read-only for everyone else.
+Builds a Spotify playlist from the caller's own listening, and keeps its name,
+description and cover in step. Requires `playlist-modify-private`, and
+`ugc-image-upload` for the cover — Encore asks for both at once and **only when
+somebody uses this feature**, so the sign-in grant stays read-only for everyone
+else.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/auth/spotify/playlists` | Starts an OAuth journey asking for one extra scope. A browser redirect, like relink. |
+| `GET` | `/api/auth/spotify/playlists` | Starts an OAuth journey asking for both extra scopes at once. A browser redirect, like relink. |
 | `GET` | `/api/playlists` | The caller's managed playlists. |
 | `POST` | `/api/playlists` | `{ "name", "mode", "sort", "limit", "minPlays", "from", "to" }`. Creates it on Spotify and fills it in one request. `403` when the scope has not been granted, with a message naming the fix; `400` when the definition matches nothing. |
+| `PATCH` | `/api/playlists/{id}` | `{ "name" }`. Renames it **on Spotify first**, then records it here, and rewrites the description from the stored definition in the same request. `403` when the scope has been revoked; `404` when Spotify no longer has the playlist; `409` when Spotify is rate limiting, when Encore got no answer at all, or when Spotify accepted the rename and Encore could not record it — each with its own message saying what is true of the playlist afterwards. A rename is idempotent, so retrying is always safe. |
 | `POST` | `/api/playlists/preview` | The same body. Returns the tracks a definition **would** select — ranked, named, with the plays that qualified each — plus `matched` and `limit`. Touches Spotify not at all and **does not require the write scope**: seeing the selection is how somebody decides whether to grant it. |
 | `POST` | `/api/playlists/{id}/rebuild` | Re-runs the stored definition and replaces the contents in place, keeping the same Spotify playlist. |
+| `POST` | `/api/playlists/{id}/cover` | Builds and uploads a cover, and returns the playlist with the outcome in `cover`. Always `200`: cover generation is best-effort and cannot fail, so the outcome is the `cover.state` field rather than the status code. Needs `ugc-image-upload`; without it the state is `unauthorised`, which is not `failed` and is fixed by the consent link rather than by retrying. |
 | `DELETE` | `/api/playlists/{id}` | Encore stops managing it. **The playlist stays in the listener's Spotify library.** |
 
 `mode` is one of:
@@ -667,7 +671,7 @@ this feature** — the sign-in grant stays read-only for everyone else.
 | Mode | Selects |
 |---|---|
 | `top` | The `limit` most-played tracks in the range. |
-| `min_plays` | Every track played at least `minPlays` times in the range — not a top-N. |
+| `min_plays` | Tracks played at least `minPlays` times in the range — a threshold rather than a ranking, but `limit` still caps how many are taken, so a playlist can hold fewer tracks than qualify. `matched` is how many did. |
 | `discoveries` | Tracks whose **first ever** listen falls in the range. |
 | `forgotten` | Tracks played heavily *before* the range and not during it. Requires a range. |
 
@@ -675,6 +679,53 @@ this feature** — the sign-in grant stays read-only for everyone else.
 history, except for `forgotten`, which has nothing to be absent from without one.
 
 The blacklist applies: a hidden artist's tracks never reach a playlist.
+
+### The cover
+
+Every playlist Encore creates or rebuilds gets an attempt at a generated
+cover, provided the account has granted `ugc-image-upload` and this instance
+is configured to build them — neither is guaranteed, which is what `cover`'s
+`none`/`unauthorised` states below report. A cover is a 2×2 mosaic of the four
+albums contributing most of its tracks, with the name across a scrim over the
+lower third, uploaded as a 640×640 JPEG.
+
+`cover` travels on every playlist and carries its own denominator:
+
+```json
+{
+  "state": "ready",
+  "kind": "mosaic",
+  "covered": 3,
+  "total": 4,
+  "reason": "",
+  "at": "2026-07-31T14:22:05Z"
+}
+```
+
+| `state` | Means | What a client must render |
+|---|---|---|
+| `none` | No attempt has been made. Every playlist made before covers existed. | An offer to add one. |
+| `ready` | Spotify accepted an uploaded cover. | `covered` of `total` album covers, in words; `kind` is `pattern` when `covered` is 0. |
+| `failed` | An attempt was made and did not finish. | `reason`, and a retry. |
+| `unauthorised` | The account has not granted `ugc-image-upload`. | The consent link — **not** a retry, which cannot work. |
+
+`at` is when `state` was last written, in every state but `none` — no attempt
+has ever been made there, so there is no time to report, and `at` is `null`.
+
+`total` is always 4: the grid asks for four tiles however many distinct albums
+the playlist happens to contain, so `covered: 2` reports a mosaic that wanted
+four and got two rather than a full one built from two.
+
+**Generation cannot fail the operation that triggered it.** A create returns
+`201` with its tracks correct whether or not a cover came out, and a rebuild
+returns `200` the same way. A playlist that exists with Spotify's grey
+placeholder is a far better outcome than a create that reports failure because
+a CDN was slow.
+
+**The artwork is fetched from Spotify's CDN, not from the Web API.** It spends
+no quota and passes through a host allowlist before the request is made, because
+`albums.image_url` is a database column and a stored URL is a stored URL
+whatever wrote it.
 
 ### Entity statistics
 
