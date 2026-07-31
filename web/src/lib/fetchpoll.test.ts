@@ -8,7 +8,7 @@
  * differs entirely.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearPollStart, lazyPollInterval, pollStartedAt, pollStartKey } from './fetchpoll'
 
 const WINDOW = 240_000
@@ -70,6 +70,18 @@ describe('pollStartedAt', () => {
     expect(window.sessionStorage.getItem(key)).toBe('1000000')
   })
 
+  it('treats a stored zero as no start, not a real one', () => {
+    const key = pollStartKey('encore.test.', 'thing-1')
+    window.sessionStorage.setItem(key, '0')
+    // `now - stored < windowMs` alone already rejects this whenever `now` is a
+    // realistic `Date.now()` — nothing at that scale is within `windowMs` of
+    // zero. A small `now`, as a very early poll in a fresh session can produce,
+    // is the one case that check does not catch on its own; `stored > 0` is
+    // what stops 0 being read back as a real start rather than restarting the
+    // window on the very first ask.
+    expect(pollStartedAt(key, 100_000, WINDOW)).toBe(100_000)
+  })
+
   it('keys separate entities separately', () => {
     const a = pollStartKey('encore.test.', 'thing-1')
     const b = pollStartKey('encore.test.', 'thing-2')
@@ -94,5 +106,43 @@ describe('clearPollStart', () => {
     clearPollStart(key)
     expect(window.sessionStorage.getItem(key)).toBeNull()
     expect(pollStartedAt(key, 1_100_000, WINDOW)).toBe(1_100_000)
+  })
+})
+
+describe('a sessionStorage that throws on every access', () => {
+  // Safari private mode historically threw on write rather than merely
+  // refusing it, and disabled storage can throw on read too. A panel that
+  // crashes because of that takes the rest of the page down with it, so every
+  // accessor here is guarded and must degrade instead: a poll capped per page
+  // load rather than not capped at all, which is a much smaller problem.
+  beforeEach(() => {
+    // Spied on the prototype, not the `window.sessionStorage` instance: jsdom's
+    // Storage is not a plain object with own properties, so a spy placed there
+    // is silently never called and the instance's real, non-throwing methods
+    // keep answering underneath it.
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('SecurityError: private mode')
+    })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('SecurityError: private mode')
+    })
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+      throw new Error('SecurityError: private mode')
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('pollStartedAt falls back to now rather than throwing', () => {
+    const key = pollStartKey('encore.test.', 'thing-1')
+    expect(() => pollStartedAt(key, 1_000_000, WINDOW)).not.toThrow()
+    expect(pollStartedAt(key, 1_000_000, WINDOW)).toBe(1_000_000)
+  })
+
+  it('clearPollStart does nothing rather than throwing', () => {
+    const key = pollStartKey('encore.test.', 'thing-1')
+    expect(() => clearPollStart(key)).not.toThrow()
   })
 })
