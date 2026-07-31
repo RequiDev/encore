@@ -25,10 +25,19 @@ const (
 	// maxArtBytes caps one downloaded image. Spotify's largest cover is well
 	// under this.
 	maxArtBytes = 2 << 20
-	// maxArtPixels caps a decoded image's edge, checked from the header before
-	// any pixels are allocated. A 30000x30000 JPEG is a few hundred kilobytes
-	// on the wire and 3.6 GB in memory.
-	maxArtPixels = 4000
+	// maxArtPixels caps a decoded image's total pixel count (width * height),
+	// checked from the header before any pixels are allocated. A per-edge cap
+	// alone is not enough: capping only the edge at, say, 4000 still admits a
+	// 4000x4000 image, and at 8 bytes/pixel (image.NRGBA64, the widest
+	// standard color model image/png can hand back) that is 128 MB decoded
+	// from a JPEG or PNG that can be under 200 KB on the wire — the
+	// decompression bomb this cap exists to stop. Bounding the product instead
+	// bounds worst-case memory directly: at 4,000,000 pixels and 8 bytes/pixel
+	// that is a 32 MB ceiling per tile, four tiles is 128 MB, and the only
+	// consumer downscales into a 320x320 mosaic cell against covers Spotify
+	// itself caps at 640x640 — 4,000,000 is already far past anything
+	// legitimate.
+	maxArtPixels = 4_000_000
 	// maxArtRedirects bounds a CDN's redirect chain. Every hop is re-checked
 	// against the allowlist.
 	maxArtRedirects = 3
@@ -51,15 +60,25 @@ var (
 //
 // Suffix matching on Spotify's two CDN domains, https only, no explicit port
 // and no userinfo. The leading dot is load-bearing: "evilscdn.co" must not pass
-// a check that "i.scdn.co" does.
+// a check that "i.scdn.co" does. Both apexes are accepted on the same terms as
+// their subdomains -- both are Spotify-owned names, so allowing the bare apex
+// widens nothing an attacker could steer.
+//
+// A host that starts with "." (an empty label directly in front of the
+// suffix, e.g. ".scdn.co") is rejected explicitly: strings.HasSuffix treats a
+// string as its own suffix, so without this check a hostname that is exactly
+// ".scdn.co" would match by being equal to the suffix rather than by having a
+// real subdomain in front of it.
 func allowedArtHost(u *url.URL) bool {
 	if u == nil || u.Scheme != "https" || u.User != nil || u.Port() != "" {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	return host == "scdn.co" ||
-		strings.HasSuffix(host, ".scdn.co") ||
-		strings.HasSuffix(host, ".spotifycdn.com")
+	if host == "" || strings.HasPrefix(host, ".") {
+		return false
+	}
+	return host == "scdn.co" || strings.HasSuffix(host, ".scdn.co") ||
+		host == "spotifycdn.com" || strings.HasSuffix(host, ".spotifycdn.com")
 }
 
 // Fetcher reads album artwork from Spotify's CDN.
@@ -123,6 +142,10 @@ func (f *Fetcher) Fetch(ctx context.Context, urls [Tiles]string) [Tiles]image.Im
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// A decoder panicking on a hostile image must cost this tile, not
+			// the process: this goroutine has no caller to recover on its
+			// behalf, and the default is to take the whole server down.
+			defer func() { _ = recover() }()
 			// Written to its own index, never appended, so a neighbour's
 			// failure cannot shift the mosaic and put a different picture on
 			// the same playlist at the next rebuild.
@@ -179,9 +202,9 @@ func (f *Fetcher) fetchOne(ctx context.Context, raw string) (image.Image, error)
 	if err != nil {
 		return nil, fmt.Errorf("artwork is not an image: %w", err)
 	}
-	if cfg.Width > maxArtPixels || cfg.Height > maxArtPixels {
-		return nil, fmt.Errorf("artwork is %dx%d, over the %d cap",
-			cfg.Width, cfg.Height, maxArtPixels)
+	if cfg.Width*cfg.Height > maxArtPixels {
+		return nil, fmt.Errorf("artwork is %dx%d (%d px), over the %d px cap",
+			cfg.Width, cfg.Height, cfg.Width*cfg.Height, maxArtPixels)
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(body))

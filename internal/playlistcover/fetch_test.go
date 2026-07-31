@@ -54,16 +54,24 @@ func oversizedJPEG(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// oversizedPixelJPEG is a real, fully decodable JPEG one pixel wider than
-// maxArtPixels, encoded small: a single-colour 4001x1 strip is a couple of
-// kilobytes, nowhere near maxArtBytes. Only the pixel cap stands between this
-// fixture and a decoded tile.
+// oversizedPixelJPEG is a real, fully decodable 2100x2000 JPEG: 4,200,000
+// pixels, over maxArtPixels, encoded small because the image is a single
+// colour. Solid colour compresses to a few tens of kilobytes regardless of
+// pixel count, nowhere near maxArtBytes, so only the pixel cap -- not the byte
+// cap -- can be what rejects this fixture. maxArtPixels bounds the *product*
+// of width and height rather than either edge alone: a wide, cheap-to-encode
+// image is exactly the shape a per-edge-only cap would have missed.
 func oversizedPixelJPEG(t *testing.T) []byte {
 	t.Helper()
-	const width = maxArtPixels + 1
-	img := image.NewRGBA(image.Rect(0, 0, width, 1))
-	for x := 0; x < width; x++ {
-		img.Set(x, 0, color.RGBA{10, 20, 30, 255})
+	const width, height = 2100, 2000
+	if width*height <= maxArtPixels {
+		t.Fatalf("fixture is %d pixels, want more than maxArtPixels (%d)", width*height, maxArtPixels)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, color.RGBA{10, 20, 30, 255})
+		}
 	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, nil); err != nil {
@@ -79,7 +87,11 @@ func oversizedPixelJPEG(t *testing.T) []byte {
 //
 // Fails when: the leading dot is dropped from either suffix (evilscdn.co and
 // notspotifycdn.com then pass); the https requirement is dropped; the port or
-// userinfo checks are dropped; or the check stops lowercasing the host.
+// userinfo checks are dropped; the check stops lowercasing the host; the bare
+// spotifycdn.com apex stops being accepted (an inconsistency with the bare
+// scdn.co apex, which must stay accepted); or the empty-label guard is
+// removed and a host that is just ".scdn.co" starts passing by being equal to
+// the suffix rather than by having a real label in front of it.
 func TestAllowedArtHostAcceptsOnlySpotifysCDNs(t *testing.T) {
 	tests := []struct {
 		raw  string
@@ -88,6 +100,7 @@ func TestAllowedArtHostAcceptsOnlySpotifysCDNs(t *testing.T) {
 		{"https://i.scdn.co/image/ab67616d0000b273", true},
 		{"https://mosaic.scdn.co/640/abc", true},
 		{"https://scdn.co/image/abc", true},
+		{"https://spotifycdn.com/image/abc", true}, // the other apex, same standing as scdn.co
 		{"https://image-cdn-ak.spotifycdn.com/image/abc", true},
 		{"https://I.SCDN.CO/image/abc", true},
 
@@ -97,6 +110,7 @@ func TestAllowedArtHostAcceptsOnlySpotifysCDNs(t *testing.T) {
 		{"https://evilscdn.co/image/abc", false},            // no leading dot
 		{"https://notspotifycdn.com/image/abc", false},      // no leading dot
 		{"https://i.scdn.co.evil.example/abc", false},       // suffix is not a suffix
+		{"https://.scdn.co/image/abc", false},               // empty label, not a subdomain
 		{"https://169.254.169.254/latest/meta-data", false}, // the address this guard exists for
 		{"https://localhost/image/abc", false},
 		{"https://10.0.0.5/image/abc", false},
@@ -209,13 +223,20 @@ func TestFetchDropsAnOversizedBody(t *testing.T) {
 }
 
 // TestFetchDropsAnOversizedImage pins the pixel cap: a decompression bomb
-// need not be a large download. The fixture here is a couple of kilobytes on
-// the wire, so a byte cap alone would wave it through; only checking
+// need not be a large download. The fixture here is tens of kilobytes on the
+// wire, so a byte cap alone would wave it through; only checking
 // image.DecodeConfig's reported dimensions before the full decode catches it.
 //
-// Fails when: the width/height check against maxArtPixels is removed, or
-// image.Decode runs before that check instead of after it — the tile is then
-// kept despite exceeding the cap.
+// This test cannot also pin that DecodeConfig runs strictly *before*
+// image.Decode: Fetch's return type carries no error, only a nil-or-not tile,
+// so from outside the package a version that decodes first and then rejects
+// on the same width*height check is indistinguishable from one that never
+// decodes at all -- both leave got[0] nil. Moving image.Decode above the
+// pixel check changes what gets allocated, not what gets returned, so it does
+// not make this test fail. What this test does pin -- and what does make it
+// fail -- is that the check exists and rejects, at whatever point it runs.
+//
+// Fails when: the width*height check against maxArtPixels is removed.
 func TestFetchDropsAnOversizedImage(t *testing.T) {
 	body := oversizedPixelJPEG(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -229,6 +250,77 @@ func TestFetchDropsAnOversizedImage(t *testing.T) {
 	got := f.Fetch(context.Background(), [Tiles]string{srv.URL + "/image/abc", "", "", ""})
 	if got[0] != nil {
 		t.Error("an image over the pixel cap produced a tile")
+	}
+}
+
+// TestFetchDropsANonOKStatus pins that a non-200 status is rejected on its own
+// terms, not incidentally because whatever body came with it failed to
+// decode. The body here is a real, valid, otherwise-acceptable JPEG served
+// alongside a 404: if the status check were deleted, this body would decode
+// clean and produce a tile, which is the only thing that distinguishes this
+// case from serving an empty 404 body (which fails to decode either way and
+// would pass this test for the wrong reason).
+//
+// Fails when: the resp.StatusCode != http.StatusOK check is removed — the
+// valid JPEG below then decodes and the tile is kept despite the 404.
+func TestFetchDropsANonOKStatus(t *testing.T) {
+	body := tinyJPEG(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	f := NewFetcher()
+	f.allow = func(u *url.URL) bool { return u.Host == mustHost(t, srv.URL) }
+
+	got := f.Fetch(context.Background(), [Tiles]string{srv.URL + "/x", "", "", ""})
+	if got[0] != nil {
+		t.Error("a valid body served with a 404 status produced a tile")
+	}
+}
+
+// TestFetchBoundsARedirectLoopBetweenAllowedHosts pins maxArtRedirects as a
+// backstop that is load-bearing on its own, independent of the host
+// allowlist.
+//
+// Setting a custom CheckRedirect on an http.Client replaces net/http's
+// default redirect limit outright rather than adding to it, so a client whose
+// CheckRedirect only re-checks the allowlist has no cap underneath it at all.
+// Two servers that are both on the allowlist and redirect to each other are
+// indistinguishable from a legitimate multi-hop CDN to the host check alone —
+// only a hop-count limit ends the loop, and without one this runs until the
+// context deadline, sending tens of thousands of requests at two hosts that
+// did nothing wrong.
+//
+// Fails when: the len(via) >= maxArtRedirects check is removed from
+// CheckRedirect — hits then climb into the tens of thousands within the
+// timeout instead of stopping at exactly maxArtRedirects.
+func TestFetchBoundsARedirectLoopBetweenAllowedHosts(t *testing.T) {
+	var hits atomic.Int32
+	var a, b *httptest.Server
+	a = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, r, b.URL+"/x", http.StatusFound)
+	}))
+	defer a.Close()
+	b = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, r, a.URL+"/x", http.StatusFound)
+	}))
+	defer b.Close()
+
+	hostA, hostB := mustHost(t, a.URL), mustHost(t, b.URL)
+	f := NewFetcher()
+	f.allow = func(u *url.URL) bool { return u.Host == hostA || u.Host == hostB }
+
+	got := f.Fetch(context.Background(), [Tiles]string{a.URL + "/x", "", "", ""})
+
+	if got[0] != nil {
+		t.Error("a redirect loop between two allowed hosts produced a tile")
+	}
+	if n := hits.Load(); n != maxArtRedirects {
+		t.Errorf("%d requests were made chasing a redirect loop between two allowed hosts, want exactly maxArtRedirects (%d)", n, maxArtRedirects)
 	}
 }
 
