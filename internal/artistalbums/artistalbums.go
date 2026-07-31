@@ -42,17 +42,6 @@ import (
 )
 
 const (
-	// maxPages bounds one artist's walk. Twenty pages of fifty is a thousand
-	// releases, which no artist in a personal listening history approaches even
-	// counting every appearance; it exists so a paging bug cannot spend the
-	// instance's quota on one record.
-	//
-	// The same page count as albumtracks' and much less headroom, because a
-	// discography includes every single, compilation and appears_on credit. That
-	// is also why the bound must not be tightened casually: a truncated walk is
-	// recorded as a failure and never stored, so a bound below a real artist's
-	// release count leaves their panel reading "could not be read" for ever.
-	maxPages = 20
 	// concurrency is how many discographies this process walks at once. Small on
 	// purpose: these start inside page requests, and they draw on the same quota
 	// enrichment needs to do its job.
@@ -63,8 +52,19 @@ const (
 	// does not strand the artist for long.
 	leaseTTL = 3 * time.Minute
 	// fetchTimeout bounds one artist's whole walk — every page, every retry and
-	// every rate-limit wait inside it. Longer than albumtracks' ninety seconds
-	// because this walk is up to twenty sequential requests rather than one.
+	// every rate-limit wait inside it, up to spotify.Client.ArtistAlbums' own
+	// forty-page ceiling (see the zero passed to it in fill, below).
+	//
+	// Under the default budget (2 requests/second, burst 4) forty pages cost
+	// about eighteen seconds of pacing; 120 seconds is roughly six times that,
+	// which comfortably covers ordinary retries on top. It stops being
+	// comfortable only if an operator sets ENCORE_SPOTIFY_RATE_LIMIT far below
+	// the default — below roughly a third of a request per second, forty pages
+	// alone exceed 120s — but that is a general consequence of choosing a very
+	// slow budget, already true of every Spotify endpoint this process calls,
+	// and not something worth a bespoke bound here: a walk that runs out of time
+	// under such a configuration is recorded as an ordinary failure and retried
+	// after failedRetryAfter, the same as any other timeout.
 	fetchTimeout = 120 * time.Second
 	// failedRetryAfter is how long a failed discography is left alone. Failures
 	// here are timeouts and rate limits, which clear in minutes; making somebody
@@ -347,7 +347,14 @@ func (s *Service) Discography(ctx context.Context, q store.Querier, artistID str
 // whether and when it runs is the Gate's decision, and everything it does is
 // this package's.
 func (s *Service) fill(ctx context.Context, artistID string) error {
-	items, err := s.sp.ArtistAlbums(ctx, artistID, maxPages)
+	// 0, not a local constant: spotify.Client.ArtistAlbums falls back to its own
+	// defaultArtistAlbumPages when the caller passes <= 0, and that default — not
+	// a second number kept here — is where this project's page-budget decision
+	// for a discography walk actually lives. It was deliberately raised from
+	// twenty to forty (see that constant's comment) precisely because a bound
+	// pinned here once fell out of step with it: this call now cannot disagree
+	// with the client's own ceiling, because it never states one.
+	items, err := s.sp.ArtistAlbums(ctx, artistID, 0)
 	if err != nil {
 		// Every failure lands here, ErrTruncated included — and that one arrives
 		// with a partial discography attached. The partial must never reach the

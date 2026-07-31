@@ -147,32 +147,51 @@ type fakeFetcher struct {
 	// block, when non-nil, holds the fetch open until it is closed, which is how
 	// a test observes the state while a walk is genuinely in flight.
 	block chan struct{}
+	// heedCtx makes the fake behave the way a real client does: it gives up as
+	// soon as its context ends, returning that context's error instead of
+	// waiting for block.
+	//
+	// Off by default, and that is not laziness. Close both cancels and waits,
+	// and most tests here use block purely as a barrier — "the walk is
+	// genuinely in flight, now assert" — with Close called once the test is
+	// done with it. A fake that always raced ctx.Done() against block would let
+	// Close's own cancellation win that race before the goroutine has consumed
+	// the legitimate release, intermittently recording a failure instead of a
+	// write; TestTheWalkOutlivesTheRequestContext hit exactly that before this
+	// field existed. The two tests that are genuinely about a walk dying with
+	// its context — a cancelled walk still recording its failure — turn it on
+	// explicitly. Same shape as internal/albumtracks' fakeFetcher.heedCtx and
+	// internal/lazyfetch's own fake.
+	heedCtx bool
 	// entered is closed once the call has begun, so a test knows the fetch
 	// goroutine has already derived its context. ended is closed as it returns,
 	// so a test knows nothing further will read that context.
 	//
 	// Both nil by default, and every test that does not set them gets the same
-	// behaviour as before they existed. The one test that needs them —
-	// TestTheWalkOutlivesTheRequestContext — closes block and then must wait for
-	// the call to have actually returned before calling Close: without that wait,
-	// Close's own cancellation of the walk's context can reach this method's
-	// select before the goroutine has consumed the legitimate release, and the
-	// two race for which case fires. That is precisely the shape the shutdown
-	// test warning describes — the thing holding a timing window open must not
-	// be releasable by Close itself — even though here Close runs synchronously
-	// rather than in a goroutine; the race is the same one either way. This
-	// mirrors internal/albumtracks' fakeFetcher, which carries the identical
-	// fields for the identical reason.
+	// behaviour as before they existed. The one test that needs them,
+	// TestTheWalkOutlivesTheRequestContext, leaves heedCtx off and waits for
+	// ended before calling Close purely so the write it asserts on has
+	// deterministically landed by then — with heedCtx off there is no ctx.Done
+	// case for Close's cancellation to win a race against in the first place,
+	// which is the point of that field rather than a second guard against the
+	// same hazard. This mirrors internal/albumtracks' fakeFetcher, which carries
+	// the identical fields for the identical reason.
 	entered     chan struct{}
 	ended       chan struct{}
 	enteredOnce sync.Once
 	endedOnce   sync.Once
+	// gotMaxPages is the page budget the service actually passed on the last
+	// call, which is the only way to see whether fill states its own page count
+	// or defers to spotify.Client.ArtistAlbums' default.
+	gotMaxPages int
 }
 
-func (f *fakeFetcher) ArtistAlbums(ctx context.Context, _ string, _ int) ([]spotify.ArtistAlbum, error) {
+func (f *fakeFetcher) ArtistAlbums(ctx context.Context, _ string, maxPages int) ([]spotify.ArtistAlbum, error) {
 	f.mu.Lock()
 	f.calls++
-	block, items, err := f.block, f.items, f.err
+	f.gotMaxPages = maxPages
+	block, heed := f.block, f.heedCtx
+	items, err := f.items, f.err
 	entered, ended := f.entered, f.ended
 	f.mu.Unlock()
 	if entered != nil {
@@ -182,10 +201,14 @@ func (f *fakeFetcher) ArtistAlbums(ctx context.Context, _ string, _ int) ([]spot
 		defer f.endedOnce.Do(func() { close(ended) })
 	}
 	if block != nil {
-		select {
-		case <-block:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		if heed {
+			select {
+			case <-block:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		} else {
+			<-block
 		}
 	}
 	return items, err
@@ -195,6 +218,12 @@ func (f *fakeFetcher) called() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeFetcher) maxPagesRequested() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gotMaxPages
 }
 
 // inlineWriter runs the transaction body straight through, with no pool behind
@@ -319,6 +348,35 @@ func TestDiscographyDoesNotWaitForSpotify(t *testing.T) {
 		t.Fatal("Discography did not return while the walk was still in flight; the page waits on Spotify")
 	}
 	close(fetch.block)
+}
+
+// TestFillDefersThePageBudgetToTheClient pins a defect a review of this
+// package caught before it ever shipped: fill once passed a local maxPages
+// constant of 20, silently overriding spotify.Client.ArtistAlbums' own
+// forty-page default — artistAlbumBudget only falls back to that default when
+// the caller passes zero or less. That default was deliberately raised from
+// twenty to forty upstream (internal/spotify/artistalbums.go), specifically
+// because a walk pinned at twenty never stores anything for an artist whose
+// combined releases exceed it — truncation is a failure and the replace is
+// all-or-nothing, so their panel reads "could not be read" forever. A second,
+// locally chosen number in this package can fall out of step with that
+// decision the moment either one changes without the other; passing zero
+// means there is only ever one number to agree with.
+func TestFillDefersThePageBudgetToTheClient(t *testing.T) {
+	cat := &fakeCatalog{claimOK: true}
+	fetch := &fakeFetcher{items: []spotify.ArtistAlbum{album("a1", "First")}}
+	s := newService(t, cat, fetch, at)
+
+	if _, err := s.Discography(context.Background(), nil, "artist-1"); err != nil {
+		t.Fatalf("Discography: %v", err)
+	}
+	s.Close()
+
+	if got := fetch.maxPagesRequested(); got > 0 {
+		t.Fatalf("fill asked for %d pages, want <= 0: a positive number here overrides "+
+			"spotify.Client.ArtistAlbums' own forty-page default with a smaller one, which is "+
+			"exactly the regression this test exists to catch", got)
+	}
 }
 
 // TestTheDiscographyAndItsStatusCommitTogether is the single-transaction
@@ -718,7 +776,10 @@ func TestTheWalkOutlivesTheRequestContext(t *testing.T) {
 // through a door nothing else closes.
 func TestAFailureIsStillRecordedWhenCloseCancelsTheWalk(t *testing.T) {
 	cat := &fakeCatalog{claimOK: true}
-	fetch := &fakeFetcher{block: make(chan struct{})}
+	// heedCtx: true because this test is genuinely about the walk dying with
+	// its context: block is never closed, so the only way the fetch call ends
+	// is Close's cancellation reaching ctx.Done.
+	fetch := &fakeFetcher{block: make(chan struct{}), heedCtx: true}
 	s := newService(t, cat, fetch, at)
 
 	if _, err := s.Discography(context.Background(), nil, "artist-1"); err != nil {
@@ -840,7 +901,10 @@ func TestDisabledStillServesAStaleDiscographyWithoutRefreshing(t *testing.T) {
 func TestCloseEndsAWalkInFlight(t *testing.T) {
 	cat := &fakeCatalog{claimOK: true}
 	block := make(chan struct{}) // deliberately never closed by the test body
-	fetch := &fakeFetcher{block: block}
+	// heedCtx: true because this test's whole point is that Close's cancellation
+	// is what ends the walk; without it, nothing here would ever unblock the
+	// fetch, and the test would hang until its own 5-second timeout.
+	fetch := &fakeFetcher{block: block, heedCtx: true}
 	s := newService(t, cat, fetch, at)
 
 	// A rescue, registered after the service so it runs *before* Cleanup's Close:
