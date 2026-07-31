@@ -192,7 +192,7 @@ That list is read **the first time somebody opens the album's page** and then ca
 history are never opened, and enumerating them all would spend the instance's quota on questions
 nobody asked.
 
-It is also the one Spotify request `encore-api` makes that nobody clicked for — it fires as a side
+It is the first Spotify request `encore-api` makes that nobody clicked for — it fires as a side
 effect of *viewing* a page — so an operator can switch it off with
 `ENCORE_ALBUM_TRACKS_ENABLED=false`. This endpoint still answers when they have.
 

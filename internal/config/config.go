@@ -192,12 +192,11 @@ type AlbumTracks struct {
 	// Enabled controls whether this instance ever asks Spotify what is on an
 	// album. On by default, so the feature works out of the box.
 	//
-	// It has a switch at all because this is the one Spotify request Encore's
-	// API makes that is not the direct consequence of somebody clicking a thing:
-	// signing in, "sync now" and playlist creation are each an action a person
-	// took, whereas this fires as a side effect of *viewing a page*. Unattended
-	// egress is an operator's decision, the same judgement that made the
-	// now-playing poller opt-in.
+	// It has a switch at all because, unlike signing in, "sync now" and playlist
+	// creation — each an action a person took — this fires as a side effect of
+	// *viewing a page*. Unattended egress is an operator's decision, the same
+	// judgement that made the now-playing poller opt-in and that gives
+	// ArtistAlbums.Enabled below its own switch too.
 	//
 	// Off means "do not fetch", not "forget what is on disk": a listing already
 	// stored is still served, with the date it was read, and the album page says
