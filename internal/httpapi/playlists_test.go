@@ -1302,6 +1302,58 @@ func (f *coverFixture) playlist() domain.Playlist {
 	}
 }
 
+// TestCoverNoneCarriesNoTimestamp pins the domain invariant coverFor's two
+// "not configured" short circuits must respect: At has to stay the zero value
+// whenever State is CoverNone, because domain.PlaylistCover's own doc says so
+// ("Zero while State is CoverNone") and migration 00016's
+// playlists_cover_at_matches_state CHECK enforces it in the database --
+// (cover_state = 'none') = (cover_at IS NULL). A caller that got this wrong
+// would never see the failure: recordCover only logs a rejected write, it
+// does not surface one, so the row silently keeps whatever it held before.
+//
+// Fails when: either short circuit stamps At with s.now() instead of leaving
+// it at time.Time's zero value -- which is exactly the shape review found in
+// the first version of this code, confirmed end to end in
+// test/integration/playlistcover_test.go's
+// TestSetCoverRejectsANoneStateWithATimestamp.
+func TestCoverNoneCarriesNoTimestamp(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		covers coverFetcher
+		token  func(context.Context, uuid.UUID) (string, error)
+	}{
+		{
+			name:   "no fetcher configured",
+			covers: nil,
+			token:  func(context.Context, uuid.UUID) (string, error) { return "tok", nil },
+		},
+		{
+			name:   "no user-token function configured",
+			covers: &fakeCoverFetcher{},
+			token:  nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := newTestServer(t)
+			ts.Server.covers = tc.covers
+			ts.Server.userToken = tc.token
+
+			got := ts.Server.coverFor(context.Background(), ts.sessions.user, domain.Playlist{
+				ID: uuid.New(), UserID: ts.sessions.user.ID, SpotifyID: storedSpotifyID,
+			}, nil)
+
+			if got.State != domain.CoverNone {
+				t.Fatalf("state = %q, want %q", got.State, domain.CoverNone)
+			}
+			if !got.At.IsZero() {
+				t.Fatalf("At = %s, want the zero value: a non-zero At beside CoverNone "+
+					"is a row migration 00016's CHECK constraint refuses to let SetCover "+
+					"write", got.At)
+			}
+		})
+	}
+}
+
 // TestAMissingImageScopeIsUnauthorisedNotFailed pins the two states apart, and
 // pins that no request is spent discovering it.
 //

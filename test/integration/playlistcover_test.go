@@ -157,6 +157,36 @@ func TestCoverAtMustMatchState(t *testing.T) {
 	}
 }
 
+// TestSetCoverRejectsANoneStateWithATimestamp is the other half of the same
+// constraint TestCoverAtMustMatchState pins, and the one this task's own
+// review found actually violated in production code: coverFor's "no fetcher
+// configured" branch returned domain.PlaylistCover{State: CoverNone, At:
+// now()} before it was fixed. TestCoverAtMustMatchState's own comment assumed
+// "SetCover always supplies both columns together and could never produce
+// this row itself" -- true for the direction it tests, but not for this one:
+// SetCover writes whatever domain.PlaylistCover a caller hands it, and a
+// caller can get the None/At pairing wrong just as easily as the Ready/nil
+// one. This goes through SetCover itself, not raw SQL, because that is the
+// exact path the bug travelled -- the constraint is the last line of defence
+// for a future, buggier caller doing the same thing again.
+//
+// Fails when: migration 00016's CHECK is dropped, or SetCover stops passing
+// cover_at straight through -- the write below would then silently succeed
+// with a state/timestamp combination the rest of the system promises cannot
+// exist, and recordCover's caller would never learn its write was rejected.
+func TestSetCoverRejectsANoneStateWithATimestamp(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("cover-none-timestamp")
+	p := newCoverPlaylist(t, e, user.ID, "Heavy rotation")
+
+	err := e.Accounts.Playlists.SetCover(e.Ctx(), e.Store.DB(), user.ID, p.ID,
+		domain.PlaylistCover{State: domain.CoverNone, At: time.Now().UTC()})
+	if err == nil {
+		t.Fatal("SetCover wrote cover_state = 'none' alongside a non-null cover_at, " +
+			"and nothing rejected it")
+	}
+}
+
 // TestRenameUpdatesTheStoredName pins that Rename writes the name and returns
 // the full playlist row, scoped by owner like every other write here.
 //

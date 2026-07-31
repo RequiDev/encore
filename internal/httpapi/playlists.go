@@ -395,7 +395,14 @@ func (s *Server) coverFor(
 	lg := logging.FromContext(ctx)
 
 	if s.covers == nil || s.userToken == nil {
-		return domain.PlaylistCover{State: domain.CoverNone, At: now}
+		// At stays zero. domain.PlaylistCover's own doc says At is "zero while
+		// State is CoverNone", and migration 00016's
+		// playlists_cover_at_matches_state CHECK enforces exactly that in the
+		// database: (cover_state = 'none') = (cover_at IS NULL). A non-zero At
+		// here would make SetCover's UPDATE fail against a real Postgres —
+		// silently, since recordCover only logs a write failure — every time
+		// this process runs with no fetcher or no user-token function wired.
+		return domain.PlaylistCover{State: domain.CoverNone}
 	}
 
 	creds, err := s.credentials.Get(ctx, s.querier, user.ID)

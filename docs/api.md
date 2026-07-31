@@ -706,6 +706,9 @@ scrim over the lower third, uploaded as a 640×640 JPEG.
 | `failed` | An attempt was made and did not finish. | `reason`, and a retry. |
 | `unauthorised` | The account has not granted `ugc-image-upload`. | The consent link — **not** a retry, which cannot work. |
 
+`at` is when `state` was last written, in every state but `none` — no attempt
+has ever been made there, so there is no time to report, and `at` is `null`.
+
 `total` is always 4: the grid asks for four tiles however many distinct albums
 the playlist happens to contain, so `covered: 2` reports a mosaic that wanted
 four and got two rather than a full one built from two.
