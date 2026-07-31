@@ -313,27 +313,27 @@ func TestErrorMessage(t *testing.T) {
 	}
 }
 
-// TestRequestPrefersRawOverJSON pins what happens if a caller ever sets both
-// raw and json on the same request — a state no current caller reaches
-// (UpdatePlaylistDetails sets only json, SetPlaylistCover sets only raw), but
-// one the struct no longer prevents now that it carries three body shapes
-// instead of two. Leaving that combination undefined would let a future
-// caller silently pick whichever shape happened to win, depending on the
-// order of cases inside attempt().
+// TestRequestRefusesBothRawAndJSON pins that a request carrying both body
+// shapes is a hard, immediate failure rather than a silently resolved
+// precedence.
 //
-// raw wins, matching the order it is checked in attempt()'s body and
-// content-type switches: r.form, then r.raw, then r.json. json is entirely
-// ignored, byte for byte and header for header.
+// This is a state no current caller reaches (UpdatePlaylistDetails sets only
+// json, SetPlaylistCover sets only raw), but one the struct no longer
+// prevents now that it carries three body shapes instead of two. Picking one
+// silently — raw winning over json, say — is exactly the shape of this
+// project's three prior data-loss incidents: a wrong body reaches the wire
+// with no diagnostic signal at all. attempt() refuses to send anything in
+// that state instead, and the error names the mistake and the endpoint that
+// made it, so whoever copy-pastes their way into this learns immediately
+// rather than at 3am from a support ticket about a clobbered field.
 //
-// Fails when: the switches in attempt() are reordered so json is checked
-// before raw, which would make this test observe the JSON body and the
-// application/json content type instead.
-func TestRequestPrefersRawOverJSON(t *testing.T) {
-	var gotType string
-	var gotBody []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotType = r.Header.Get("Content-Type")
-		gotBody, _ = io.ReadAll(r.Body)
+// Fails when: the guard at the top of attempt() is removed — the request
+// then falls through to the body switch, the raw body is sent silently, and
+// this test's error check finds nothing.
+func TestRequestRefusesBothRawAndJSON(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -348,13 +348,13 @@ func TestRequestPrefersRawOverJSON(t *testing.T) {
 		contentType: "image/jpeg",
 		json:        map[string]any{"this": "must not be sent"},
 	})
-	if err != nil {
-		t.Fatalf("do: %v", err)
+	if err == nil {
+		t.Fatal("do: want an error when both raw and json are set, got nil")
 	}
-	if gotType != "image/jpeg" {
-		t.Errorf("content-type = %q, want image/jpeg (raw must win over json)", gotType)
+	if !strings.Contains(err.Error(), "both a raw and a json body") {
+		t.Errorf("error = %q, want it to name the double-body mistake", err.Error())
 	}
-	if string(gotBody) != "raw-body" {
-		t.Errorf("body = %q, want %q (raw must win over json)", gotBody, "raw-body")
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("server calls = %d, want 0: a malformed request must never reach the wire", got)
 	}
 }

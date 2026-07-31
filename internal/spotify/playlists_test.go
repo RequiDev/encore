@@ -392,6 +392,32 @@ func TestSetPlaylistCoverRefusesAnEmptyImage(t *testing.T) {
 	}
 }
 
+// TestSetPlaylistCoverRefusesAnOversizedImage is the other end of the same
+// delete-absent discipline as the empty-image guard: a binary JPEG over
+// MaxPlaylistCoverBytes is refused before it is ever base64-encoded or sent,
+// rather than reaching Spotify and being told no after the fact.
+//
+// Fails when: the len(jpeg) > MaxPlaylistCoverBytes guard is removed, or its
+// comparison is inverted so an oversized image passes instead of a
+// within-bounds one.
+func TestSetPlaylistCoverRefusesAnOversizedImage(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	oversized := make([]byte, MaxPlaylistCoverBytes+1)
+	if err := c.SetPlaylistCover(context.Background(), "user-token", "playlist01", oversized); err == nil {
+		t.Error("SetPlaylistCover: want an error for an image over MaxPlaylistCoverBytes, got nil")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("%d requests reached Spotify, want 0", got)
+	}
+}
+
 // TestSetPlaylistCoverRebuildsTheBodyOnRetry pins that the raw body survives a
 // retry.
 //

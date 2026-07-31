@@ -312,6 +312,23 @@ func (c *Client) do(ctx context.Context, r request) error {
 // retry loop: a permanent failure is wrapped in retry.Stop, a rate limit in
 // retry.After, and anything else is returned bare so the policy's backoff runs.
 func (c *Client) attempt(ctx context.Context, r request) error {
+	// A request carrying both shapes is a caller mistake, not something to
+	// resolve by picking one silently. This project has three prior data-loss
+	// incidents from exactly this shape of bug: a wrong body reaching the wire
+	// with no diagnostic signal. Failing loudly here, before the limiter is even
+	// touched and before either body is built, means the caller that copy-pastes
+	// its way into setting both learns about it immediately and by name, rather
+	// than shipping whichever body happened to win.
+	//
+	// This check runs inside attempt() rather than once in do(), which matters
+	// for the same reason the raw-body retry rebuild does: r is captured by the
+	// retry loop's closure and this function is what actually runs on every
+	// attempt, so a check placed anywhere outside it would not be reliably on
+	// the path every attempt takes.
+	if r.raw != nil && r.json != nil {
+		return retry.Stop(fmt.Errorf("%s: request sets both a raw and a json body", r.label))
+	}
+
 	limiter, wait := c.budget(r)
 	if err := limiter.WaitMax(ctx, wait); err != nil {
 		// A finished context is the caller's decision, not a failure to retry, and
