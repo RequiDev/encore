@@ -274,9 +274,11 @@ history are never opened.
 
 It is the second Spotify request `encore-api` makes that nobody clicked for, so an operator can
 switch it off with `ENCORE_ARTIST_ALBUMS_ENABLED=false` — a **separate** switch from
-`ENCORE_ALBUM_TRACKS_ENABLED`, because a discography walk costs up to seven requests against roughly
-one. **A rate-limit response to either pauses Spotify access instance-wide** for the window Spotify
-asks for, which 409s "sync now" for every user until it lifts.
+`ENCORE_ALBUM_TRACKS_ENABLED`, because a discography walk costs one request for most artists and up
+to forty — a hard cap, not a typical case — for an unusually prolific one (a compilation-heavy legacy
+act, a prolific remixer, a classical composer catalogued as one Spotify artist), against roughly one
+request for an album's track list. **A rate-limit response to either pauses Spotify access
+instance-wide** for the window Spotify asks for, which 409s "sync now" for every user until it lifts.
 
 **This endpoint never waits for Spotify.** It answers from the database and starts the walk behind
 it, so `state` says which of four situations you are in — the same four words, with the same
@@ -326,6 +328,26 @@ gave up.
 **Turning fetching off does not hide a discography that is already cached.** One stored before the
 switch was flipped still arrives as `ready`, past its TTL or not; `fetchedAt` is what keeps that
 honest.
+
+A failed walk is retried after fifteen minutes rather than after the TTL, because failures here are
+timeouts and rate limits — the same backoff the album track listing uses, and for the same reason. A
+failure never replaces or empties a discography that was read successfully earlier: the older listing
+stays readable and `fetchedAt` keeps saying how old it is.
+
+**One known limitation, and it costs more here than on the album endpoint.** The discography is
+requested without a market, so its album ids are Spotify's canonical ones — the same choice the album
+track listing makes. There the same limitation misses one track; here it misses a whole album:
+`coverage` and `missing` diff by album id, so a play recorded under a *relinked* album id — the same
+release, a different id in a different market — does not match the canonical id this endpoint counts
+against. The album is still in `coverage.total`, since Spotify still lists it under the artist, but
+never in `coverage.covered`, and it appears in `missing` naming a record the listener has actually
+played. Encore does not guess at equivalences here, on either endpoint.
+
+**`missing` has no ceiling.** Unlike the album tracklist's `missing`, which is bounded by how many
+tracks a release actually has, this one is bounded only by how many `album_group: "album"` releases
+Spotify lists for the artist — hundreds, for an unusually prolific one. There is no page size and
+nothing is truncated: a long list is the answer for that artist, not a defect. A client rendering this
+should plan for that length — a scrollable list, not a fixed-height panel.
 
 The artist must already be in your catalogue; an id that is not answers 404 without touching Spotify.
 

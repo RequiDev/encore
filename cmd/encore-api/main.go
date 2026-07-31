@@ -7,10 +7,11 @@
 // with fakes — so this file is the whole of the composition root.
 //
 // The API runs no scheduled loop: polling, imports and enrichment all belong to
-// encore-worker. It does start two kinds of work on demand — a sync poller so
-// the "sync now" button can poll one account, and an album track fetch when
-// somebody opens an album page — both of which are triggered by a request and
-// both of which are cancelled at shutdown.
+// encore-worker. It does start three kinds of work on demand — a sync poller so
+// the "sync now" button can poll one account, an album track fetch when
+// somebody opens an album page, and an artist discography walk when somebody
+// opens an artist page — all three triggered by a request and all three
+// cancelled at shutdown.
 package main
 
 import (

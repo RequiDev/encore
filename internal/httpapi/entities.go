@@ -407,7 +407,7 @@ func (s *Server) handleArtistDiscography(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 
 	// The artist must already be in the catalogue. Without this, any base-62
-	// string in the URL would spend up to twenty of the instance's Spotify
+	// string in the URL would spend up to forty of the instance's Spotify
 	// requests on somebody nobody has listened to — the same quota argument §5.2
 	// uses to reject a background sweep, arriving through a different door, and
 	// costing rather more per door than the album endpoint's one request.

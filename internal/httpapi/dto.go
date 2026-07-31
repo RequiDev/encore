@@ -193,19 +193,7 @@ type Album struct {
 // as the catalogue actually knows it, so a year-precision release does not
 // acquire an invented first of January.
 func releaseDate(a domain.Album) *string {
-	if a.ReleaseDate == nil {
-		return nil
-	}
-	var s string
-	switch a.ReleasePrecision {
-	case "year":
-		s = a.ReleaseDate.Format("2006")
-	case "month":
-		s = a.ReleaseDate.Format("2006-01")
-	default:
-		s = a.ReleaseDate.Format("2006-01-02")
-	}
-	return &s
+	return partialDate(a.ReleaseDate, a.ReleasePrecision)
 }
 
 func toAlbumRef(a domain.Album) AlbumRef {
@@ -861,6 +849,15 @@ type ArtistDiscography struct {
 	// iterate it without a guard; it is empty when everything was played, when
 	// nothing is counted, and when there is no discography at all, which is
 	// exactly why State exists.
+	//
+	// Unlike AlbumTrackList's Missing, which a release's own track count bounds
+	// naturally, this one has no ceiling: it is bounded only by how many
+	// album_group "album" releases Spotify lists for the artist, which for an
+	// unusually prolific one (see defaultArtistAlbumPages's own comment) can run
+	// to hundreds. There is no page size and nothing here is truncated — a long
+	// list is this endpoint's actual answer for that artist, not a defect to
+	// guard against, and a client should render it as a scrollable list rather
+	// than a fixed-height panel.
 	Missing  []DiscographyAlbumRef `json:"missing"`
 	Excluded DiscographyExcluded   `json:"excluded"`
 	// FetchedAt is when the discography was last read from Spotify, absent until
@@ -874,7 +871,7 @@ type ArtistDiscography struct {
 // One pass, one classification per release: every release either counts (and is
 // then Covered or Missing, never neither and never both) or lands in exactly one
 // excluded bucket. That is what makes the invariant
-// TestArtistDiscographyExclusionsAccountForEveryRelease assert hold by
+// TestArtistDiscographyExclusionsAccountForEveryRelease asserts hold by
 // construction rather than by luck.
 //
 // The diff is done here rather than in SQL because the two halves come from
@@ -887,9 +884,20 @@ func toArtistDiscography(d artistalbums.Discography, heard []string) ArtistDisco
 		played[id] = struct{}{}
 	}
 
+	// Missing can only ever hold the counted subset, never the whole release
+	// list — a prolific artist's singles and appearances routinely outnumber
+	// their albums several times over, and sizing the slice on len(d.Releases)
+	// would over-allocate every response by that ratio.
+	counted := 0
+	for _, r := range d.Releases {
+		if r.Group == artistalbums.CountedGroup {
+			counted++
+		}
+	}
+
 	out := ArtistDiscography{
 		State:   string(d.State),
-		Missing: make([]DiscographyAlbumRef, 0, len(d.Releases)),
+		Missing: make([]DiscographyAlbumRef, 0, counted),
 	}
 	for _, r := range d.Releases {
 		if r.Group != artistalbums.CountedGroup {
@@ -927,10 +935,11 @@ func toArtistDiscography(d artistalbums.Discography, heard []string) ArtistDisco
 	return out
 }
 
-// partialDate renders a release date at the precision Spotify supplied,
-// matching releaseDate() above. It is separate because that one takes a
-// domain.Album and this takes the two fields directly; folding them together
-// would mean building a domain.Album for a record that is not in the catalogue.
+// partialDate renders a release date at the precision Spotify actually
+// supplied, so a year-precision release does not acquire an invented first of
+// January. releaseDate() above is this same rendering for a domain.Album;
+// this takes the two fields directly because DiscographyAlbumRef's releases
+// are not always in the catalogue at all.
 func partialDate(at *time.Time, precision string) *string {
 	if at == nil {
 		return nil
