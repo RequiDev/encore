@@ -25,12 +25,14 @@ import {
   formatPercent,
   formatPlural,
   formatRelative,
+  intervalPhrase,
 } from '../lib/format'
 import type {
   Artist,
   CreatePlaylistRequest,
   CreateShareRequest,
   EntityProgress,
+  NowPlaying,
   Playlist,
   PlaylistCover,
   PlaylistMode,
@@ -53,6 +55,7 @@ import {
   PageHeader,
   Select,
   Skeleton,
+  SkeletonText,
   buttonClass,
   errorMessage,
   useToast,
@@ -372,6 +375,14 @@ export default function Settings(): ReactElement {
     },
   })
 
+  // Deliberately no refetchInterval: this panel reports what the instance is
+  // configured to do, and configuration cannot change while the page is open.
+  // The dashboard's card is the thing that polls; this is the explanation.
+  const nowPlaying = useQuery({
+    queryKey: qk.nowPlaying(),
+    queryFn: ({ signal }) => api.get<NowPlaying>('/nowplaying', undefined, signal),
+  })
+
   const sync = useMutation({
     mutationFn: () => api.post<SyncOutcome>('/sync/now'),
     onSuccess: async (outcome) => {
@@ -554,6 +565,45 @@ export default function Settings(): ReactElement {
 
         {/* --- metadata ----------------------------------------------------- */}
         <MetadataPanel status={status.data} error={status.error} timezone={user.timezone} />
+
+        {/* --- now playing -------------------------------------------------- */}
+        {/*
+          The dashboard renders no card at all when the poller is off, so this is
+          the only place that state is explained — a panel on the home screen
+          repeating an operator's decision on every load would be a nag about
+          something the listener cannot change, while Settings is already where
+          instance configuration is answered.
+
+          The branches test `=== false` and `=== true` rather than truthiness, so
+          the frame before the answer arrives renders a skeleton instead of
+          briefly claiming the feature is off.
+        */}
+        <Panel title="Now playing" description="What this instance asks Spotify about your player.">
+          {nowPlaying.isError ? (
+            <p role="alert" className="text-sm text-ember">
+              {errorMessage(nowPlaying.error)}
+            </p>
+          ) : nowPlaying.data?.enabled === false ? (
+            <EmptyState
+              title="Now playing is turned off"
+              description="This instance does not ask Spotify what you are playing right now, so the dashboard shows no now-playing card. Every other figure in Encore comes from your own listening history and is unaffected. An administrator can turn this on with ENCORE_NOWPLAYING_INTERVAL."
+            />
+          ) : nowPlaying.data?.enabled === true ? (
+            <div>
+              <p className="text-sm text-ink">Now playing is on</p>
+              <p className="mt-1 max-w-prose text-sm text-ink-muted">
+                Encore asks Spotify what you are playing every{' '}
+                {intervalPhrase(nowPlaying.data.intervalSeconds)}. It records nothing from those
+                checks — your listening history still comes only from the recently-played feed.
+              </p>
+            </div>
+          ) : (
+            <div role="status" aria-live="polite" aria-busy="true">
+              <span className="sr-only">Loading the now-playing setting</span>
+              <SkeletonText lines={2} className="max-w-md" />
+            </div>
+          )}
+        </Panel>
 
         {/* --- timezone ----------------------------------------------------- */}
         <Panel title="Timezone" description="The clock every statistic is counted against.">

@@ -142,6 +142,33 @@ export function formatPlural(count: number, singular: string, plural = `${singul
   return `${formatCount(count)} ${Math.abs(Math.round(count)) === 1 ? singular : plural}`
 }
 
+/**
+ * The period that follows the word "every": `30 seconds`, `minute`, `2 hours`.
+ *
+ * It returns the bare unit rather than `1 minute` for a single unit, because
+ * every call site reads "every " + this, and "every 1 minute" is the wrong
+ * register while "every a minute" is not English at all. The singular forms are
+ * the whole reason this is a function: `every 1 minutes` is invisible to a type
+ * checker and to every test that does not assert the sentence in full.
+ *
+ * Zero or less returns an empty string. That is the poller being off, and the
+ * card that would render this is not shown at all — but a stray render must not
+ * be able to produce "every 0 seconds", which reads as a broken instance.
+ */
+export function intervalPhrase(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  const whole = Math.round(seconds)
+  if (whole % 3600 === 0) {
+    const hours = whole / 3600
+    return hours === 1 ? 'hour' : `${hours} hours`
+  }
+  if (whole % 60 === 0) {
+    const minutes = whole / 60
+    return minutes === 1 ? 'minute' : `${minutes} minutes`
+  }
+  return whole === 1 ? 'second' : `${whole} seconds`
+}
+
 // --- rank movement ---------------------------------------------------------
 
 export type RankDirection = 'up' | 'down' | 'flat' | 'new'

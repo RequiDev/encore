@@ -18,6 +18,7 @@ import {
   formatSigned,
   formatTimeOfDay,
   formatWeekday,
+  intervalPhrase,
   rankChange,
 } from './format'
 
@@ -196,5 +197,41 @@ describe('formatRelative', () => {
 
   it('handles the future too', () => {
     expect(formatRelative('2026-07-28T12:00:00Z', now)).toBe('in 2 days')
+  })
+})
+
+describe('intervalPhrase', () => {
+  // Every singular and plural form the now-playing copy can produce, asserted
+  // in full. "It checks every 1 minutes." is the defect this exists to stop,
+  // and it is invisible to a type checker and to every other test.
+  //
+  // Fails when: the singular branches are removed (60 then reads "1 minutes");
+  // the minute branch stops requiring an exact multiple (90 then reads
+  // "1.5 minutes"); or the hour branch is dropped (3600 reads "60 minutes",
+  // which is true and reads like a bug).
+  it.each([
+    [1, 'second'],
+    [15, '15 seconds'],
+    [30, '30 seconds'],
+    [59, '59 seconds'],
+    [60, 'minute'],
+    [90, '90 seconds'],
+    [120, '2 minutes'],
+    [300, '5 minutes'],
+    [3600, 'hour'],
+    [5400, '90 minutes'],
+    [7200, '2 hours'],
+  ])('renders %d seconds as "%s"', (seconds, want) => {
+    expect(intervalPhrase(seconds)).toBe(want)
+  })
+
+  // Zero is the poller being off, and the card that would have used this is not
+  // rendered at all. An empty string rather than "0 seconds" so that a stray
+  // render cannot produce "every 0 seconds", which reads as a broken instance.
+  //
+  // Fails when: the guard is removed and the seconds branch runs on 0.
+  it('renders nothing for a poller that is off', () => {
+    expect(intervalPhrase(0)).toBe('')
+    expect(intervalPhrase(-30)).toBe('')
   })
 })

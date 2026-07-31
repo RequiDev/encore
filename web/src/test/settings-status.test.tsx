@@ -16,7 +16,7 @@ import { render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { routes } from '../App'
 import { createQueryClient } from '../lib/query'
-import type { EntityProgress, MeResponse, StatusResponse } from '../lib/types'
+import type { EntityProgress, MeResponse, NowPlaying, StatusResponse } from '../lib/types'
 
 const ME: MeResponse = {
   user: {
@@ -103,6 +103,41 @@ function stubRoutes(bodies: Record<string, unknown>): void {
       })
     }),
   )
+}
+
+/**
+ * Like `stubRoutes`, but one path's response is held open until it is released.
+ *
+ * The only way to observe a panel's request-in-flight frame: the ordinary stub
+ * settles in the same tick the panel first renders.
+ */
+function stubRoutesHolding(
+  bodies: Record<string, unknown>,
+  heldPath: string,
+): (body: unknown) => void {
+  let release: (body: unknown) => void = () => {}
+  const held = new Promise<unknown>((resolve) => {
+    release = resolve
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      const path = new URL(url, 'http://encore.test').pathname
+      const body = path === heldPath ? await held : bodies[path]
+      if (body === undefined) {
+        return new Response(JSON.stringify({ error: { code: 'not_found', message: 'No.' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }),
+  )
+  return release
 }
 
 function mountSettings(): ReactElement {
@@ -212,5 +247,108 @@ describe('the metadata panel', () => {
     expect(await within(section).findByText(/complete/i)).toBeInTheDocument()
     expect(within(section).queryByText(/waiting on Spotify/i)).not.toBeInTheDocument()
     expect(within(section).queryByText(/rate limited/i)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * The now-playing panel, which is the whole of what a listener is ever told
+ * about that feature when their instance has it turned off.
+ *
+ * The dashboard renders no card at all in that case — a panel on the home screen
+ * repeating an operator's decision on every load for ever is a nag about
+ * something the listener cannot change — so this panel is the only place the
+ * state is explained, and the only place the key that changes it is named.
+ */
+describe('the now-playing panel', () => {
+  function nowPlaying(over: Partial<NowPlaying> = {}): NowPlaying {
+    return {
+      enabled: true,
+      intervalSeconds: 30,
+      scopeGranted: true,
+      checkedAt: null,
+      failed: false,
+      observation: null,
+      ...over,
+    }
+  }
+
+  /** The panel, found the way a person finds it: by its heading. */
+  async function panel(): Promise<HTMLElement> {
+    const heading = await screen.findByRole('heading', { name: 'Now playing' })
+    const section = heading.closest('section')
+    if (!section) throw new Error('the now-playing heading is not inside a panel')
+    return section
+  }
+
+  // It follows the house formula the album and artist pages use for a feature an
+  // operator has turned off: what is not happening, what is unaffected, and the
+  // one thing that would change it.
+  //
+  // Fails when: the sentence stops naming the key — "an administrator can turn
+  // this on" with no key is advice nobody can act on.
+  it('says the instance does not ask, and names the key that would change it', async () => {
+    stubRoutes({
+      '/api/me': ME,
+      '/api/blacklist': [],
+      '/api/status': status(),
+      '/api/nowplaying': nowPlaying({ enabled: false, intervalSeconds: 0 }),
+    })
+    render(mountSettings())
+    const section = await panel()
+
+    expect(await within(section).findByText('Now playing is turned off')).toBeInTheDocument()
+    expect(
+      within(section).getByText(
+        'This instance does not ask Spotify what you are playing right now, so the dashboard shows no now-playing card. Every other figure in Encore comes from your own listening history and is unaffected. An administrator can turn this on with ENCORE_NOWPLAYING_INTERVAL.',
+      ),
+    ).toBeInTheDocument()
+    // An operator's choice is not a failure and not something to retry.
+    expect(within(section).queryByText(/failed|error|could not/i)).not.toBeInTheDocument()
+  })
+
+  // Fails when: intervalPhrase is replaced by a raw number — "every 60 seconds"
+  // for a minute reads as a machine's answer, and "every 1 minutes" is the
+  // defect the helper exists to prevent.
+  it('says how often it asks, and that it records nothing', async () => {
+    stubRoutes({
+      '/api/me': ME,
+      '/api/blacklist': [],
+      '/api/status': status(),
+      '/api/nowplaying': nowPlaying({ intervalSeconds: 60 }),
+    })
+    render(mountSettings())
+    const section = await panel()
+
+    expect(await within(section).findByText('Now playing is on')).toBeInTheDocument()
+    expect(
+      within(section).getByText(
+        'Encore asks Spotify what you are playing every minute. It records nothing from those checks — your listening history still comes only from the recently-played feed.',
+      ),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText(/turned off/i)).not.toBeInTheDocument()
+  })
+
+  // The frame before the answer lands. `=== false` and `=== true` rather than
+  // truthiness is what makes it a skeleton: a truthiness test renders the
+  // turned-off state for every instance for the length of one request, then
+  // contradicts itself.
+  //
+  // Fails when: either branch is loosened to a truthiness test.
+  it('claims nothing about the setting while it is still being read', async () => {
+    // The response is held open: the ordinary stub settles in the same tick the
+    // panel first renders, so this frame is otherwise unobservable.
+    const release = stubRoutesHolding(
+      { '/api/me': ME, '/api/blacklist': [], '/api/status': status() },
+      '/api/nowplaying',
+    )
+    render(mountSettings())
+    const section = await panel()
+
+    expect(within(section).getByText('Loading the now-playing setting')).toBeInTheDocument()
+    expect(within(section).queryByText(/turned off/i)).not.toBeInTheDocument()
+    expect(within(section).queryByText('Now playing is on')).not.toBeInTheDocument()
+
+    release(nowPlaying({ intervalSeconds: 60 }))
+    expect(await within(section).findByText('Now playing is on')).toBeInTheDocument()
   })
 })
