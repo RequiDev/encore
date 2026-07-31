@@ -112,7 +112,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 	if codeVerifier != "" {
 		form.Set("code_verifier", codeVerifier)
 	}
-	return c.token(ctx, "exchange authorization code", form, true)
+	return c.token(ctx, "exchange authorization code", form, classInteractive)
 }
 
 // RefreshToken exchanges a refresh token for a fresh access token.
@@ -133,7 +133,7 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", c.cfg.ClientID)
-	return c.token(ctx, "refresh access token", form, false)
+	return c.token(ctx, "refresh access token", form, classCatalogue)
 }
 
 // ClientCredentialsToken obtains an application token, which carries no user
@@ -141,25 +141,26 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 func (c *Client) ClientCredentialsToken(ctx context.Context) (*Token, error) {
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
-	return c.token(ctx, "obtain application token", form, false)
+	return c.token(ctx, "obtain application token", form, classCatalogue)
 }
 
 // token posts a grant to the accounts service and normalises the response.
 //
-// interactive says whether a person is waiting. It matters here more than
-// anywhere: this is accounts.spotify.com, a different service from the API, and
-// a catalogue quota exhausted on api.spotify.com is no reason at all to refuse
-// somebody a token.
-func (c *Client) token(ctx context.Context, label string, form url.Values, interactive bool) (*Token, error) {
+// class says whose budget the grant is drawn from, and it matters here more
+// than anywhere: this is accounts.spotify.com, a different service from the
+// API, and a catalogue quota exhausted on api.spotify.com is no reason at all
+// to refuse somebody a token. Only the code exchange is classInteractive; the
+// refresh and the application token run on a worker tick with nobody watching.
+func (c *Client) token(ctx context.Context, label string, form url.Values, class requestClass) (*Token, error) {
 	var tr tokenResponse
 	err := c.do(ctx, request{
-		method:      http.MethodPost,
-		url:         c.tokenURL(),
-		label:       label,
-		basic:       true,
-		form:        form,
-		out:         &tr,
-		interactive: interactive,
+		method: http.MethodPost,
+		url:    c.tokenURL(),
+		label:  label,
+		basic:  true,
+		form:   form,
+		out:    &tr,
+		class:  class,
 	})
 	if err != nil {
 		if apiErr, ok := AsAPIError(err); ok && oauthErrorCode(apiErr.Body) == "invalid_grant" {

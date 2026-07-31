@@ -58,10 +58,72 @@ const (
 	// signinWait is how long a person's request may queue for a token before
 	// Encore gives up and says why. Long enough to absorb ordinary pacing, far
 	// short of a browser's patience.
-	signinWait         = 5 * time.Second
+	signinWait = 5 * time.Second
+	// nowPlayingRate and nowPlayingBurst are the now-playing poller's own
+	// budget.
+	//
+	// The bucket is not the interesting part — one request per account per
+	// interval is already paced by the interval — the isolation is. It is
+	// sized so one tick can clear a large instance without queueing: five a
+	// second is a hundred and fifty accounts inside a thirty-second tick.
+	nowPlayingRate  = 5
+	nowPlayingBurst = 10
+	// nowPlayingWait is how long a poll may queue for a token before giving up
+	// and letting the next tick decide.
+	//
+	// Nobody is waiting on it, so the bound is not about patience: a poll that
+	// sat out an hour-long pause would hold a goroutine and then report a fact
+	// an hour stale. Answering at once leaves the limiter paused, so no request
+	// reaches Spotify until it lifts, and the card says how long ago the last
+	// check was.
+	nowPlayingWait     = 2 * time.Second
 	defaultAPIBaseURL  = "https://api.spotify.com"
 	defaultAuthBaseURL = "https://accounts.spotify.com"
 )
+
+// requestClass decides which rate budget a request draws on, and — through
+// instanceWide below — what a 429 on it means for everybody else.
+//
+// It is a type rather than the boolean it replaces because there are three
+// budgets and a boolean can name two. The distinction it carries is not
+// "urgent or not": it is whose quota is being spent, and whose work stops when
+// Spotify says no.
+type requestClass uint8
+
+const (
+	// classCatalogue is the application's shared quota: enrichment, the
+	// recently-played poller, the library enumerations, the album and artist
+	// caches. A 429 here is a fact about the whole instance.
+	classCatalogue requestClass = iota
+	// classInteractive is a request somebody is sitting in front of: the OAuth
+	// exchange, the profile read behind it, and the playlist writes a button
+	// press makes. It waits only as long as a browser will.
+	classInteractive
+	// classNowPlaying is the opt-in now-playing poller, and nothing else.
+	//
+	// It is separate from classInteractive rather than folded into it, even
+	// though both want a bounded wait and neither wants to be recorded,
+	// because the sign-in limiter's own comment already forbids it: nothing a
+	// background worker does may take authentication offline. At thirty
+	// seconds across five accounts this loop is roughly fourteen thousand
+	// requests a day, and one 429 among them would pause sign-in for whatever
+	// Retry-After Spotify names — most of a day, for an exhausted quota —
+	// locking every listener out of an instance whose data is perfectly fine.
+	classNowPlaying
+)
+
+// instanceWide reports whether a 429 on this class is a fact about the whole
+// instance rather than about one caller.
+//
+// One predicate decides both consequences, and that is the point of it being
+// one predicate: the class that records an instance-wide pause is exactly the
+// class willing to wait that pause out, and a class that is not must answer
+// immediately instead. Splitting the two tests would allow a class that stops
+// everybody else and then refuses to queue behind its own decision.
+//
+// A class added later and not named here defaults to false, which is the safe
+// direction: a new caller's mistake costs a private pause, never a global one.
+func (k requestClass) instanceWide() bool { return k == classCatalogue }
 
 // Client talks to the Spotify Web API. It is safe for concurrent use and is
 // meant to be shared: one client per process keeps one rate limit budget.
@@ -82,6 +144,13 @@ type Client struct {
 	//
 	// Nothing a background worker does may take authentication offline.
 	signin *Limiter
+	// nowPlaying is the opt-in now-playing poller's own budget.
+	//
+	// Never shared, never restored from a recorded pause, and never recorded:
+	// see requestClass. This is the least important request Encore makes and by
+	// far the most frequent, so it is the one that must not be able to stop
+	// anything else.
+	nowPlaying *Limiter
 	// onPause reports a newly declared pause so it can be recorded somewhere
 	// that survives a restart.
 	onPause func(until time.Time)
@@ -186,6 +255,7 @@ func NewClient(cfg config.Spotify, lg *slog.Logger, opts ...Option) *Client {
 	// Never shared and never restored from a recorded pause: a quota ban recorded
 	// yesterday says nothing about whether somebody may sign in today.
 	c.signin = NewLimiterWithClock(signinRate, signinBurst, c.clock)
+	c.nowPlaying = NewLimiterWithClock(nowPlayingRate, nowPlayingBurst, c.clock)
 	return c
 }
 
@@ -247,15 +317,22 @@ type request struct {
 	raw         []byte
 	contentType string
 	out         any
-	// interactive marks a request a person is waiting on. Those draw on the
-	// sign-in budget rather than the application's catalogue quota, and they
-	// refuse to queue indefinitely.
-	interactive bool
+	// class decides which rate budget this request draws on and what a 429 on
+	// it means for the rest of the instance. See requestClass.
+	class requestClass
+	// status, when non-nil, receives the status code of a successful response.
+	//
+	// Exactly one caller needs it. GET /v1/me/player/currently-playing answers
+	// 204 when nothing is playing, which is the commonest case and is not an
+	// error; decode() returns early on a 204 without touching out, so without
+	// this the zero-value body would be indistinguishable from a 200 carrying
+	// an advert with no item.
+	status *int
 }
 
 // get issues an authenticated GET against the Web API.
 func (c *Client) get(ctx context.Context, path, label string, query url.Values, accessToken string, out any) error {
-	return c.getClass(ctx, path, label, query, accessToken, out, false)
+	return c.getClass(ctx, path, label, query, accessToken, out, classCatalogue)
 }
 
 // getClass is get with the request class spelled out.
@@ -265,27 +342,35 @@ func (c *Client) getClass(
 	query url.Values,
 	accessToken string,
 	out any,
-	interactive bool,
+	class requestClass,
 ) error {
 	if accessToken == "" {
 		return fmt.Errorf("%s: no access token", label)
 	}
 	return c.do(ctx, request{
-		method:      http.MethodGet,
-		url:         c.endpoint(path, query),
-		label:       label,
-		bearer:      accessToken,
-		out:         out,
-		interactive: interactive,
+		method: http.MethodGet,
+		url:    c.endpoint(path, query),
+		label:  label,
+		bearer: accessToken,
+		out:    out,
+		class:  class,
 	})
 }
 
 // budget picks the limiter a request draws on, and how long it may queue.
+//
+// Total over requestClass by construction: a class added without a case here
+// falls to the catalogue budget, which is the loudest possible failure and
+// therefore the right default for something nobody thought about.
 func (c *Client) budget(r request) (*Limiter, time.Duration) {
-	if r.interactive {
+	switch r.class {
+	case classInteractive:
 		return c.signin, signinWait
+	case classNowPlaying:
+		return c.nowPlaying, nowPlayingWait
+	default:
+		return c.limiter, 0
 	}
-	return c.limiter, 0
 }
 
 // do runs a request under the retry policy.
@@ -384,6 +469,9 @@ func (c *Client) attempt(ctx context.Context, r request) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if r.status != nil {
+			*r.status = resp.StatusCode
+		}
 		return c.decode(resp, r)
 	}
 	return c.classify(resp, r)
@@ -432,7 +520,7 @@ func (c *Client) classify(resp *http.Response, r request) error {
 		// the catalogue limiter at startup and reported to users as "metadata is
 		// waiting"; a refused sign-in is neither of those things, and recording it
 		// would hold enrichment back over something that never touched its quota.
-		if c.onPause != nil && !r.interactive {
+		if c.onPause != nil && r.class.instanceWide() {
 			c.onPause(resumeAt)
 		}
 		// A short pause is ordinary pacing. A long one means the application's
@@ -450,12 +538,12 @@ func (c *Client) classify(resp *http.Response, r request) error {
 			c.lg.Warn("spotify rate limited",
 				"endpoint", r.label, "retry_after", retryAfter.String())
 		}
-		if r.interactive {
-			// Nobody waits half a minute to be told no. The limiter now holds the
-			// real delay, so a further attempt would fail its bounded wait anyway —
-			// and would do it after sleeping through a retry the person did not ask
-			// for. Answer immediately, with the instant the pause lifts, so the
-			// interface can say something true and specific.
+		if !r.class.instanceWide() {
+			// Nobody waits half a minute to be told no, and a background poll
+			// that waited out an exhausted quota would hold a goroutine for
+			// most of a day to report something stale. The limiter now holds
+			// the real delay, so a further attempt would fail its bounded wait
+			// anyway. Answer immediately, with the instant the pause lifts.
 			return retry.Stop(&PausedError{Until: resumeAt})
 		}
 		// The limiter now holds the real delay, so the loop needs only a bounded

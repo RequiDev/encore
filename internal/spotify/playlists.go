@@ -90,8 +90,8 @@ func (c *Client) CreatePlaylist(
 			"public":        false,
 			"collaborative": false,
 		},
-		out:         &out,
-		interactive: true,
+		out:   &out,
+		class: classInteractive,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("spotify: create playlist: %w", err)
@@ -120,12 +120,12 @@ func (c *Client) UpdatePlaylistDetails(
 		return fmt.Errorf("update playlist details: no playlist id")
 	}
 	if err := c.do(ctx, request{
-		method:      http.MethodPut,
-		url:         c.endpoint("/v1/playlists/"+playlistID, nil),
-		label:       "update playlist details",
-		bearer:      accessToken,
-		json:        map[string]any{"name": name, "description": description},
-		interactive: true,
+		method: http.MethodPut,
+		url:    c.endpoint("/v1/playlists/"+playlistID, nil),
+		label:  "update playlist details",
+		bearer: accessToken,
+		json:   map[string]any{"name": name, "description": description},
+		class:  classInteractive,
 	}); err != nil {
 		return fmt.Errorf("spotify: update playlist details: %w", err)
 	}
@@ -158,12 +158,12 @@ func (c *Client) UpdatePlaylistDescription(
 		return fmt.Errorf("update playlist description: no playlist id")
 	}
 	if err := c.do(ctx, request{
-		method:      http.MethodPut,
-		url:         c.endpoint("/v1/playlists/"+playlistID, nil),
-		label:       "update playlist description",
-		bearer:      accessToken,
-		json:        map[string]any{"description": description},
-		interactive: true,
+		method: http.MethodPut,
+		url:    c.endpoint("/v1/playlists/"+playlistID, nil),
+		label:  "update playlist description",
+		bearer: accessToken,
+		json:   map[string]any{"description": description},
+		class:  classInteractive,
 	}); err != nil {
 		return fmt.Errorf("spotify: update playlist description: %w", err)
 	}
@@ -203,7 +203,7 @@ func (c *Client) SetPlaylistCover(
 		bearer:      accessToken,
 		raw:         encoded,
 		contentType: "image/jpeg",
-		interactive: true,
+		class:       classInteractive,
 	}); err != nil {
 		return fmt.Errorf("spotify: set playlist cover: %w", err)
 	}
@@ -248,12 +248,12 @@ func (c *Client) ReplacePlaylistItems(
 			method, label = http.MethodPut, "replace playlist items"
 		}
 		err := c.do(ctx, request{
-			method:      method,
-			url:         c.endpoint("/v1/playlists/"+playlistID+"/tracks", nil),
-			label:       label,
-			bearer:      accessToken,
-			json:        map[string]any{"uris": batch},
-			interactive: true,
+			method: method,
+			url:    c.endpoint("/v1/playlists/"+playlistID+"/tracks", nil),
+			label:  label,
+			bearer: accessToken,
+			json:   map[string]any{"uris": batch},
+			class:  classInteractive,
 		})
 		if err != nil {
 			return fmt.Errorf("spotify: %s: %w", label, err)
