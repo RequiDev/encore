@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -14,22 +13,22 @@ import (
 	"github.com/RequiDev/encore/internal/logging"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
+	"github.com/RequiDev/encore/internal/store"
 )
 
-// playlistDescription is what Spotify shows under the name. It says where the
-// playlist came from, because a listener scrolling their library months later
-// should not have to guess which application made it.
-func playlistDescription(def domain.PlaylistDefinition) string {
-	switch def.Mode {
-	case domain.PlaylistModeMinPlays:
-		return fmt.Sprintf("Built by Encore: everything played at least %d times.", def.MinPlays)
-	case domain.PlaylistModeDiscoveries:
-		return "Built by Encore: tracks heard for the first time in this period."
-	case domain.PlaylistModeForgotten:
-		return "Built by Encore: played heavily before this period, and not during it."
-	default:
-		return "Built by Encore: most played in this period."
-	}
+// maxPlaylistDescription is Spotify's ceiling, minus the three bytes
+// store.Truncate appends when it cuts.
+//
+// domain.Describe is already bounded well under this by its own test, so the
+// clamp is a guard rather than a working part: it exists so that a future
+// clause added to a description without re-running that test is truncated
+// rather than silently rejected by Spotify, which would fail a rename for a
+// reason nobody could see.
+const maxPlaylistDescription = 297
+
+// playlistDescription is what Spotify shows under the name.
+func playlistDescription(def domain.PlaylistDefinition, builtAt time.Time) string {
+	return store.Truncate(def.Describe(builtAt), maxPlaylistDescription)
 }
 
 // handleCreatePlaylist answers POST /api/playlists.
@@ -81,7 +80,8 @@ func (s *Server) handleCreatePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := s.spotify.CreatePlaylist(ctx, token, user.SpotifyUserID, name, playlistDescription(def))
+	created, err := s.spotify.CreatePlaylist(ctx, token, user.SpotifyUserID, name,
+		playlistDescription(def, s.now()))
 	if err != nil {
 		writeError(w, r, playlistError(err))
 		return

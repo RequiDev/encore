@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -201,6 +202,73 @@ func (d PlaylistDefinition) Range(now, firstListen time.Time) TimeRange {
 	}
 	return TimeRange{From: from, To: now}
 }
+
+// Describe renders the sentence Spotify shows beneath a playlist's name.
+//
+// It is regenerated on every rename and every rebuild, and never on a
+// schedule — the same rule migrations/00009_playlists.sql states for the
+// tracks. A playlist that changed under its owner would be worse than one that
+// is merely out of date.
+//
+// Every branch is written out rather than assembled from interchangeable
+// fragments. This is the only prose Encore writes into somebody else's Spotify
+// account, where it outlives the session that made it and is read by whoever
+// they show the playlist to; a sentence stitched together from clauses reads
+// like one, and the two singular cases below cannot be got right at all
+// without branching.
+func (d PlaylistDefinition) Describe(builtAt time.Time) string {
+	ranged := !d.From.IsZero() && !d.To.IsZero()
+	period := "between " + playlistDate(d.From) + " and " + playlistDate(d.To)
+
+	rank := "ranked by play count"
+	if d.Sort == SortByTime {
+		rank = "ranked by listening time"
+	}
+	built := "Built by Encore on " + playlistDate(builtAt) + "."
+
+	var what string
+	switch {
+	case d.Mode == PlaylistModeMinPlays && ranged:
+		what = "Every track you played " + atLeastTimes(d.MinPlays) + " " + period
+	case d.Mode == PlaylistModeMinPlays:
+		what = "Every track you have ever played " + atLeastTimes(d.MinPlays)
+	case d.Mode == PlaylistModeDiscoveries && ranged:
+		what = "Tracks you heard for the first time " + period
+	case d.Mode == PlaylistModeDiscoveries:
+		what = "Tracks you heard for the first time, across your whole history"
+	case d.Mode == PlaylistModeForgotten:
+		// Validate refuses this mode without a range, so period is always real
+		// here. The first date is the same From: "before it, and not during it".
+		what = "Tracks you played heavily before " + playlistDate(d.From) + " and not once " + period
+	case ranged:
+		what = "Your " + mostPlayed(d.Limit) + " " + period
+	default:
+		what = "Your " + mostPlayed(d.Limit) + " of all time"
+	}
+	return what + ", " + rank + ". " + built
+}
+
+// atLeastTimes avoids "at least 1 times".
+func atLeastTimes(n int) string {
+	if n == 1 {
+		return "at least once"
+	}
+	return "at least " + strconv.Itoa(n) + " times"
+}
+
+// mostPlayed avoids "Your 1 most played tracks".
+func mostPlayed(limit int) string {
+	if limit == 1 {
+		return "single most played track"
+	}
+	return strconv.Itoa(limit) + " most played tracks"
+}
+
+// playlistDate is the one date format Encore writes into a Spotify account:
+// unambiguous between the two hemispheres of date convention, no ordinal
+// suffix to get wrong, and no locale, because the reader is whoever the
+// listener shows the playlist to rather than the listener's own browser.
+func playlistDate(t time.Time) string { return t.UTC().Format("2 January 2006") }
 
 // ValidatePlaylistName checks the name Spotify will show.
 func ValidatePlaylistName(name string) error {
