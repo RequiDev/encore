@@ -96,6 +96,42 @@ func TestReplaceAlbumTracksSQLIsOneStatement(t *testing.T) {
 	}
 }
 
+// TestReplaceArtistAlbumsSQLIsOneStatement pins the property no integration
+// test can: that the delete-absent and upsert-present halves of
+// ReplaceArtistAlbums are one statement rather than two run back to back. A
+// test built on outcomes cannot tell the two apart, because artist_albums
+// carries no timestamp or version column — the state on disk after either
+// implementation is identical. A semicolon here would split the string into two
+// statements sent in the same Exec call, reopening exactly the window a
+// concurrent reader must never see: the tail deleted with the replacement not
+// yet written.
+func TestReplaceArtistAlbumsSQLIsOneStatement(t *testing.T) {
+	if strings.Contains(replaceArtistAlbumsSQL, ";") {
+		t.Fatalf("replace statement contains a ';', which would split it into more than one statement:\n%s",
+			replaceArtistAlbumsSQL)
+	}
+	if n := strings.Count(replaceArtistAlbumsSQL, "DELETE FROM artist_albums"); n != 1 {
+		t.Errorf("replace statement has %d DELETEs on artist_albums, want exactly 1:\n%s",
+			n, replaceArtistAlbumsSQL)
+	}
+	if n := strings.Count(replaceArtistAlbumsSQL, "INSERT INTO artist_albums"); n != 1 {
+		t.Errorf("replace statement has %d INSERTs into artist_albums, want exactly 1:\n%s",
+			n, replaceArtistAlbumsSQL)
+	}
+}
+
+// TestArtistAlbumUpsertRefreshesTheGroup pins the one column whose staleness is
+// silently wrong rather than merely cosmetic. A release Spotify reclassifies
+// from 'album' to 'compilation' keeps counting towards discography completion
+// for as long as the stored group says 'album', so a listener would be told
+// they had not heard a record that no longer belongs in the denominator.
+func TestArtistAlbumUpsertRefreshesTheGroup(t *testing.T) {
+	if !strings.Contains(replaceArtistAlbumsSQL, "album_group       = EXCLUDED.album_group") {
+		t.Errorf("the upsert does not refresh album_group, so a reclassified release keeps its old "+
+			"group and its old effect on completion:\n%s", replaceArtistAlbumsSQL)
+	}
+}
+
 func TestMarkStatementsGuardState(t *testing.T) {
 	// A stale failure report must not disturb a row another worker resolved.
 	for _, sql := range []string{

@@ -164,6 +164,8 @@ var truncatedTables = []string{
 	"user_followed_artists",
 	"spotify_top_snapshots",
 	"user_playlists",
+	"artist_album_fetches",
+	"artist_albums",
 	"album_track_fetches",
 	"album_tracks",
 	"track_aliases",
