@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/playlistcover"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/store"
 )
@@ -1159,4 +1162,271 @@ func TestRenameNeedsASession(t *testing.T) {
 	if h.stub.puts() != 0 {
 		t.Error("a request that never got past the middleware still reached Spotify")
 	}
+}
+
+// --- the cover ---------------------------------------------------------------
+//
+// coverFor is exercised directly here, never through a full POST /api/playlists
+// round trip: it needs no database of its own (its one call into
+// internal/stats short-circuits on an empty track list without touching a
+// querier), and this package's own tests carry none — see this file's package
+// doc. The full round trip, a create that returns 201 while the cover fails
+// completely, is proven end to end in test/e2e
+// (TestPlaylistCoverFailureDoesNotFailTheCreate), which is where a real track
+// selection lives.
+
+// fakeCoverFetcher stands in for the real *playlistcover.Fetcher. Every tile
+// comes back nil -- the shape a CDN that answered nothing produces -- which is
+// enough to exercise coverFor's own handling of the outcome without a network.
+type fakeCoverFetcher struct{ calls int }
+
+func (f *fakeCoverFetcher) Fetch(
+	context.Context, [playlistcover.Tiles]string,
+) [playlistcover.Tiles]image.Image {
+	f.calls++
+	var out [playlistcover.Tiles]image.Image
+	return out
+}
+
+// coverImagesRequest is one PUT /v1/playlists/{id}/images the handler sent.
+type coverImagesRequest struct {
+	playlistID string
+	bodyLen    int
+}
+
+// coverUploadStub is the fake Spotify a cover test points the real client at,
+// on the same terms renameStub does for a rename: the real *spotify.Client
+// stays in the path, so a 403 here is classified by the client's own rules
+// rather than by a hand-written double that could drift from them.
+type coverUploadStub struct {
+	server *httptest.Server
+
+	mu       sync.Mutex
+	requests []coverImagesRequest
+}
+
+// newCoverUploadStub serves PUT /v1/playlists/{id}/images. A nil respond
+// accepts the cover; anything else answers with whatever respond writes.
+func newCoverUploadStub(t *testing.T, respond http.HandlerFunc) *coverUploadStub {
+	t.Helper()
+
+	stub := &coverUploadStub{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /v1/playlists/{id}/images", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+
+		stub.mu.Lock()
+		stub.requests = append(stub.requests, coverImagesRequest{
+			playlistID: r.PathValue("id"), bodyLen: len(body),
+		})
+		stub.mu.Unlock()
+
+		if respond != nil {
+			respond(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	stub.server = httptest.NewServer(mux)
+	t.Cleanup(stub.server.Close)
+	return stub
+}
+
+// puts is how many cover uploads Spotify has been asked for.
+func (s *coverUploadStub) puts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.requests)
+}
+
+// newCoverClient points the real Spotify client at the stub, on the same
+// terms newRenameClient does and for the same reason: three of the outcomes
+// this path cares about are the client's own classification of what came
+// back, not something a hand double can be trusted to reproduce.
+func newCoverClient(stub *coverUploadStub, clock spotify.Clock) *spotify.Client {
+	return spotify.NewClient(config.Spotify{
+		ClientID: "client-id", ClientSecret: "client-secret",
+		RateLimit: 1000, RateBurst: 100, Timeout: 5 * time.Second, MaxRetries: 0,
+	},
+		slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+		spotify.WithHTTPClient(stub.server.Client()),
+		spotify.WithBaseURL(stub.server.URL),
+		spotify.WithClock(clock),
+	)
+}
+
+// coverFixture wires a *Server for calling coverFor directly: a signed-in
+// listener, a real Spotify client pointed at coverUploadStub, and a fake
+// fetcher. trackIDs is deliberately left empty by every test that uses this,
+// which is what keeps the whole thing off a database (see the section doc
+// above).
+type coverFixture struct {
+	*testServer
+	fetcher *fakeCoverFetcher
+	stub    *coverUploadStub
+}
+
+func newCoverFixture(t *testing.T, scopes []string, respond http.HandlerFunc) *coverFixture {
+	t.Helper()
+
+	ts := newTestServer(t)
+	stub := newCoverUploadStub(t, respond)
+	clock := frozenClock{at: ts.clock}
+	fetcher := &fakeCoverFetcher{}
+
+	ts.credentials.err = nil
+	ts.credentials.creds = domain.SpotifyCredentials{
+		UserID:         ts.sessions.user.ID,
+		AccessToken:    "user-access-token",
+		RefreshToken:   "user-refresh-token",
+		TokenExpiresAt: ts.clock.Add(time.Hour),
+		Scopes:         scopes,
+		SyncState:      domain.SyncStateOK,
+	}
+	ts.Server.spotify = newCoverClient(stub, clock)
+	ts.Server.covers = fetcher
+	ts.Server.userToken = func(context.Context, uuid.UUID) (string, error) {
+		return "user-access-token", nil
+	}
+
+	return &coverFixture{testServer: ts, fetcher: fetcher, stub: stub}
+}
+
+// playlist is the fixture playlist coverFor is asked to cover.
+func (f *coverFixture) playlist() domain.Playlist {
+	return domain.Playlist{
+		ID: uuid.New(), UserID: f.sessions.user.ID,
+		Name: "Heavy rotation", SpotifyID: storedSpotifyID,
+		Definition: fixtureDefinition,
+	}
+}
+
+// TestAMissingImageScopeIsUnauthorisedNotFailed pins the two states apart, and
+// pins that no request is spent discovering it.
+//
+// Fails when: the scope check is dropped and the 403 is classified as
+// CoverFailed — the row then offers a retry button for a state a retry cannot
+// fix, and one Spotify request is spent per attempt to be told the same thing.
+func TestAMissingImageScopeIsUnauthorisedNotFailed(t *testing.T) {
+	// The stub would answer exactly what a real Spotify does for a token
+	// lacking the scope, *if* it were ever asked. The scope check inside
+	// coverFor must make asking unnecessary: the answer is already on the
+	// credential row.
+	scopes := append(config.DefaultScopes(), spotify.ScopePlaylistPrivate) // no ScopeImageUpload
+	f := newCoverFixture(t, scopes, spotifyStatus(http.StatusForbidden, "Insufficient client scope"))
+
+	got := f.Server.coverFor(context.Background(), f.sessions.user, f.playlist(), nil)
+
+	if got.State != domain.CoverUnauthorised {
+		t.Fatalf("state = %q, want %q", got.State, domain.CoverUnauthorised)
+	}
+	if got.Error != "" {
+		t.Errorf("an unauthorised cover carries a reason %q, want none: "+
+			"a reason is CoverFailed's field, and offering one here would dress up "+
+			"a permission prompt as a retry button", got.Error)
+	}
+	if f.fetcher.calls != 0 {
+		t.Errorf("the fetcher was asked for art %d times, want 0: there is nothing to "+
+			"upload a cover for without the permission to upload one", f.fetcher.calls)
+	}
+	if n := f.stub.puts(); n != 0 {
+		t.Errorf("spotify received %d requests, want 0: the missing scope is known "+
+			"locally, so no request should be spent learning it a second time", n)
+	}
+}
+
+// TestAnImageScope403NeverParksTheAccount pins the rule at
+// internal/sync/account.go:296 for a write scope.
+//
+// Fails when: the cover path reaches MarkNeedsReauth, or retries — an account
+// whose listening history reads perfectly would stop being ingested because a
+// decorative image was refused.
+func TestAnImageScope403NeverParksTheAccount(t *testing.T) {
+	// The scope IS granted here, unlike the test above: coverFailureReason
+	// must read this as the grant having been revoked between the check and
+	// the call, not as "never granted".
+	scopes := append(config.DefaultScopes(), spotify.ScopePlaylistPrivate, spotify.ScopeImageUpload)
+	f := newCoverFixture(t, scopes, spotifyStatus(http.StatusForbidden, "Insufficient client scope"))
+
+	got := f.Server.coverFor(context.Background(), f.sessions.user, f.playlist(), nil)
+
+	if got.State != domain.CoverFailed {
+		t.Fatalf("state = %q, want %q", got.State, domain.CoverFailed)
+	}
+	const want = "Spotify refused the cover. The permission may have been revoked."
+	if got.Error != want {
+		t.Errorf("error = %q, want %q", got.Error, want)
+	}
+	if n := f.stub.puts(); n != 1 {
+		t.Errorf("spotify received %d requests, want exactly 1: a scope refusal must "+
+			"not be retried, which would spend quota to be told the same thing again", n)
+	}
+	if f.credentials.upserts != 0 {
+		t.Errorf("the credential row was written %d times; a 403 on an optional scope "+
+			"must never touch it the way markNeedsReauth would — that would stop "+
+			"ingesting an account whose listening history still reads perfectly",
+			f.credentials.upserts)
+	}
+}
+
+// TestAFailingCoverDoesNotFailTheCreate is the property the whole feature
+// rests on: a playlist that exists with a grey cover is a far better outcome
+// than a create that reports failure because a CDN was slow.
+//
+// Fails when: coverFor is given an error return and a caller propagates it, or
+// the create's SetCover call is allowed to fail the request.
+//
+// The two halves are proven separately. coverFor's signature is the first:
+// it returns a domain.PlaylistCover and nothing else, so there is no error for
+// handleCreatePlaylist or handleRebuildPlaylist to check, let alone
+// propagate — a property the compiler enforces, and this subtest exercises it
+// under total failure (no art, and Spotify refuses the upload) to show the
+// result is a reportable state rather than a panic. recordCover is the
+// second: it wraps the one call that writes the outcome to storage and, like
+// coverFor, returns nothing, so a repository failure has no path back to the
+// request that triggered it.
+//
+// The full round trip — POST /api/playlists answering 201 with the right
+// track count while the cover fails completely — needs a real track
+// selection, which needs a real database; this package's tests carry
+// neither (see this file's package doc). That half is proven end to end in
+// test/e2e (TestPlaylistCoverFailureDoesNotFailTheCreate).
+func TestAFailingCoverDoesNotFailTheCreate(t *testing.T) {
+	t.Run("total failure still returns a state, not a panic", func(t *testing.T) {
+		scopes := append(config.DefaultScopes(), spotify.ScopePlaylistPrivate, spotify.ScopeImageUpload)
+		f := newCoverFixture(t, scopes, spotifyStatus(http.StatusInternalServerError, "Server error"))
+
+		got := f.Server.coverFor(context.Background(), f.sessions.user, f.playlist(), nil)
+
+		if got.State != domain.CoverFailed {
+			t.Fatalf("state = %q, want %q: a total failure must still be a reportable "+
+				"state", got.State, domain.CoverFailed)
+		}
+		if got.Error == "" {
+			t.Error("a failed cover carries no reason for the listener to read")
+		}
+	})
+
+	t.Run("recordCover swallows a repository failure", func(t *testing.T) {
+		ts := newTestServer(t)
+		logs := &logSink{}
+		ts.Server.log = slog.New(logs)
+		ts.Server.playlists = &fakePlaylists{} // SetCover errors unconditionally
+
+		// logging.FromContext reads the logger middleware attaches to a real
+		// request's context; recordCover is called directly here, with no
+		// request behind it, so the context has to carry it the same way.
+		ctx := logging.WithLogger(context.Background(), ts.Server.log)
+
+		// recordCover returns nothing at all: there is no channel back to a
+		// caller through which a repository failure here could fail the
+		// request that produced the cover it is recording.
+		ts.Server.recordCover(ctx, uuid.New(), uuid.New(),
+			domain.PlaylistCover{State: domain.CoverReady, Tiles: 2, At: ts.clock})
+
+		if records := logs.find("could not record a playlist cover state"); len(records) != 1 {
+			t.Fatalf("%d records logging the swallowed failure, want 1", len(records))
+		}
+	})
 }

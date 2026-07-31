@@ -92,6 +92,69 @@ func (s *Service) SelectPlaylistTracks(
 	return out, nil
 }
 
+// coverArtURLsSQL picks the artwork for a playlist's mosaic.
+//
+// The four albums contributing the most tracks to the playlist, ties broken by
+// the highest-ranked track, so the same playlist always yields the same four
+// pictures in the same order and a rebuild does not reshuffle the cover.
+//
+// WITH ORDINALITY is what carries the ranking through: the caller passes the
+// track ids in the order the definition selected them, and ordinality is that
+// rank. Without it there is no second key and equal-count albums come back in
+// whatever order the planner chooses.
+//
+// Deliberately not composed with blacklistFilter, and deliberately not
+// registered in stats_test.go's statements() table alongside the queries that
+// read listens directly. trackIDs arrives from SelectPlaylistTracks, which has
+// already applied the blacklist to the fact table; this query never reads
+// listens at all; it only joins tracks and albums by the ids it was handed.
+// Re-filtering an already-filtered set would be a second check over data that
+// cannot contain a hidden artist's track in the first place, and registering it
+// beside the fact-table queries would misleadingly imply otherwise.
+const coverArtURLsSQL = `
+SELECT a.image_url
+FROM unnest($1::text[]) WITH ORDINALITY AS sel(track_id, rank)
+JOIN tracks t ON t.id = sel.track_id
+JOIN albums a ON a.id = t.album_id
+WHERE a.image_url <> ''
+GROUP BY a.id, a.image_url
+ORDER BY count(*) DESC, min(sel.rank)
+LIMIT $2`
+
+// CoverArtURLs returns up to n album covers for a playlist's tracks.
+//
+// An empty result is the ordinary state of a fresh instance whose catalogue has
+// not enriched yet — every album row exists but none has an image_url — and it
+// is a success, not a failure. The renderer turns it into the deterministic
+// pattern.
+func (s *Service) CoverArtURLs(
+	ctx context.Context, q store.Querier, trackIDs []string, n int,
+) ([]string, error) {
+	if len(trackIDs) == 0 || n <= 0 {
+		// Short circuit before touching q, which the caller may not have when
+		// a definition selected nothing.
+		return []string{}, nil
+	}
+	rows, err := q.Query(ctx, coverArtURLsSQL, trackIDs, n)
+	if err != nil {
+		return nil, postgres.Classify("select cover art", err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, n)
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, postgres.Classify("scan cover art", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, postgres.Classify("select cover art", err)
+	}
+	return out, nil
+}
+
 // playlistQuery builds the statement for one mode.
 //
 // Every branch selects the same four columns: the track, why it qualified, and

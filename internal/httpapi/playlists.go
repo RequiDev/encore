@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/playlistcover"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
 	"github.com/RequiDev/encore/internal/store"
@@ -108,6 +110,13 @@ func (s *Server) handleCreatePlaylist(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+
+	// Best effort, and it can never fail what has already been made. coverFor
+	// returns a state rather than an error precisely so this line cannot be
+	// written any other way.
+	cover := s.coverFor(ctx, user, stored, ids)
+	s.recordCover(ctx, user.ID, stored.ID, cover)
+	stored.Cover = cover
 
 	out := toPlaylist(stored)
 	out.Matched = sel.Matched
@@ -336,6 +345,13 @@ func (s *Server) handleRebuildPlaylist(w http.ResponseWriter, r *http.Request) {
 	stored.TrackCount = len(ids)
 	stored.BuiltAt = now
 
+	// Best effort, on the same terms as a create: coverFor returns a state and
+	// no error, so a rebuild that otherwise succeeded cannot be failed by a
+	// picture.
+	cover := s.coverFor(ctx, user, stored, ids)
+	s.recordCover(ctx, user.ID, stored.ID, cover)
+	stored.Cover = cover
+
 	// The description names the date of the last build, so a rebuild has just
 	// made the stored one false. Refreshed best-effort: the tracks are already
 	// replaced and recorded, and failing a rebuild that succeeded — over a
@@ -358,6 +374,163 @@ func (s *Server) handleRebuildPlaylist(w http.ResponseWriter, r *http.Request) {
 	out := toPlaylist(stored)
 	out.Matched = sel.Matched
 	writeJSON(w, r, http.StatusOK, out)
+}
+
+// coverFor builds and uploads a cover, and reports what happened.
+//
+// It returns a state to record and **no error**, which is what makes best
+// effort structural rather than a convention somebody has to remember: there
+// is no error value for a caller to propagate by accident, so a create or a
+// rebuild cannot be failed by a picture. Every failure below becomes a state
+// the playlist row renders and offers a retry for.
+//
+// The scope is checked before anything is fetched or encoded. A 403 from the
+// image endpoint is an optional-scope refusal in exactly the sense
+// internal/sync/account.go:296 describes: it must never park the account and
+// must never be retried, so it is far better not to spend the request at all.
+func (s *Server) coverFor(
+	ctx context.Context, user domain.User, p domain.Playlist, trackIDs []string,
+) domain.PlaylistCover {
+	now := s.now()
+	lg := logging.FromContext(ctx)
+
+	if s.covers == nil || s.userToken == nil {
+		return domain.PlaylistCover{State: domain.CoverNone, At: now}
+	}
+
+	creds, err := s.credentials.Get(ctx, s.querier, user.ID)
+	if err != nil {
+		lg.Warn("could not read credentials for a playlist cover", logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not check its Spotify permissions.",
+		}
+	}
+	if !spotify.HasScope(creds.Scopes, spotify.ScopeImageUpload) {
+		return domain.PlaylistCover{State: domain.CoverUnauthorised, At: now}
+	}
+
+	urls, err := s.stats.CoverArtURLs(ctx, s.querier, trackIDs, playlistcover.Tiles)
+	if err != nil {
+		lg.Warn("could not select cover art", logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not work out which album covers to use.",
+		}
+	}
+	var slots [playlistcover.Tiles]string
+	copy(slots[:], urls)
+
+	tiles := s.covers.Fetch(ctx, slots)
+	rendered, err := playlistcover.Render(p.Name, coverSeed(p.Definition), tiles)
+	if err != nil {
+		lg.Warn("could not render a playlist cover", "playlist", p.SpotifyID, logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not build a cover image.",
+		}
+	}
+
+	token, err := s.userToken(ctx, user.ID)
+	if err != nil {
+		lg.Warn("could not get a token for a playlist cover", logging.Err(err))
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now,
+			Error: "Encore could not reach Spotify to set the cover.",
+		}
+	}
+	if err := s.spotify.SetPlaylistCover(ctx, token, p.SpotifyID, rendered.JPEG); err != nil {
+		return domain.PlaylistCover{
+			State: domain.CoverFailed, At: now, Error: coverFailureReason(err),
+		}
+	}
+	return domain.PlaylistCover{State: domain.CoverReady, Tiles: rendered.Covered, At: now}
+}
+
+// coverFailureReason turns a Spotify refusal into a sentence a listener can
+// act on. It is stored, so it is bounded by store.Truncate at the repository.
+//
+// A 403 here is recorded as a failure rather than as CoverUnauthorised on
+// purpose: the scope check above already handled "never granted", so a 403 at
+// this point means the grant was revoked between the check and the call, and
+// the row should say the permission may need granting again rather than
+// silently reverting to the never-asked state.
+func coverFailureReason(err error) string {
+	var paused *spotify.PausedError
+	if errors.As(err, &paused) {
+		return "Spotify is rate limiting this instance, so it would not accept the cover."
+	}
+	if apiErr, ok := spotify.AsAPIError(err); ok && apiErr.IsForbidden() {
+		return "Spotify refused the cover. The permission may have been revoked."
+	}
+	return "Spotify would not accept the cover."
+}
+
+// coverSeed is the canonical form of a definition, and the only input to the
+// fallback pattern.
+//
+// Written out field by field rather than derived from the struct, so adding a
+// field to PlaylistDefinition does not silently change every existing
+// playlist's cover the next time it is rebuilt.
+func coverSeed(d domain.PlaylistDefinition) string {
+	from, to := "", ""
+	if !d.From.IsZero() {
+		from = d.From.UTC().Format(time.RFC3339)
+	}
+	if !d.To.IsZero() {
+		to = d.To.UTC().Format(time.RFC3339)
+	}
+	return fmt.Sprintf("%s|%s|%d|%d|%s|%s", d.Mode, d.Sort, d.Limit, d.MinPlays, from, to)
+}
+
+// recordCover stores a cover outcome and never fails the request that produced
+// it. The playlist and its tracks are already correct; losing the record of a
+// picture is not worth a 500.
+func (s *Server) recordCover(ctx context.Context, userID, id uuid.UUID, cover domain.PlaylistCover) {
+	if err := s.playlists.SetCover(ctx, s.querier, userID, id, cover); err != nil {
+		logging.FromContext(ctx).Warn("could not record a playlist cover state",
+			"playlist", id.String(), logging.Err(err))
+	}
+}
+
+// handlePlaylistCover answers POST /api/playlists/{id}/cover.
+//
+// The retry the playlist row offers. It re-selects the tracks rather than
+// storing them, because the cover should reflect what is in the playlist now:
+// a rebuild between the failure and the retry changed the answer.
+//
+// It always returns 200 with the playlist. A cover attempt cannot fail this
+// endpoint any more than it can fail a create — the state is the result, and
+// the row renders it.
+func (s *Server) handlePlaylistCover(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, ErrInvalidRequest("That is not a valid playlist id.", nil))
+		return
+	}
+
+	ctx := r.Context()
+	stored, err := s.playlists.Get(ctx, s.querier, user.ID, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sel, err := s.selectPlaylistTracks(ctx, user, stored.Definition)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	cover := s.coverFor(ctx, user, stored, sel.IDs())
+	s.recordCover(ctx, user.ID, stored.ID, cover)
+	stored.Cover = cover
+
+	writeJSON(w, r, http.StatusOK, toPlaylist(stored))
 }
 
 // handleForgetPlaylist answers DELETE /api/playlists/{id}.

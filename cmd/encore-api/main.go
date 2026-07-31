@@ -34,6 +34,7 @@ import (
 	"github.com/RequiDev/encore/internal/importer"
 	"github.com/RequiDev/encore/internal/logging"
 	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/playlistcover"
 	"github.com/RequiDev/encore/internal/postgres"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
@@ -168,6 +169,11 @@ func run() error {
 	}
 	defer artistAlbums.Close()
 
+	// One fetcher for the process: it holds an http.Client, and a client per
+	// request would discard every keep-alive to a CDN four requests are about
+	// to hit.
+	covers := playlistcover.NewFetcher()
+
 	api, err := httpapi.New(httpapi.Deps{
 		Config:   cfg,
 		Store:    db,
@@ -187,6 +193,7 @@ func run() error {
 		UserToken:    poller.AccessToken,
 		AlbumTracks:  albumTracks,
 		ArtistAlbums: artistAlbums,
+		Covers:       covers,
 	})
 	if err != nil {
 		return err

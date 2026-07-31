@@ -178,6 +178,10 @@ func (f *fakeUsers) CountAdmins(context.Context, store.Querier) (int64, error) {
 type fakeCredentials struct {
 	creds domain.SpotifyCredentials
 	err   error
+	// upserts counts how many times Upsert was called, so a test can prove a
+	// read-only path never wrote to the credential row -- an account-parking
+	// mark, in particular, always goes through Upsert.
+	upserts int
 }
 
 func (f *fakeCredentials) Get(context.Context, store.Querier, uuid.UUID) (domain.SpotifyCredentials, error) {
@@ -188,6 +192,7 @@ func (f *fakeCredentials) Get(context.Context, store.Querier, uuid.UUID) (domain
 }
 
 func (f *fakeCredentials) Upsert(_ context.Context, _ store.Querier, creds domain.SpotifyCredentials) error {
+	f.upserts++
 	f.creds = creds
 	return nil
 }

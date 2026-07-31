@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/playlistcover"
+	"github.com/RequiDev/encore/internal/stats"
 	"github.com/RequiDev/encore/test/harness"
 )
 
@@ -189,5 +191,128 @@ func TestRenameUpdatesTheStoredName(t *testing.T) {
 	}
 	if got, err := e.Accounts.Playlists.Get(e.Ctx(), e.Store.DB(), user.ID, p.ID); err != nil || got.Name != "Summer 2026" {
 		t.Fatalf("stranger's rename attempt changed the name: got %+v, err %v", got, err)
+	}
+}
+
+// seedCoverCatalogue inserts one album (with the given image url) and however
+// many tracks are named, all pointing at it. Only the columns CoverArtURLs's
+// join touches: tracks.album_id and albums.image_url.
+func seedCoverCatalogue(t *testing.T, e *harness.Env, albumID, imageURL string, trackIDs ...string) {
+	t.Helper()
+	e.Exec(`INSERT INTO albums (id, image_url) VALUES ($1, $2)`, albumID, imageURL)
+	for _, id := range trackIDs {
+		e.Exec(`INSERT INTO tracks (id, album_id) VALUES ($1, $2)`, id, albumID)
+	}
+}
+
+// TestCoverArtURLsPicksTheTopFourAlbums pins the selection and its tie-break.
+//
+// Six albums contribute tracks to one playlist selection, laid out so that
+// sorting by count and sorting by rank alone disagree -- which is what makes
+// this fixture actually exercise the two-key ORDER BY rather than passing by
+// coincidence on either key on its own:
+//
+//	X: 1 track  at rank 1          (the earliest track of anyone, but rarest)
+//	Y: 3 tracks, earliest at rank 2
+//	Z: 3 tracks, earliest at rank 5   -- ties Y on count; loses the tie on rank
+//	W: 2 tracks, earliest at rank 8
+//	V: 2 tracks, earliest at rank 10  -- ties W on count; loses the tie on rank
+//	U: 6 tracks, earliest at rank 12  -- never enriched (image_url is empty)
+//
+// A plain "sort by rank" would answer X, Y, Z, W (X has the single earliest
+// track). A plain "sort by count, arbitrary tie order" could answer either of
+// Y/Z first and either of W/V second. Only "count DESC, then min(rank) ASC"
+// answers Y, Z, W, V -- which is what is asserted below. U has the highest
+// count of anyone and must still not appear, at any position.
+//
+// The trackIDs slice below *is* the selection order a real playlist definition
+// would have produced (best-ranked track first), so its index doubles as the
+// rank WITH ORDINALITY reads.
+//
+// Fails when: the ORDER BY loses its count(*) DESC (X and U would then
+// outrank everyone), loses its min(ordinality) tie-break (Z could come back
+// ahead of Y, or V ahead of W, and the mosaic would change on every rebuild
+// even though the playlist did not), or stops filtering out an empty
+// image_url (U takes every slot and the mosaic is silently built from four
+// empty tiles).
+func TestCoverArtURLsPicksTheTopFourAlbums(t *testing.T) {
+	e := harness.New(t)
+	svc := stats.New(e.Store)
+
+	seedCoverCatalogue(t, e, "alb-x", "https://img.test/x", "trk-x1")
+	seedCoverCatalogue(t, e, "alb-y", "https://img.test/y", "trk-y1", "trk-y2", "trk-y3")
+	seedCoverCatalogue(t, e, "alb-z", "https://img.test/z", "trk-z1", "trk-z2", "trk-z3")
+	seedCoverCatalogue(t, e, "alb-w", "https://img.test/w", "trk-w1", "trk-w2")
+	seedCoverCatalogue(t, e, "alb-v", "https://img.test/v", "trk-v1", "trk-v2")
+	// U: six tracks, no artwork. The highest count of any album here, and it
+	// must not win a single slot.
+	seedCoverCatalogue(t, e, "alb-u", "",
+		"trk-u1", "trk-u2", "trk-u3", "trk-u4", "trk-u5", "trk-u6")
+
+	trackIDs := []string{
+		"trk-x1",                                                   // rank 1
+		"trk-y1",                                                   // rank 2 -- Y's earliest
+		"trk-y2",                                                   // rank 3
+		"trk-y3",                                                   // rank 4
+		"trk-z1",                                                   // rank 5 -- Z's earliest
+		"trk-z2",                                                   // rank 6
+		"trk-z3",                                                   // rank 7
+		"trk-w1",                                                   // rank 8 -- W's earliest
+		"trk-w2",                                                   // rank 9
+		"trk-v1",                                                   // rank 10 -- V's earliest
+		"trk-v2",                                                   // rank 11
+		"trk-u1", "trk-u2", "trk-u3", "trk-u4", "trk-u5", "trk-u6", // ranks 12-17
+	}
+	want := []string{
+		"https://img.test/y", "https://img.test/z", "https://img.test/w", "https://img.test/v",
+	}
+
+	got, err := svc.CoverArtURLs(e.Ctx(), e.Store.DB(), trackIDs, playlistcover.Tiles)
+	if err != nil {
+		t.Fatalf("CoverArtURLs: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v (position %d: %q != %q)", got, want, i, got[i], want[i])
+		}
+	}
+}
+
+// TestCoverArtURLsReturnsEmptyOnAFreshCatalogue pins the ordinary
+// fresh-instance case: every album pending, no image_url anywhere.
+//
+// Fails when: the empty-set short circuit is removed and the nil Querier
+// panics, or the query returns rows with empty urls instead of none.
+func TestCoverArtURLsReturnsEmptyOnAFreshCatalogue(t *testing.T) {
+	e := harness.New(t)
+	svc := stats.New(e.Store)
+
+	// No ids at all. The nil Querier is the assertion: reaching the database
+	// would panic, so a caller that selected nothing (a fresh install, or a
+	// definition matching nothing) never touches it.
+	got, err := svc.CoverArtURLs(e.Ctx(), nil, nil, playlistcover.Tiles)
+	if err != nil {
+		t.Fatalf("CoverArtURLs with no ids: %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("got %v, want an empty, non-nil slice", got)
+	}
+
+	// Real tracks whose albums exist but have not been enriched yet -- the
+	// ordinary state of a fresh instance, where every album row is 'pending'
+	// and image_url is still the empty default.
+	seedCoverCatalogue(t, e, "alb-pending-1", "", "trk-pending-1")
+	seedCoverCatalogue(t, e, "alb-pending-2", "", "trk-pending-2")
+
+	got2, err := svc.CoverArtURLs(e.Ctx(), e.Store.DB(),
+		[]string{"trk-pending-1", "trk-pending-2"}, playlistcover.Tiles)
+	if err != nil {
+		t.Fatalf("CoverArtURLs: %v", err)
+	}
+	if len(got2) != 0 {
+		t.Fatalf("got %v, want none: neither album has been enriched", got2)
 	}
 }

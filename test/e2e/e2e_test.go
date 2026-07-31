@@ -36,6 +36,7 @@ import (
 	"github.com/RequiDev/encore/internal/httpapi"
 	"github.com/RequiDev/encore/internal/importer"
 	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/playlistcover"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
 	encoresync "github.com/RequiDev/encore/internal/sync"
@@ -372,6 +373,14 @@ func newInstanceWith(t *testing.T, overrides map[string]string) *instance {
 		UserToken:    poller.AccessToken,
 		AlbumTracks:  albumTracks,
 		ArtistAlbums: artistAlbums,
+		// The real fetcher, on the same terms cmd/encore-api wires it: it holds
+		// its own http.Client and never touches the Spotify Web API stub above.
+		// Every album this suite seeds carries an empty image_url (the fixtures
+		// in playItem/samePlayItem/artistPlayItem never set one), so every fetch
+		// this fetcher attempts finds an empty slot and is skipped before any
+		// network call is made -- covers are exercised here without needing a
+		// second fake CDN server.
+		Covers: playlistcover.NewFetcher(),
 		SyncNow: func(ctx context.Context, userID uuid.UUID) (httpapi.SyncOutcome, error) {
 			res, err := poller.SyncUser(ctx, userID)
 			out := httpapi.SyncOutcome{
@@ -1871,6 +1880,80 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 	}
 	if _, gone := inst.stub.playlistItems[spotifyID]; !gone {
 		t.Fatal("forgetting a playlist deleted it from Spotify; it belongs to the listener")
+	}
+}
+
+// TestPlaylistCoverFailureDoesNotFailTheCreate proves the defining property of
+// this whole feature end to end, against a real track selection: a create
+// returns 201 with the tracks it actually holds even when generating its
+// cover fails completely.
+//
+// The fake Spotify server deliberately does not implement
+// PUT /v1/playlists/{id}/images at all -- see newSpotifyStub -- so the upload
+// this instance attempts gets net/http's default "404 page not found" rather
+// than a 2xx: an ordinary refusal, not a crafted one. Every album this suite's
+// fixtures produce also carries an empty image_url (see the Covers comment on
+// newInstanceWith), so the fetch stage finds nothing either. The whole
+// pipeline -- fetch, render, upload -- runs, fails at the last step, and the
+// create still answers 201 with the right track count.
+//
+// This is the counterpart to internal/httpapi's own TestAFailingCoverDoesNot-
+// FailTheCreate, which proves the same property with coverFor called directly
+// because that package's tests carry no database; this is where a real track
+// selection lives.
+//
+// Fails when: coverFor's failure is allowed to reach handleCreatePlaylist as
+// an error instead of a domain.PlaylistCover, or the create checks
+// cover.state and fails the request over it.
+func TestPlaylistCoverFailureDoesNotFailTheCreate(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(),
+		"playlist-modify-private", "ugc-image-upload")
+	b := inst.browser()
+	inst.signIn(b)
+
+	seedPlays(t, inst, b, map[string]int{
+		"pl000000000000000021a": 5,
+		"pl000000000000000022b": 3,
+	})
+
+	created := decode[map[string]any](t, b.postJSON("/api/playlists", map[string]any{
+		"name": "Heavy rotation", "mode": "top", "limit": 10,
+	}), http.StatusCreated)
+
+	if n, _ := created["trackCount"].(float64); int(n) != 2 {
+		t.Fatalf("playlist holds %v tracks, want 2 -- a cover failure must not "+
+			"touch the tracks", created["trackCount"])
+	}
+	spotifyID, _ := created["spotifyId"].(string)
+	if spotifyID == "" {
+		t.Fatal("no spotify id recorded; a cover failure must not stop the playlist existing")
+	}
+	if got := len(inst.stub.playlistItems[spotifyID]); got != 2 {
+		t.Fatalf("spotify holds %d tracks, want 2", got)
+	}
+
+	cover, _ := created["cover"].(map[string]any)
+	if cover == nil {
+		t.Fatal("the response carries no cover block at all")
+	}
+	if cover["state"] != "failed" {
+		t.Fatalf("cover.state = %v, want %q -- the fixture is not actually exercising a "+
+			"failure (has the stub grown a route for the image upload?)", cover["state"], "failed")
+	}
+	if reason, _ := cover["reason"].(string); reason == "" {
+		t.Error("a failed cover carries no reason for the listener to read")
+	}
+
+	// The outcome was recorded, not just returned once: reloading the list
+	// shows the same state rather than a create that quietly reverted to
+	// "none".
+	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
+	if len(list) != 1 {
+		t.Fatalf("%d playlists listed, want 1", len(list))
+	}
+	if c, _ := list[0]["cover"].(map[string]any); c["state"] != "failed" {
+		t.Fatalf("the stored cover state is %v, want %q", c["state"], "failed")
 	}
 }
 

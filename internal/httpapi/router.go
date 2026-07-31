@@ -126,6 +126,9 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	// is Encore's; the Spotify id is read from the stored row, never sent.
 	s.route(mux, "PATCH /api/playlists/{id}", s.handleRenamePlaylist)
 	s.route(mux, "POST /api/playlists/{id}/rebuild", s.handleRebuildPlaylist)
+	// The retry the playlist row offers when a cover did not come out. Always
+	// 200: a cover attempt is not something that can fail this request.
+	s.route(mux, "POST /api/playlists/{id}/cover", s.handlePlaylistCover)
 	s.route(mux, "DELETE /api/playlists/{id}", s.handleForgetPlaylist)
 
 	// Listening history.
