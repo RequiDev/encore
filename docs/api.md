@@ -657,7 +657,7 @@ else.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/auth/spotify/playlists` | Starts an OAuth journey asking for one extra scope. A browser redirect, like relink. |
+| `GET` | `/api/auth/spotify/playlists` | Starts an OAuth journey asking for both extra scopes at once. A browser redirect, like relink. |
 | `GET` | `/api/playlists` | The caller's managed playlists. |
 | `POST` | `/api/playlists` | `{ "name", "mode", "sort", "limit", "minPlays", "from", "to" }`. Creates it on Spotify and fills it in one request. `403` when the scope has not been granted, with a message naming the fix; `400` when the definition matches nothing. |
 | `PATCH` | `/api/playlists/{id}` | `{ "name" }`. Renames it **on Spotify first**, then records it here, and rewrites the description from the stored definition in the same request. `403` when the scope has been revoked; `404` when Spotify no longer has the playlist; `409` when Spotify is rate limiting, when Encore got no answer at all, or when Spotify accepted the rename and Encore could not record it — each with its own message saying what is true of the playlist afterwards. A rename is idempotent, so retrying is always safe. |
@@ -682,9 +682,12 @@ The blacklist applies: a hidden artist's tracks never reach a playlist.
 
 ### The cover
 
-Every playlist Encore creates or rebuilds gets a generated cover: a 2×2 mosaic
-of the four albums contributing most of its tracks, with the name across a
-scrim over the lower third, uploaded as a 640×640 JPEG.
+Every playlist Encore creates or rebuilds gets an attempt at a generated
+cover, provided the account has granted `ugc-image-upload` and this instance
+is configured to build them — neither is guaranteed, which is what `cover`'s
+`none`/`unauthorised` states below report. A cover is a 2×2 mosaic of the four
+albums contributing most of its tracks, with the name across a scrim over the
+lower third, uploaded as a 640×640 JPEG.
 
 `cover` travels on every playlist and carries its own denominator:
 
