@@ -211,10 +211,12 @@ describe('the never-played panel', () => {
     render(mountAt('/albums/album-1'))
     const section = await panel('You have played every track on this album')
 
-    expect(within(section).getByText('All 12 tracks Spotify lists for it.')).toBeInTheDocument()
-    // The count line above is a double negative when the count is zero, and the
-    // body already says the same fact the right way round.
-    expect(within(section).queryByText(/have no plays/i)).not.toBeInTheDocument()
+    expect(
+      within(section).getByText('Spotify lists 12 tracks for this album.'),
+    ).toBeInTheDocument()
+    // The count line is a double negative when the count is zero, and the body
+    // already says the same fact the right way round.
+    expect(within(section).queryByText(/\d+ of the \d+ tracks/)).not.toBeInTheDocument()
   })
 
   it('says it is still asking Spotify, and claims nothing about completeness', async () => {
@@ -243,7 +245,8 @@ describe('the never-played panel', () => {
       ),
     ).toBeInTheDocument()
     expect(within(section).queryByText(/played every track/i)).not.toBeInTheDocument()
-    expect(within(section).queryByText(/have no plays/i)).not.toBeInTheDocument()
+    // Nothing counted, nothing claimed: no listing has arrived to count.
+    expect(within(section).queryByText(/\d+ of the \d+ tracks/)).not.toBeInTheDocument()
     expect(within(section).queryByText(/could not/i)).not.toBeInTheDocument()
   })
 
@@ -345,9 +348,7 @@ describe('the never-played panel', () => {
       }),
     })
     render(mountAt('/albums/album-1'))
-    await panel(
-      'Spotify lists 14 tracks for this album; the album record says 12. This panel follows the list.',
-    )
+    await panel("The album record says 12. This panel follows Spotify's list.")
   })
 
   it('reconciles the two numbers on the played-everything state, and says each once', async () => {
@@ -369,7 +370,9 @@ describe('the never-played panel', () => {
     ).toBeInTheDocument()
     // The reconciliation already names the listing's total, so the count line
     // is not printed beside it saying the same number over again.
-    expect(within(section).queryByText(/All 14 tracks Spotify lists/)).not.toBeInTheDocument()
+    expect(
+      within(section).queryByText('Spotify lists 14 tracks for this album.'),
+    ).not.toBeInTheDocument()
     expect(
       within(section).getByText('Track list read from Spotify on 20 Jul 2026.'),
     ).toBeInTheDocument()
@@ -398,9 +401,94 @@ describe('the never-played panel', () => {
       '/api/albums/album-1/tracklist': tracklist(),
     })
     render(mountAt('/albums/album-1'))
-    await panel(
-      'Spotify lists 12 tracks for this album; the album record has no track count yet. This panel follows the list.',
-    )
+    const section = await panel('The album record has no track count yet.')
+
+    // There is no rival number to follow over, so it does not offer to.
+    expect(within(section).queryByText(/follows/i)).not.toBeInTheDocument()
+  })
+
+  it('agrees with itself when exactly one track is unplayed', async () => {
+    // One missing of twelve is among the commonest things this panel reports,
+    // and the plural verb reads as a mistake the moment the count is one.
+    stubRoutes({
+      '/api/me': ME,
+      '/api/albums/album-1': albumPayload({ heard: 11, total: 12, known: true }),
+      '/api/albums/album-1/tracklist': tracklist({
+        coverage: { covered: 11, total: 12 },
+        missing: [{ id: 'track-12', name: 'The Twelfth', discNumber: 1, trackNumber: 12 }],
+      }),
+    })
+    render(mountAt('/albums/album-1'))
+    const section = await panel('The Twelfth')
+
+    expect(
+      within(section).getByText(
+        '1 of the 12 tracks Spotify lists for this album has no plays in your history, all time.',
+      ),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText(/tracks Spotify lists for this album have/)).not.toBeInTheDocument()
+  })
+
+  it('does not make a ratio out of a single-track listing', async () => {
+    // "1 of the 1 track" is not a sentence, and a single is a whole release.
+    stubRoutes({
+      '/api/me': ME,
+      '/api/albums/album-1': albumPayload({ heard: 0, total: 1, known: true }, 1),
+      '/api/albums/album-1/tracklist': tracklist({
+        coverage: { covered: 0, total: 1 },
+        missing: [{ id: 'track-1', name: 'The Only One', discNumber: 1, trackNumber: 1 }],
+      }),
+    })
+    render(mountAt('/albums/album-1'))
+    const section = await panel('The Only One')
+
+    expect(
+      within(section).getByText(
+        'The only track Spotify lists for this album has no plays in your history, all time.',
+      ),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText(/of the 1 track/)).not.toBeInTheDocument()
+  })
+
+  it('counts a single-track listing correctly when it has been played', async () => {
+    stubRoutes({
+      '/api/me': ME,
+      '/api/albums/album-1': albumPayload({ heard: 1, total: 1, known: true }, 1),
+      '/api/albums/album-1/tracklist': tracklist({
+        coverage: { covered: 1, total: 1 },
+        missing: [],
+      }),
+    })
+    render(mountAt('/albums/album-1'))
+    const section = await panel('You have played every track on this album')
+
+    expect(
+      within(section).getByText('Spotify lists 1 track for this album.'),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText(/1 tracks/)).not.toBeInTheDocument()
+  })
+
+  it('numbers every row by disc, or none of them', async () => {
+    // Showing the disc only from the second one gives a column reading 11, 12,
+    // 2.3 \u2014 which looks like a decimal and sorts wrong to the eye.
+    stubRoutes({
+      '/api/me': ME,
+      '/api/albums/album-1': albumPayload({ heard: 10, total: 20, known: true }, 20),
+      '/api/albums/album-1/tracklist': tracklist({
+        coverage: { covered: 18, total: 20 },
+        missing: [
+          { id: 'track-a', name: 'On Disc One', discNumber: 1, trackNumber: 11 },
+          { id: 'track-b', name: 'On Disc Two', discNumber: 2, trackNumber: 3 },
+        ],
+      }),
+    })
+    render(mountAt('/albums/album-1'))
+    const section = await panel('On Disc One')
+
+    expect(within(section).getByText('1-11')).toBeInTheDocument()
+    expect(within(section).getByText('2-3')).toBeInTheDocument()
+    expect(within(section).queryByText('2.3')).not.toBeInTheDocument()
+    expect(within(section).queryByText('11')).not.toBeInTheDocument()
   })
 
   it('leaves the completion figure alone when the track count is unknown', async () => {
@@ -423,6 +511,51 @@ describe('the never-played panel', () => {
     expect(within(heard).getByText(/track count not known yet/i)).toBeInTheDocument()
     expect(within(heard).queryByText(/%/)).not.toBeInTheDocument()
     expect(within(heard).queryByText(/\d+ of \d+/)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * The panel's description sits above four different bodies, so anything it
+ * asserts has to be true of all four. An earlier draft said the listing had
+ * been "read once and kept", which is false on `disabled` — nothing has ever
+ * been read and nothing ever will be — and reinstated a Spotify provenance
+ * directly above the one body that had just been careful not to blame Spotify.
+ * No negative assertion in the `disabled` test could catch that, because it is
+ * a positive false claim rather than a failure phrasing, so it is pinned here
+ * against every body it can appear above.
+ */
+describe('the panel description, read together with the body under it', () => {
+  const BODIES: [string, Partial<AlbumTrackList>, string][] = [
+    ['nothing asked yet', PENDING, "Asking Spotify for this album's track list"],
+    [
+      'a recorded failure',
+      { ...PENDING, state: 'unavailable' },
+      "This album's track list could not be read",
+    ],
+    ['fetching turned off', { ...PENDING, state: 'disabled' }, 'Album track lists are turned off'],
+    [
+      'everything played',
+      { coverage: { covered: 12, total: 12 }, missing: [] },
+      'You have played every track on this album',
+    ],
+  ]
+
+  it.each(BODIES)('claims nothing about a read above %s', async (_label, overrides, body) => {
+    stubRoutes({
+      '/api/me': ME,
+      '/api/albums/album-1': albumPayload({ heard: 10, total: 12, known: true }),
+      '/api/albums/album-1/tracklist': tracklist(overrides),
+    })
+    render(mountAt('/albums/album-1'))
+    const section = await panel(body)
+
+    expect(
+      within(section).getByText(
+        'Which tracks on this record have no plays in your history, all time.',
+      ),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText(/read once and kept/i)).not.toBeInTheDocument()
+    expect(within(section).queryByText(/From Spotify's own list/i)).not.toBeInTheDocument()
   })
 })
 
@@ -497,12 +630,22 @@ describe('the tracklist poll', () => {
     })
     const settled = tracklistCalls(asked)
     expect(settled).toBeLessThanOrEqual(beforeCap + 2)
+    const capped = panelNow()
+    expect(within(capped).getByText('No track list for this album yet')).toBeInTheDocument()
     expect(
-      within(panelNow()).getByText("This album's track list could not be read"),
+      within(capped).getByText(
+        "Encore has been waiting two minutes for this album's track list and has stopped waiting for now \u2014 it may still arrive. Every other figure on this page comes from your own history and is unaffected.",
+      ),
     ).toBeInTheDocument()
     expect(
-      within(panelNow()).queryByText("Asking Spotify for this album's track list"),
+      within(capped).queryByText("Asking Spotify for this album's track list"),
     ).not.toBeInTheDocument()
+    // Running out of patience is not a refusal. A claim that errors server-side
+    // records nothing and re-enters "pending" for ever, so two minutes of it is
+    // better evidence of a local fault than of Spotify declining to answer.
+    expect(within(capped).queryByText(/could not/i)).not.toBeInTheDocument()
+    expect(within(capped).queryByText(/tries again/i)).not.toBeInTheDocument()
+    expect(within(capped).queryByText(/Spotify/)).not.toBeInTheDocument()
 
     // And having given up, it stays given up: another two minutes of a tab left
     // open costs the API nothing.
@@ -526,12 +669,34 @@ describe('the tracklist poll', () => {
       '/api/albums/album-1/tracklist': tracklist(PENDING),
     })
     render(mountAt('/albums/album-1'))
-    const section = await panel("This album's track list could not be read")
+    const section = await panel('No track list for this album yet')
 
     expect(
       within(section).queryByText("Asking Spotify for this album's track list"),
     ).not.toBeInTheDocument()
     expect(tracklistCalls(asked)).toBe(1)
+  })
+
+  it('opens a fresh window when the recorded one belongs to an earlier visit', async () => {
+    // Persisting the start stops a reload restarting the cap, but only for as
+    // long as it is plausibly the same sitting. Twenty minutes later the server
+    // may well have started a healthy fetch, and refusing to ask on the first
+    // frame would hide a listing that is already there.
+    window.sessionStorage.setItem(
+      `${TRACKLIST_POLL_START_KEY}album-1`,
+      String(Date.now() - 20 * 60_000),
+    )
+    stubRoutes({
+      '/api/me': ME,
+      '/api/albums/album-1': albumPayload({ heard: 10, total: 12, known: true }),
+      '/api/albums/album-1/tracklist': tracklist(PENDING),
+    })
+    render(mountAt('/albums/album-1'))
+    const section = await panel("Asking Spotify for this album's track list")
+
+    expect(within(section).queryByText('No track list for this album yet')).not.toBeInTheDocument()
+    const restarted = Number(window.sessionStorage.getItem(`${TRACKLIST_POLL_START_KEY}album-1`))
+    expect(Date.now() - restarted).toBeLessThan(60_000)
   })
 
   it('forgets the cap once the album resolves, so a later pending album starts fresh', async () => {

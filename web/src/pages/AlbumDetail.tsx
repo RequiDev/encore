@@ -59,10 +59,33 @@ const TRACKLIST_POLL_MS = 2000
  * Two minutes is chosen against the server's own numbers rather than picked:
  * one album's whole walk is bounded at ninety seconds and a lease stranded by a
  * killed process expires after two, so any fetch that is genuinely going to
- * resolve has resolved by here. Sixty requests is the worst this page can cost
- * one album.
+ * resolve has resolved by here. Sixty-odd requests is the worst this page can
+ * cost one album — a tick and the cap can fall in the same instant, and the
+ * stop takes effect on the render after that, so the exact figure is a little
+ * over sixty rather than exactly it.
  */
 const TRACKLIST_POLL_CAP_MS = 120_000
+
+/**
+ * The cap above, in words, for the one line of copy that has to say how long it
+ * waited. Kept adjacent so changing the number cannot silently leave the
+ * sentence behind.
+ */
+const TRACKLIST_POLL_CAP_LABEL = 'two minutes'
+
+/**
+ * How old a recorded poll start may be before it is treated as a different
+ * visit rather than a continuation of this one.
+ *
+ * The window is persisted so that reloading a stuck page does not restart the
+ * cap — but only for as long as it is plausibly the same sitting. Without an
+ * expiry the key outlives its usefulness: an album capped at ten o'clock would
+ * still be showing "no track list yet" on the first frame at twenty past, with
+ * no request made, even though the server may have started a healthy fetch in
+ * between. Twice the cap is comfortably longer than any reload-and-read cycle
+ * near the cap and short enough that coming back later means a real attempt.
+ */
+const TRACKLIST_POLL_WINDOW_MS = 2 * TRACKLIST_POLL_CAP_MS
 
 /**
  * Key prefix for when this tab first saw `pending` for an album.
@@ -100,9 +123,17 @@ function pollStartedAt(albumId: string, now: number): number {
   const key = TRACKLIST_POLL_START_KEY + albumId
   try {
     const stored = Number(window.sessionStorage.getItem(key))
-    // A start in the future is a clock that moved under us; treat it as now
-    // rather than granting an unbounded window.
-    if (Number.isFinite(stored) && stored > 0 && stored <= now) return stored
+    // A start in the future is a clock that moved under us, and one older than
+    // the window belongs to an earlier visit; both open a fresh window rather
+    // than granting an unbounded one or refusing to try again for ever.
+    if (
+      Number.isFinite(stored) &&
+      stored > 0 &&
+      stored <= now &&
+      now - stored < TRACKLIST_POLL_WINDOW_MS
+    ) {
+      return stored
+    }
     window.sessionStorage.setItem(key, String(now))
   } catch {
     // See above: a per-load cap is a much smaller problem than no cap.
@@ -421,14 +452,17 @@ function NeverPlayedPanel({
         // fact the body states below it, phrased as a double negative and said
         // twice.
         list?.state === 'ready' && list.missing.length > 0
-          ? `${formatCount(list.missing.length)} of the ${formatPlural(
-              list.coverage.total,
-              'track',
-            )} Spotify lists for this album have no plays in your history, all time.`
-          : // Deliberately free of any promise. This same line sits above
-            // "pending", "unavailable" and "disabled", and only one of the
-            // three is going to resolve into a list.
-            "From Spotify's own list of what is on this album, read once and kept."
+          ? missingSummary(list.missing.length, list.coverage.total)
+          : // This one line sits above four different bodies, so it may assert
+            // nothing that is not true of all four. Anything about where the
+            // listing came from is false on "disabled", where no read has ever
+            // happened and none ever will, and premature on "pending" — and
+            // quietly reinstating a Spotify provenance directly above a body
+            // that has just refused to blame Spotify is the same category error
+            // that keeps those two states apart in the first place. So it says
+            // only what the panel is for, and carries the all-time qualifier
+            // that the count line opposite it carries.
+            'Which tracks on this record have no plays in your history, all time.'
       }
       padded={false}
     >
@@ -444,6 +478,24 @@ function NeverPlayedPanel({
 }
 
 /**
+ * The panel's own description when there is a list to describe.
+ *
+ * Both the verb and the denominator have to bend to the numbers. "1 of the 12
+ * tracks ... have no plays" disagrees with itself, and one unplayed track is
+ * among the commonest things this panel exists to report; "1 of the 1 track" is
+ * not a sentence anybody writes, so a single-track listing drops the ratio
+ * altogether rather than dressing one track up as a fraction of itself.
+ */
+function missingSummary(missing: number, listed: number): string {
+  if (listed === 1) {
+    return 'The only track Spotify lists for this album has no plays in your history, all time.'
+  }
+  return `${formatCount(missing)} of the ${formatPlural(listed, 'track')} Spotify lists for this album ${
+    missing === 1 ? 'has' : 'have'
+  } no plays in your history, all time.`
+}
+
+/**
  * Which tracks on this record have never been played.
  *
  * Everything else on this page is computed from listening Encore already holds.
@@ -455,6 +507,10 @@ function NeverPlayedPanel({
  *   unavailable — Encore asked and could not find out
  *   disabled    — this instance does not ask, because its operator said not to
  *   ready       — Encore knows, and you have played all of it
+ *
+ * and a fifth that belongs to this page rather than to the server: "pending"
+ * that has outlasted the poll's cap, which is neither a refusal nor still in
+ * progress and so says only that.
  *
  * `disabled` and `unavailable` are kept apart deliberately: one is somebody
  * here choosing not to ask and the other is Spotify not answering, and telling
@@ -494,15 +550,28 @@ function MissingTracks({
       />
     )
   }
-  // A poll that hit its cap lands here rather than in the branch below. After
-  // two minutes of an answer that carries no clock, "Encore could not get the
-  // list" is what a person can act on, and the retry it promises is real: the
-  // next view of this album starts a fresh attempt server-side.
-  if (failed || list?.state === 'unavailable' || (gaveUp && list?.state === 'pending')) {
+  if (failed || list?.state === 'unavailable') {
     return (
       <EmptyState
         title="This album's track list could not be read"
         description="Encore could not get the list of what is on this album from Spotify, so it cannot say which tracks you have never played. Every other figure on this page comes from your own history and is unaffected. Encore tries again later."
+      />
+    )
+  }
+  // Having run out of patience is not the same fact as having been refused, and
+  // it gets its own words rather than borrowing the ones above. What is known
+  // here is only that "pending" held for the whole window; what caused it is
+  // very likely local — a claim against album_track_fetches that errors logs a
+  // warning and persists nothing, which a read-only replica or a full
+  // tablespace will do all day — so naming Spotify as the party that would not
+  // answer is the "disabled" mistake arriving through another door. The
+  // sentence also makes no promise to retry, because this page cannot keep one:
+  // the recorded window outlives the visit.
+  if (gaveUp && list?.state === 'pending') {
+    return (
+      <EmptyState
+        title="No track list for this album yet"
+        description={`Encore has been waiting ${TRACKLIST_POLL_CAP_LABEL} for this album's track list and has stopped waiting for now — it may still arrive. Every other figure on this page comes from your own history and is unaffected.`}
       />
     )
   }
@@ -522,12 +591,25 @@ function MissingTracks({
   // the very common case of a fresh instance, where the album record has no
   // count at all and this panel would otherwise be the only confident number
   // on a page that has just said "Not known" twice.
-  const reconciliation =
-    listed === 0 || listed === totalTracks
-      ? null
-      : `Spotify lists ${formatPlural(listed, 'track')} for this album; the album record ${
-          totalTracks > 0 ? `says ${formatCount(totalTracks)}` : 'has no track count yet'
-        }. This panel follows the list.`
+  //
+  // In two forms, because the two ready states differ in what they have already
+  // said. Above a list, the description has just given the listing's total, so
+  // repeating it here would print the same clause and the same number twice on
+  // one screen. On the played-everything state nothing else names it, so the
+  // long form does. Neither offers to follow one number over another when there
+  // is no other number: an album record with no count yet is a gap, not a rival
+  // figure, and "this panel follows the list" would be answering a question
+  // nobody asked.
+  const disagrees = listed > 0 && listed !== totalTracks
+  const albumRecord =
+    totalTracks > 0 ? `says ${formatCount(totalTracks)}` : 'has no track count yet'
+  const follows = totalTracks > 0 ? " This panel follows Spotify's list." : ''
+  const reconciliationShort = disagrees ? `The album record ${albumRecord}.${follows}` : null
+  const reconciliationLong = disagrees
+    ? `Spotify lists ${formatPlural(listed, 'track')} for this album; the album record ${albumRecord}.${
+        totalTracks > 0 ? ' This panel follows the list.' : ''
+      }`
+    : null
   // Rendered on every `ready` state, not only when something is missing. On an
   // instance with fetching turned off this list will never change again, and a
   // list with no date on it reads as though it were current.
@@ -537,22 +619,27 @@ function MissingTracks({
 
   if (list.missing.length === 0) {
     return (
-      <div className="px-4 py-3">
-        {/*
-          The reconciliation replaces the count rather than following it: it
-          already names the listing's total, and "All 14 tracks Spotify lists
-          for it. Spotify lists 14 tracks for this album; ..." says the same
-          number twice in two sentences.
-        */}
-        <EmptyState
-          icon="track"
-          title="You have played every track on this album"
-          description={reconciliation ?? `All ${formatPlural(listed, 'track')} Spotify lists for it.`}
-        />
-        {readOn ? <p className="mt-2 text-center text-xs text-ink-faint">{readOn}</p> : null}
-      </div>
+      <EmptyState
+        icon="track"
+        title="You have played every track on this album"
+        // The date rides inside the description rather than under the empty
+        // state, so this body has the same inset and the same rhythm as the
+        // three above it instead of trailing off towards the panel's bottom
+        // edge.
+        description={
+          <>
+            {reconciliationLong ?? `Spotify lists ${formatPlural(listed, 'track')} for this album.`}
+            {readOn ? <span className="mt-1.5 block text-xs text-ink-faint">{readOn}</span> : null}
+          </>
+        }
+      />
     )
   }
+
+  // Disc numbers go on every row or on none. Showing them only from the second
+  // disc gives a column reading 11, 12, 2.3 — which looks like a decimal, and
+  // sorts wrong to the eye against the numbers above it.
+  const multiDisc = list.missing.some((track) => track.discNumber > 1)
 
   return (
     <div className="px-4 py-3">
@@ -560,14 +647,15 @@ function MissingTracks({
         {list.missing.map((track) => (
           <li key={track.id} className="flex items-baseline gap-3 py-2 text-sm">
             <span className="tabular w-10 shrink-0 text-right text-ink-faint">
-              {track.discNumber > 1 ? `${track.discNumber}.` : ''}
-              {track.trackNumber}
+              {multiDisc ? `${track.discNumber}-${track.trackNumber}` : track.trackNumber}
             </span>
             <span className="min-w-0 flex-1 truncate text-ink">{track.name}</span>
           </li>
         ))}
       </ul>
-      {reconciliation ? <p className="mt-3 text-sm text-ink-muted">{reconciliation}</p> : null}
+      {reconciliationShort ? (
+        <p className="mt-3 text-sm text-ink-muted">{reconciliationShort}</p>
+      ) : null}
       {readOn ? <p className="mt-2 text-xs text-ink-faint">{readOn}</p> : null}
     </div>
   )
