@@ -127,6 +127,9 @@ export const qk = {
   track: (id: string, range: DateRange) => ['entity', 'track', id, range] as const,
   artist: (id: string, range: DateRange) => ['entity', 'artist', id, range] as const,
   album: (id: string, range: DateRange) => ['entity', 'album', id, range] as const,
+  // Deliberately not keyed by range: the listing and "have you ever played
+  // this" are both all-time, exactly like the completion figure beside them.
+  albumTracklist: (id: string) => ['entity', 'album', id, 'tracklist'] as const,
   search: (query: string, limit: number) => ['search', query, limit] as const,
 
   history: (range: DateRange, limit: number) => ['history', range, limit] as const,

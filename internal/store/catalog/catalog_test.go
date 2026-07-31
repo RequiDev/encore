@@ -74,6 +74,28 @@ func TestClaimPendingSQLShape(t *testing.T) {
 	}
 }
 
+// TestReplaceAlbumTracksSQLIsOneStatement pins the property that no
+// integration test can: that the delete-absent and upsert-present halves of
+// ReplaceAlbumTracks are one statement rather than two run back to back. A
+// test built on outcomes cannot tell the two apart, because album_tracks
+// carries no timestamp or version column — the state on disk after either
+// implementation is identical. A semicolon here would split the string into
+// two statements sent in the same Exec call, reopening exactly the window a
+// concurrent reader must never see: the tail deleted with the replacement not
+// yet written.
+func TestReplaceAlbumTracksSQLIsOneStatement(t *testing.T) {
+	if strings.Contains(replaceAlbumTracksSQL, ";") {
+		t.Fatalf("replace statement contains a ';', which would split it into more than one statement:\n%s",
+			replaceAlbumTracksSQL)
+	}
+	if n := strings.Count(replaceAlbumTracksSQL, "DELETE FROM album_tracks"); n != 1 {
+		t.Errorf("replace statement has %d DELETEs on album_tracks, want exactly 1:\n%s", n, replaceAlbumTracksSQL)
+	}
+	if n := strings.Count(replaceAlbumTracksSQL, "INSERT INTO album_tracks"); n != 1 {
+		t.Errorf("replace statement has %d INSERTs into album_tracks, want exactly 1:\n%s", n, replaceAlbumTracksSQL)
+	}
+}
+
 func TestMarkStatementsGuardState(t *testing.T) {
 	// A stale failure report must not disturb a row another worker resolved.
 	for _, sql := range []string{

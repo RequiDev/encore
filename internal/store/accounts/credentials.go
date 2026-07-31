@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -130,7 +129,7 @@ func (r *Credentials) Upsert(ctx context.Context, q store.Querier, creds domain.
 
 	_, err = q.Exec(ctx, upsertCredentialsSQL,
 		store.UUIDArg(creds.UserID), accessEnc, refreshEnc, creds.TokenExpiresAt.UTC(), scopes,
-		string(state), creds.SyncCursorAt, creds.LastSyncAt, truncate(creds.LastSyncError, maxSyncErrorLen))
+		string(state), creds.SyncCursorAt, creds.LastSyncAt, store.Truncate(creds.LastSyncError, maxSyncErrorLen))
 	if err != nil {
 		return postgres.Classify("upsert spotify credentials", err)
 	}
@@ -209,7 +208,7 @@ func (r *Credentials) MarkSyncResult(ctx context.Context, q store.Querier, userI
 	message := ""
 	if syncErr != nil {
 		state = domain.SyncStateError
-		message = truncate(syncErr.Error(), maxSyncErrorLen)
+		message = store.Truncate(syncErr.Error(), maxSyncErrorLen)
 	}
 	var cursor *time.Time
 	if cursorAt != nil {
@@ -237,7 +236,7 @@ func (r *Credentials) MarkNeedsReauth(ctx context.Context, q store.Querier, user
             last_sync_at    = now(),
             last_sync_error = $2
         WHERE user_id = $1`
-	tag, err := q.Exec(ctx, sql, store.UUIDArg(userID), truncate(reason, maxSyncErrorLen))
+	tag, err := q.Exec(ctx, sql, store.UUIDArg(userID), store.Truncate(reason, maxSyncErrorLen))
 	if err != nil {
 		return postgres.Classify("mark needs reauth", err)
 	}
@@ -388,17 +387,4 @@ func (r *Credentials) MarkLibrarySynced(ctx context.Context, q store.Querier, us
 		return fmt.Errorf("mark library synced: %w", domain.ErrNotFound)
 	}
 	return nil
-}
-
-// truncate bounds a string that is about to be stored in a text column, cutting
-// on a rune boundary so that the result is still valid UTF-8 and Postgres does
-// not reject it.
-func truncate(s string, n int) string {
-	if n <= 0 || len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "..."
 }

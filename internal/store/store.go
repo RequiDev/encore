@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -176,4 +177,25 @@ func NullUUIDArg(id *uuid.UUID) *string {
 		return nil
 	}
 	return Ptr(id.String())
+}
+
+// Truncate bounds a string that is about to be stored in a text column,
+// cutting on a rune boundary so the result is still valid UTF-8.
+//
+// Cutting at a byte offset instead can slice through a multi-byte rune and
+// hand Postgres bytes it rejects outright ("invalid byte sequence for
+// encoding \"UTF8\""). For a column that only ever records an error message,
+// that failure is worse than the one it was trying to store: the write that
+// was supposed to report "the fetch failed" itself fails, so nothing durable
+// records the failure at all — any lease the caller took stays wherever it
+// was left, to be picked up again once it expires and to fail the same write
+// the same way, forever.
+func Truncate(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }

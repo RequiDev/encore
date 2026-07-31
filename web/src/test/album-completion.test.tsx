@@ -192,6 +192,24 @@ describe('the album page completion figure', () => {
     expect(within(section).getByText('tracks')).toBeInTheDocument()
     expect(within(section).getByText('all time')).toBeInTheDocument()
   })
+
+  it('says "track" rather than "tracks" for a one-track album, unplayed', async () => {
+    // Regression: the suffix used to be hard-coded to the plural, so a single
+    // unplayed track read "0 of 1 tracks" directly above two other panels on
+    // the same page that both get this right — the completion figure was the
+    // odd one out on its own screen.
+    stubRoutes({
+      '/api/me': ME,
+      '/api/albums/album-1': albumPayload({ heard: 0, total: 1, known: true }),
+    })
+
+    render(mountAt('/albums/album-1'))
+    const section = await heardPanel()
+
+    expect(within(section).getByText('0 of 1')).toBeInTheDocument()
+    expect(within(section).getByText('track')).toBeInTheDocument()
+    expect(within(section).queryByText('tracks')).not.toBeInTheDocument()
+  })
 })
 
 describe('the dashboard\'s "albums completed" aggregate', () => {

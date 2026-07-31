@@ -180,6 +180,84 @@ than a ratio or `0%` in that case, and `albumsCompleted` excludes such albums fr
 and `albums` for the same reason: crediting or penalising a listener for a number Spotify has not
 supplied yet would not describe their listening.
 
+### Which tracks you have never played
+
+`GET /api/albums/{id}/tracklist`
+
+Completion (above) counts what you have heard. This names what you have not — which needs Spotify's
+own list of what is on the album, because nothing Encore stores says what an album contains.
+
+That list is read **the first time somebody opens the album's page** and then cached for
+`ENCORE_ALBUM_TRACKS_TTL` (30 days by default). There is no background sweep: most albums in a large
+history are never opened, and enumerating them all would spend the instance's quota on questions
+nobody asked.
+
+It is also the one Spotify request `encore-api` makes that nobody clicked for — it fires as a side
+effect of *viewing* a page — so an operator can switch it off with
+`ENCORE_ALBUM_TRACKS_ENABLED=false`. This endpoint still answers when they have.
+
+**This endpoint never waits for Spotify.** It answers from the database and starts the fetch behind
+it, so `state` says which of four situations you are in:
+
+```json
+{
+  "state": "ready",
+  "coverage": { "covered": 9, "total": 12 },
+  "missing": [ { "id": "4uLU…", "name": "…", "discNumber": 1, "trackNumber": 4 } ],
+  "fetchedAt": "2026-07-20T09:00:00Z"
+}
+```
+
+| `state` | Means | What a client must render |
+|---|---|---|
+| `ready` | A listing is stored. `coverage` and `missing` are meaningful. | The list, or "you have played every track" when `missing` is empty. |
+| `pending` | No listing yet; one is being read from Spotify now, or is due and about to be. | "Encore is asking Spotify." Poll. |
+| `unavailable` | No listing, and none is being read: the last attempt failed. | "Encore could not read the list." Never "you have played everything." |
+| `disabled` | No listing, and this instance does not fetch them: `ENCORE_ALBUM_TRACKS_ENABLED=false`. | "This instance does not fetch album track lists." Never blame Spotify, and never promise a retry. |
+
+`missing` is empty in three of the four, so **a client must branch on `state` before it branches on
+`missing`.** Only `ready` with `coverage.covered == coverage.total` means the album was played in
+full.
+
+`disabled` is deliberately not folded into `unavailable`. "Your operator chose not to ask" and
+"Spotify would not answer" are different facts, and a page that renders the second for the first
+blames a third party for a local decision.
+
+**`pending` has no server-side bound.** Most ways a fetch declines to start — no free local slot,
+another replica already holding the lease, a claim against `album_track_fetches` that itself errors —
+leave the row exactly as it was, so the very next request lands back in the same branch. A read-only
+replica or a full tablespace can hold an album at `pending` indefinitely; nothing here times it out.
+Encore's own web client caps its poll at two minutes and then says plainly that it gave up, rather
+than implying either an outcome or a promise to keep trying — reopening the page afterwards costs one
+request and shows `ready` if the listing landed in the meantime.
+
+**Turning fetching off does not hide a listing that is already cached.** One stored before the
+switch was flipped still arrives as `ready`, past its TTL or not: what was turned off is *fetching*,
+not the album page, and withholding a listing that was correct when it was read would be strictly
+worse than showing it. `fetchedAt` is what keeps that honest, and it is why there is no separate
+"this will never refresh" field — a date says how old an answer is without claiming anything about
+how current it is, and a second field expressing one fact is a field that drifts. The web client
+renders that date on every `ready` state, which is also the only honesty available on an instance
+that has fetching turned off altogether: nothing will ever refresh the date again, so the date is
+what a reader has to judge it by.
+
+`coverage.total` is the number of tracks **Spotify returned**, which is not necessarily the album's
+`totalTracks`: they come from different reads at different times and can legitimately disagree. The
+web client prints both numbers when they do. `total_tracks` is *not* back-filled from this listing —
+enrichment owns that column, and an album with `total_tracks = 0` is still excluded from completion
+rather than reported as 0%, exactly as before.
+
+A failed fetch is retried after fifteen minutes rather than after the TTL, because failures here are
+timeouts and rate limits. A failure never replaces or empties a listing that was read successfully
+earlier: the older listing stays readable and `fetchedAt` keeps saying how old it is.
+
+**One known limitation.** The listing is requested without a market, so the ids are Spotify's
+canonical ones. A play recorded under a *relinked* id — the same recording, a different id in a
+different market — will not match, and that track appears as never played. Encore does not guess at
+equivalences here.
+
+The album must already be in your catalogue; an id that is not answers 404 without touching Spotify.
+
 ### Playback context: what you were playing from
 
 `playlists` and `playlistCoverage`, part of `/api/stats/context`'s payload, answer what the range
@@ -351,6 +429,7 @@ every other ranked list in this API.
 | `GET` | `/api/tracks/{id}` | Track, its album and artists, plus the caller's stats for it over the range. |
 | `GET` | `/api/artists/{id}` | Artist, the caller's stats, top tracks, top albums, day repartition, first and last listen, share of total listening. |
 | `GET` | `/api/albums/{id}` | Album, its artists and tracks, plus the caller's stats and how much of it has ever been heard. |
+| `GET` | `/api/albums/{id}/tracklist` | Which tracks of the album have never been played, from Spotify's own track list. Cached, lazily filled, and never blocking. |
 | `GET` | `/api/search?q=&limit=` | Catalogue search across artists, albums and tracks. |
 
 ## Listening history

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -94,23 +93,6 @@ func TestClampPage(t *testing.T) {
 	}
 	if got := clampLimit(0); got != defaultPageSize {
 		t.Fatalf("clampLimit(0) = %d, want %d", got, defaultPageSize)
-	}
-}
-
-func TestTruncateKeepsValidUTF8(t *testing.T) {
-	if got := truncate("short", 10); got != "short" {
-		t.Fatalf("truncate did not leave a short string alone: %q", got)
-	}
-	if got := truncate("abcdefgh", 4); got != "abcd..." {
-		t.Fatalf("truncate(%q, 4) = %q", "abcdefgh", got)
-	}
-	// Cutting mid-rune would produce bytes Postgres rejects for a text column.
-	got := truncate("aé😀b", 3)
-	if !utf8.ValidString(got) {
-		t.Fatalf("truncate produced invalid UTF-8: %q", got)
-	}
-	if got != "aé..." {
-		t.Fatalf("truncate cut on the wrong boundary: %q", got)
 	}
 }
 

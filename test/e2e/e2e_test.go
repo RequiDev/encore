@@ -23,11 +23,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/RequiDev/encore/internal/albumtracks"
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/httpapi"
@@ -56,6 +58,22 @@ type spotifyStub struct {
 	// on the tracks rather than only on the response.
 	playlistItems map[string][]string
 	playlistCalls int
+
+	// albumTracks is what GET /v1/albums/{id}/tracks answers for one album,
+	// keyed by id. A test sets it directly rather than driving pagination,
+	// since paging through several pages is the Spotify client's own concern
+	// (internal/spotify/albumtracks_test.go) and not something this stub needs
+	// to reproduce: every album here answers in one page, "next": null.
+	albumTracks map[string][]map[string]any
+	// albumTrackReqs counts requests to that endpoint, so a test can prove the
+	// lease held: a page that polls three times must still only make Spotify
+	// answer once. Written from the detached fetch goroutine and read from the
+	// test goroutine, with no other synchronisation between the two visible at
+	// this layer — a real happens-before edge likely exists via the pool and
+	// the socket, but it is incidental rather than designed, and this project
+	// cannot run -race locally to lean on it. atomic.Int64 makes it correct
+	// regardless.
+	albumTrackReqs atomic.Int64
 }
 
 func newSpotifyStub(t *testing.T) *spotifyStub {
@@ -64,6 +82,7 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 		profile:       meProfile("listener-one", "Listener One"),
 		grantedScopes: config.DefaultScopes(),
 		playlistItems: map[string][]string{},
+		albumTracks:   map[string][]map[string]any{},
 	}
 	mux := http.NewServeMux()
 
@@ -155,10 +174,28 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 	mux.HandleFunc("/v1/albums", catalogue("albums"))
 	mux.HandleFunc("/v1/artists", catalogue("artists"))
 
+	// An album's own track listing, one page, "next": null. What it answers for
+	// one album is whatever a test put in albumTracks. An id the test never
+	// seeded answers {"items":null} — an empty listing, which
+	// TestAlbumTracklistUnavailableIsA200NotAnErrorEnvelope uses deliberately:
+	// internal/albumtracks records a 200 carrying no tracks as a failure (see
+	// errEmptyListing), which is the doorway into "unavailable" that needs no
+	// waiting at all.
+	mux.HandleFunc("/v1/albums/{id}/tracks", func(w http.ResponseWriter, r *http.Request) {
+		s.albumTrackReqs.Add(1)
+		writeJSON(w, map[string]any{"items": s.albumTracks[r.PathValue("id")], "next": nil})
+	})
+
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
 }
+
+// albumTrackCalls reports how many times GET /v1/albums/{id}/tracks has been
+// served, across every album. It exists so a test can prove the lease held: a
+// page that polls the tracklist endpoint several times must still only make
+// this instance ask Spotify once per album.
+func (s *spotifyStub) albumTrackCalls() int { return int(s.albumTrackReqs.Load()) }
 
 func meProfile(id, name string) map[string]any {
 	return map[string]any{
@@ -187,14 +224,21 @@ type instance struct {
 	baseURL string
 }
 
-func newInstance(t *testing.T) *instance {
+func newInstance(t *testing.T) *instance { return newInstanceWith(t, nil) }
+
+// newInstanceWith is newInstance with configuration overrides merged over the
+// defaults every test otherwise gets — the operator's switch
+// (ENCORE_ALBUM_TRACKS_ENABLED, say) being the reason this exists at all: that
+// is a wiring property config.Load through albumtracks.New through the
+// handler, which no unit test constructing its own config by hand can see.
+func newInstanceWith(t *testing.T, overrides map[string]string) *instance {
 	t.Helper()
 	stub := newSpotifyStub(t)
 	rig := harness.NewRig(t, nil)
 	env := rig.Env
 
 	key := strings.Repeat("k", 32)
-	cfg, err := config.LoadFrom(map[string]string{
+	envMap := map[string]string{
 		"ENCORE_ENV":                   "development",
 		"ENCORE_PUBLIC_URL":            "http://api.test",
 		"ENCORE_WEB_URL":               "http://web.test",
@@ -207,7 +251,11 @@ func newInstance(t *testing.T) *instance {
 		"ENCORE_IMPORT_DIR":            rig.Cfg.Dir,
 		"ENCORE_COOKIE_SECURE":         "false",
 		"ENCORE_METRICS_ENABLED":       "true",
-	})
+	}
+	for k, v := range overrides {
+		envMap[k] = v
+	}
+	cfg, err := config.LoadFrom(envMap)
 	if err != nil {
 		t.Fatalf("load configuration: %v", err)
 	}
@@ -226,12 +274,23 @@ func newInstance(t *testing.T) *instance {
 		t.Fatalf("build intake: %v", err)
 	}
 
+	albumTracks, err := albumtracks.New(cfg.AlbumTracks, albumtracks.Deps{
+		Catalog: env.Catalog, Spotify: client,
+		Writer: albumtracks.StoreWriter{Store: env.Store},
+		Logger: harness.Discard(),
+	})
+	if err != nil {
+		t.Fatalf("build album tracks service: %v", err)
+	}
+	t.Cleanup(albumTracks.Close)
+
 	api, err := httpapi.New(httpapi.Deps{
 		Config: cfg, Store: env.Store, Accounts: env.Accounts, Catalog: env.Catalog,
 		Listens: env.Listens, Imports: env.Imports, Stats: stats.New(env.Store),
 		Intake: intake, Spotify: client, Metrics: metrics.New(),
 		Logger: harness.Discard(), Version: "test",
-		UserToken: poller.AccessToken,
+		UserToken:   poller.AccessToken,
+		AlbumTracks: albumTracks,
 		SyncNow: func(ctx context.Context, userID uuid.UUID) (httpapi.SyncOutcome, error) {
 			res, err := poller.SyncUser(ctx, userID)
 			out := httpapi.SyncOutcome{
@@ -416,6 +475,40 @@ func (i *instance) signIn(b *browser) map[string]any {
 	}
 
 	return decode[map[string]any](i.t, b.get("/api/me"), http.StatusOK)
+}
+
+// seedAlbumWithPlays gives one album a Spotify track listing of `total` tracks
+// and a play recorded for the first `played` of them. Track ids are derived
+// from the album id, so the played tracks and the listed tracks name the same
+// identifiers without a lookup table — track n is "<albumID>T<n>" in both the
+// recently-played page synced through the real import path and the album
+// track listing the stub answers when the tracklist endpoint fetches it.
+func (i *instance) seedAlbumWithPlays(b *browser, albumID string, total, played int) {
+	i.t.Helper()
+	if played > total {
+		i.t.Fatalf("seedAlbumWithPlays: played (%d) exceeds total (%d)", played, total)
+	}
+	trackID := func(n int) string { return fmt.Sprintf("%sT%02d", albumID, n) }
+
+	at := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Second)
+	items := make([]map[string]any, 0, played)
+	for n := 1; n <= played; n++ {
+		items = append(items, samePlayItem(trackID(n), albumID, at.Add(time.Duration(n)*time.Minute)))
+	}
+	i.stub.plays = items
+	syncResult := decode[map[string]any](i.t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != played {
+		i.t.Fatalf("sync reported %v imported while seeding, want %d", syncResult["imported"], played)
+	}
+
+	listing := make([]map[string]any, 0, total)
+	for n := 1; n <= total; n++ {
+		listing = append(listing, map[string]any{
+			"id": trackID(n), "name": "Track " + trackID(n),
+			"disc_number": 1, "track_number": n,
+		})
+	}
+	i.stub.albumTracks[albumID] = listing
 }
 
 // --- the tests --------------------------------------------------------------
@@ -1834,5 +1927,164 @@ func TestPlaylistPreviewMatchesWhatIsCreated(t *testing.T) {
 		if want := "spotify:track:" + id; sent[i] != want {
 			t.Fatalf("position %d: preview said %s, Spotify got %s", i, want, sent[i])
 		}
+	}
+}
+
+// TestAlbumTracklistFillsInWithoutBlockingThePage walks the whole feature: the
+// first request answers immediately without a listing, the fetch lands behind
+// it, and a later request names the tracks that were never played.
+func TestAlbumTracklistFillsInWithoutBlockingThePage(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+	// An album of twelve tracks, of which the listener has played nine.
+	const albumID = "e2etrklstfillsin00001"
+	inst.seedAlbumWithPlays(b, albumID, 12, 9)
+
+	start := time.Now()
+	first := decode[httpapi.AlbumTrackList](t, b.get("/api/albums/"+albumID+"/tracklist"), http.StatusOK)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the first request took %s; it waited for Spotify", elapsed)
+	}
+	if first.State != "pending" {
+		t.Fatalf("first state = %q, want \"pending\"", first.State)
+	}
+	if len(first.Missing) != 0 {
+		t.Fatalf("first response named %d missing tracks before any fetch finished", len(first.Missing))
+	}
+
+	var got httpapi.AlbumTrackList
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		got = decode[httpapi.AlbumTrackList](t, b.get("/api/albums/"+albumID+"/tracklist"), http.StatusOK)
+		if got.State == "ready" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got.State != "ready" {
+		t.Fatalf("state never became ready; last was %q", got.State)
+	}
+	if got.Coverage.Total != 12 || got.Coverage.Covered != 9 {
+		t.Fatalf("coverage = %d/%d, want 9/12", got.Coverage.Covered, got.Coverage.Total)
+	}
+	if len(got.Missing) != 3 {
+		t.Fatalf("named %d missing tracks, want 3", len(got.Missing))
+	}
+	if got.FetchedAt == nil {
+		t.Fatal("fetchedAt is absent on a ready listing; the page cannot say how old it is")
+	}
+	if n := inst.stub.albumTrackCalls(); n != 1 {
+		t.Fatalf("the stub served %d album-track requests, want 1: the poll refetched", n)
+	}
+}
+
+// TestAlbumTracklistRefusesAnAlbumNobodyHasPlayed keeps an arbitrary id in the
+// URL from spending a Spotify request.
+func TestAlbumTracklistRefusesAnAlbumNobodyHasPlayed(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	resp := b.get("/api/albums/1BBBBBBBBBBBBBBBBBBBBB/tracklist")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an album not in the catalogue", resp.StatusCode)
+	}
+	if n := inst.stub.albumTrackCalls(); n != 0 {
+		t.Fatalf("the stub served %d requests for an unknown album, want 0", n)
+	}
+}
+
+// TestAlbumTracklistDisabledAnswersWithoutTouchingSpotify walks the operator's
+// switch end to end, which is the only place the configuration, the service and
+// the handler are proved to agree about it.
+func TestAlbumTracklistDisabledAnswersWithoutTouchingSpotify(t *testing.T) {
+	inst := newInstanceWith(t, map[string]string{"ENCORE_ALBUM_TRACKS_ENABLED": "false"})
+	b := inst.browser()
+	inst.signIn(b)
+	const albumID = "e2etrklstdisabled0001"
+	inst.seedAlbumWithPlays(b, albumID, 12, 9)
+
+	resp := b.get("/api/albums/" + albumID + "/tracklist")
+	got := decode[httpapi.AlbumTrackList](t, resp, http.StatusOK)
+	if got.State != "disabled" {
+		t.Fatalf("state = %q, want \"disabled\"", got.State)
+	}
+	if n := inst.stub.albumTrackCalls(); n != 0 {
+		t.Fatalf("the stub served %d album-track requests on a disabled instance, want 0", n)
+	}
+
+	// And the lease was never even claimed: no unattended write, either.
+	var rows int
+	if err := inst.env.Pool.QueryRow(inst.env.Ctx(),
+		`SELECT count(*)::int FROM album_track_fetches`).Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("%d album_track_fetches rows were written on a disabled instance, want 0", rows)
+	}
+}
+
+// TestAlbumTracklistUnavailableIsA200NotAnErrorEnvelope proves the one state
+// whose whole contract is "stop polling" actually arrives as an ordinary 200
+// carrying {"state":"unavailable",...} rather than writeError's envelope —
+// the seam a future change to error classification could break silently,
+// since no other test here would catch it.
+//
+// "unavailable" needs no waiting at all. It is the fifteen-minute window
+// immediately *after* a recorded failure, not the fifteen minutes after that
+// (which is what returns the album to "pending" — see albumtracks.due). A
+// Spotify response carrying zero tracks is exactly such a failure: fetch
+// records it under errEmptyListing precisely because there is no such record
+// as an album with no tracks. Leaving an album unseeded in stub.albumTracks
+// is what produces that response, since the stub answers {"items":null} for
+// any id nobody told it about.
+func TestAlbumTracklistUnavailableIsA200NotAnErrorEnvelope(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	// One play puts the album in the catalogue, which the endpoint requires
+	// before it does anything else; stub.albumTracks is deliberately left with
+	// no entry for it.
+	const albumID = "e2etrklstunavail00001"
+	at := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	inst.stub.plays = []map[string]any{samePlayItem("e2etrkunavailabl0001a", albumID, at)}
+	syncResult := decode[map[string]any](t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := syncResult["imported"].(float64); int(n) != 1 {
+		t.Fatalf("sync reported %v imported while seeding, want 1", syncResult["imported"])
+	}
+
+	var got httpapi.AlbumTrackList
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := b.get("/api/albums/" + albumID + "/tracklist")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("tracklist answered %d while the fetch was resolving, want 200 throughout every state; body: %s",
+				resp.StatusCode, body)
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode tracklist: %v; body: %s", err, body)
+		}
+		if got.State == "unavailable" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got.State != "unavailable" {
+		t.Fatalf("state never became unavailable; last was %q", got.State)
+	}
+	if got.Coverage.Total != 0 || got.Coverage.Covered != 0 {
+		t.Fatalf("coverage = %+v, want zero on both sides with no listing ever stored", got.Coverage)
+	}
+	if len(got.Missing) != 0 {
+		t.Fatalf("missing has %d entries with no listing ever stored, want 0", len(got.Missing))
+	}
+	if n := inst.stub.albumTrackCalls(); n != 1 {
+		t.Fatalf("the stub served %d album-track requests, want exactly 1: a recorded failure "+
+			"must not be retried inside its fifteen-minute backoff", n)
 	}
 }

@@ -319,6 +319,69 @@ func (s *Server) handleAlbum(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAlbumTracklist answers GET /api/albums/{id}/tracklist.
+//
+// It is a separate route from GET /api/albums/{id} for two reasons. It is the
+// only trigger for the lazy fetch, so there is exactly one place that can start
+// one; and the client polls it while a fetch runs, which must not re-run the
+// album page's whole statistics on every tick.
+//
+// It never waits for Spotify. Everything below reads the database; the service
+// starts a detached fetch when one is due and this returns "pending", and the
+// client asks again. A page that hangs on a third party is a defect.
+func (s *Server) handleAlbumTracklist(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	id, err := parseSpotifyIDPath(r, "id")
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+
+	// The album must already be in the catalogue. Without this, any base-62
+	// string in the URL would spend one of the instance's Spotify requests on a
+	// record nobody has listened to — the same quota argument §5.2 uses to reject
+	// a background sweep, arriving through a different door.
+	if _, err := s.catalog.GetAlbum(ctx, s.querier, id); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Two independent round trips rather than one transaction, and deliberately
+	// so: the listing is global catalogue data with its own TTL and the heard
+	// set is one user's history, and there is no snapshot to lose by reading
+	// them separately. toAlbumTrackList derives Coverage and Missing from one
+	// (listing, heard) pair in a single pass — every listed track increments
+	// Covered or is appended to Missing, never neither and never both — so
+	// Covered + len(Missing) == Total always, for whatever heard happens to be.
+	// A listen landing between these two calls is simply included or not; it
+	// cannot make the response internally disagree with itself, because
+	// nothing here compares this listing against any other read of it. What a
+	// transaction could not fix anyway: album.totalTracks on GET
+	// /api/albums/{id} and coverage.total here come from two separate HTTP
+	// requests, are allowed to disagree by design (see AlbumTrackList's own
+	// doc), and no transaction inside this handler reaches the other request.
+	// The only real exposure is ordinary read staleness of a few milliseconds,
+	// which is not a reason to pin a pool connection across a call this
+	// package otherwise never has to hold one for.
+	listing, err := s.albumTracks.Listing(ctx, s.querier, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	heard, err := s.stats.AlbumHeardTracks(ctx, s.querier, user.ID, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, toAlbumTrackList(listing, heard))
+}
+
 // handleSearch answers GET /api/search.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if _, err := requireUser(r); err != nil {

@@ -126,3 +126,63 @@ func (s *Service) CompletedAlbums(
 	}
 	return out, nil
 }
+
+// albumHeardTracksSQL lists which of one album's tracks the user has ever
+// played.
+//
+// Deliberately the same shape and the same predicates as albumCompletionSQL's
+// numerator above: that count and this set are two readings of one question,
+// and they must never disagree. A page showing "9 of 12 heard" beside four
+// tracks it calls unheard would be worse than one showing neither.
+//
+// Not range-filtered, for the reason given on albumCompletionSQL: a track heard
+// five years ago is not a track you have never played, whatever window the page
+// happens to be showing. The user predicate and the blacklist still apply.
+//
+// It deliberately does not read album_tracks. That cache is what Spotify says
+// the album contains; this is what the listener actually played, and mixing the
+// two here would make the answer depend on whether a fetch had happened yet.
+//
+// Parameters are $1 user, $2 album id.
+var albumHeardTracksSQL = fmt.Sprintf(`
+SELECT DISTINCT l.track_id
+FROM listens l
+JOIN tracks t ON t.id = l.track_id
+WHERE l.user_id = $1 AND t.album_id = $2 AND %s`, blacklistFilter("l"))
+
+// AlbumHeardTracks reports which of an album's tracks the user has ever played.
+//
+// The caller diffs this against the cached listing to name the rest. It is
+// returned as ids rather than as a count because only the caller knows which
+// listing it is diffing against, and a count would not survive the two
+// disagreeing about what the album contains.
+func (s *Service) AlbumHeardTracks(
+	ctx context.Context,
+	q store.Querier,
+	userID uuid.UUID,
+	albumID string,
+) ([]string, error) {
+	// No range to validate, but a nil user id must not reach SQL looking like a
+	// legitimate parameter — it would match nothing rather than fail.
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("%w: a user is required", domain.ErrValidation)
+	}
+	rows, err := q.Query(ctx, albumHeardTracksSQL, store.UUIDArg(userID), albumID)
+	if err != nil {
+		return nil, postgres.Classify("album heard tracks", err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 16)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, postgres.Classify("album heard tracks", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, postgres.Classify("album heard tracks", err)
+	}
+	return out, nil
+}

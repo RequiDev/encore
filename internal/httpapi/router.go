@@ -101,6 +101,7 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	s.route(mux, "GET /api/tracks/{id}", s.handleTrack)
 	s.route(mux, "GET /api/artists/{id}", s.handleArtist)
 	s.route(mux, "GET /api/albums/{id}", s.handleAlbum)
+	s.route(mux, "GET /api/albums/{id}/tracklist", s.handleAlbumTracklist)
 	s.route(mux, "GET /api/search", s.handleSearch)
 	s.route(mux, "GET /api/status", s.handleStatus)
 

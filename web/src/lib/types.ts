@@ -716,6 +716,58 @@ export interface AlbumDetail {
   completion?: AlbumCompletion
 }
 
+/**
+ * Which tracks of an album have never been played.
+ *
+ * Unlike everything else on the album page this is not computed from data on
+ * disk: Encore has to ask Spotify what the album contains, which it does the
+ * first time somebody opens the page and then caches. So `missing` being empty
+ * is ambiguous, and `state` is what resolves it — an empty `missing` under
+ * anything but `ready` means "Encore does not know", never "you have played
+ * everything".
+ *
+ * `disabled` is the instance's operator having turned fetching off
+ * (`ENCORE_ALBUM_TRACKS_ENABLED=false`). It is separate from `unavailable` on
+ * purpose: one is a local choice and the other is Spotify failing to answer,
+ * and rendering the second for the first blames a third party for a decision
+ * somebody here made. A listing cached before the switch was flipped still
+ * arrives as `ready`.
+ *
+ * `pending` carries no clock and nothing bounds it: every `pending` response
+ * for one album is byte-identical however long the state has held, and the
+ * server's own doc says a claim that errored re-enters it on the very next
+ * request. A client that polls this state must therefore cap itself; see
+ * `tracklistPollInterval` on the album page.
+ */
+export type AlbumTrackListState = 'ready' | 'pending' | 'unavailable' | 'disabled'
+
+export interface AlbumTrackRef {
+  id: string
+  name: string
+  discNumber: number
+  trackNumber: number
+}
+
+export interface AlbumTrackList {
+  state: AlbumTrackListState
+  /**
+   * Played over listed. The denominator is the listing Spotify returned, which
+   * is not necessarily `album.totalTracks`: they come from different reads and
+   * can disagree, so the panel says which one it followed.
+   */
+  coverage: Coverage
+  missing: AlbumTrackRef[]
+  /**
+   * When the listing was read. Absent until one has succeeded.
+   *
+   * The panel renders it on every `ready` state. It is the only thing keeping a
+   * cached listing honest on an instance where fetching has been turned off and
+   * no refresh is ever coming — a date says how old an answer is without
+   * claiming anything about how current it is.
+   */
+  fetchedAt?: Timestamp
+}
+
 // --- listening history -----------------------------------------------------
 
 export interface HistoryItem {
