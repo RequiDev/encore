@@ -10,16 +10,29 @@ import (
 )
 
 // defaultArtistAlbumPages bounds one artist's discography when the caller does
-// not say. Fifty a page, so twenty pages is a thousand releases.
+// not say. Fifty a page, so forty pages is two thousand releases.
 //
-// Deliberately the same page count as defaultAlbumTrackPages but a very
-// different amount of headroom: no released album approaches a thousand tracks,
-// while a long-running artist with every appears_on credit counted can reach a
-// few hundred releases. A thousand still clears that comfortably, and a bound
-// that is too tight is not harmless — a truncated walk is recorded as a failure
-// and never stored, so the artist's panel would read "could not be read" for
-// ever rather than showing a slightly short list.
-const defaultArtistAlbumPages = 20
+// This is a ceiling, not a cost: the walk stops the moment `next` comes back
+// empty, so an artist with eleven albums makes one request whether the cap is
+// twenty or forty. Raising it charges nobody who is not already up against
+// it — only artists who genuinely have that many releases pay for the extra
+// pages, and those are exactly the artists a smaller cap was failing outright.
+//
+// It was raised from twenty after review found that outcome was not
+// hypothetical. Because a truncated walk is recorded as a failure and
+// ReplaceArtistAlbums is all-or-nothing under delete-absent semantics, an
+// artist whose combined releases exceeded the cap never stored anything: at
+// twenty pages the result was not "occasionally a slightly short list", it was
+// "this artist's panel reads 'could not be read' forever", retried at twenty
+// requests a time against a limiter where a single 429 pauses Spotify access
+// for every user on the instance. That population is real — compilation-heavy
+// legacy acts, prolific remixers, classical composers catalogued as one
+// Spotify artist — and appears_on is the unbounded contributor, since it
+// counts every record the artist has ever guested on. Forty pages does not
+// make that population impossible, only larger before it recurs; the
+// alternative already committed to (partial data is not stored) is what keeps
+// it a ceiling rather than a promise.
+const defaultArtistAlbumPages = 40
 
 // ArtistAlbum is one release Spotify lists for an artist.
 //
