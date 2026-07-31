@@ -221,3 +221,83 @@ func TestAlbumTracksTTLRejectsNonPositive(t *testing.T) {
 		t.Errorf("error %q does not mention ENCORE_ALBUM_TRACKS_TTL", err)
 	}
 }
+
+// TestArtistAlbumsDefaults pins that the discography cache works out of the box
+// and that its TTL is a week rather than the album cache's month. The two are
+// deliberately different: an album's track list is immutable after release,
+// because a re-issue gets a new album id, while a discography grows — a record
+// put out today should appear in "4 of 11" within a week.
+func TestArtistAlbumsDefaults(t *testing.T) {
+	cfg, err := LoadFrom(libraryTestEnv(nil))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	want := ArtistAlbums{Enabled: true, TTL: 168 * time.Hour}
+	if cfg.ArtistAlbums != want {
+		t.Errorf("ArtistAlbums = %+v, want %+v", cfg.ArtistAlbums, want)
+	}
+	// The two caches are separately switchable, and this is the whole reason
+	// 2e-ii did not reuse ENCORE_ALBUM_TRACKS_ENABLED.
+	if cfg.ArtistAlbums.TTL == cfg.AlbumTracks.TTL {
+		t.Error("the two caches share a TTL; a discography grows and an album's track list does not, " +
+			"and a single value cannot be right for both")
+	}
+}
+
+// TestArtistAlbumsSwitchIsIndependentOfAlbumTracks is the test the config-gate
+// decision rests on: an operator who turns one off must not thereby turn the
+// other off, and — the failure that actually motivated a separate key — an
+// operator who had ENCORE_ALBUM_TRACKS_ENABLED=false must not silently start
+// making the new requests. A test that only checks the default (true) would
+// pass even against a parser that never reads ENCORE_ARTIST_ALBUMS_ENABLED at
+// all, so this sets it to false and asserts that took effect.
+func TestArtistAlbumsSwitchIsIndependentOfAlbumTracks(t *testing.T) {
+	cfg, err := LoadFrom(libraryTestEnv(map[string]string{
+		"ENCORE_ARTIST_ALBUMS_ENABLED": "false",
+		"ENCORE_ARTIST_ALBUMS_TTL":     "48h",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if cfg.ArtistAlbums.Enabled {
+		t.Error("ArtistAlbums.Enabled = true after ENCORE_ARTIST_ALBUMS_ENABLED=false")
+	}
+	if cfg.ArtistAlbums.TTL != 48*time.Hour {
+		t.Errorf("ArtistAlbums.TTL = %v, want 48h", cfg.ArtistAlbums.TTL)
+	}
+	if !cfg.AlbumTracks.Enabled {
+		t.Error("turning off discographies also turned off album track listings; the two keys " +
+			"exist precisely so an operator can keep the cheap one")
+	}
+	redacted := cfg.Redacted()
+	if _, ok := redacted["artist_albums_enabled"]; !ok {
+		t.Error(`Redacted() has no "artist_albums_enabled"; the startup log is the ` +
+			`only place an operator can confirm the switch took effect`)
+	}
+	if got := redacted["artist_albums_ttl"]; got != cfg.ArtistAlbums.TTL.String() {
+		t.Errorf(`Redacted()["artist_albums_ttl"] = %v, want %q`, got, cfg.ArtistAlbums.TTL)
+	}
+
+	back, err := LoadFrom(libraryTestEnv(map[string]string{"ENCORE_ALBUM_TRACKS_ENABLED": "false"}))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if !back.ArtistAlbums.Enabled {
+		t.Error("turning off album track listings also turned off discographies")
+	}
+}
+
+// TestArtistAlbumsTTLRejectsNonPositive matches every other duration: a zero
+// TTL would refetch a discography on every single page view, which is a quota
+// bill discovered in production rather than a configuration error at startup.
+func TestArtistAlbumsTTLRejectsNonPositive(t *testing.T) {
+	_, err := LoadFrom(libraryTestEnv(map[string]string{"ENCORE_ARTIST_ALBUMS_TTL": "0"}))
+	if err == nil {
+		t.Fatal("LoadFrom: want an error for a non-positive TTL, got nil")
+	}
+	if !strings.Contains(err.Error(), "ENCORE_ARTIST_ALBUMS_TTL") {
+		t.Errorf("error %q does not mention ENCORE_ARTIST_ALBUMS_TTL", err)
+	}
+}

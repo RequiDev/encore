@@ -36,6 +36,8 @@ type Config struct {
 	Worker   Worker
 	// AlbumTracks governs the cache of album track listings.
 	AlbumTracks AlbumTracks
+	// ArtistAlbums governs the cache of artist discographies.
+	ArtistAlbums ArtistAlbums
 	// MetadataFallback is an optional second source of catalogue metadata.
 	MetadataFallback MetadataFallback
 }
@@ -212,6 +214,56 @@ type AlbumTracks struct {
 	// cases a refresh does catch — a pre-release that gained tracks, a market
 	// change — are all caught within a month, and a shorter TTL would multiply
 	// the request count for no observable gain.
+	TTL time.Duration
+}
+
+// ArtistAlbums governs the cache of artist discographies that lets the artist
+// page say "you have heard 4 of this artist's 11 albums".
+//
+// The same shape as AlbumTracks above and for the same reasons: no worker and
+// no interval, because a background sweep over every artist in a history is
+// rejected explicitly — most are never opened, and enumerating them all would
+// spend the instance's quota on questions nobody asked. A discography is read
+// the first time somebody opens that artist's page and then kept, so the cost
+// is one walk per artist *viewed*, per TTL.
+//
+// It has its own two keys rather than sharing AlbumTracks' for three reasons.
+// Renaming a key operators may already have set fails *open*: an unset key
+// falls back to its default, so somebody who had turned album track listings
+// off would silently start making unattended requests again. The budgets differ
+// by far more than an order of magnitude: a walk includes every single,
+// compilation and appearance an artist has, at one request per fifty releases,
+// capped at forty requests for an unusually prolific artist — against roughly
+// one request for an album's track list. And one key would mean turning off
+// the expensive feature also turns off the cheap one.
+type ArtistAlbums struct {
+	// Enabled controls whether this instance ever asks Spotify what an artist
+	// has released. On by default, so the feature works out of the box.
+	//
+	// It has a switch for the reason AlbumTracks.Enabled has one: this fires a
+	// Spotify request as a side effect of *viewing a page* rather than as the
+	// direct consequence of somebody clicking a thing, and unattended egress is
+	// an operator's decision. It matters more here than for AlbumTracks: a
+	// discography walk can cost up to forty requests against roughly one for an
+	// album's track list, and a 429 on either pauses Spotify access for the
+	// whole instance, not just the request that triggered it.
+	//
+	// Off means "do not fetch", not "forget what is on disk": a discography
+	// already stored is still served, with the date it was read, and the artist
+	// page says plainly that this instance does not fetch them rather than
+	// reporting a Spotify failure that did not happen.
+	Enabled bool
+	// TTL is how long a stored discography is trusted before the next page view
+	// refreshes it. Ignored entirely when Enabled is false — nothing refreshes,
+	// so nothing expires.
+	//
+	// Seven days, deliberately shorter than AlbumTracks.TTL's thirty. That one
+	// is long because an album's track list is effectively immutable after
+	// release: Spotify mints a new album id for a deluxe edition rather than
+	// changing the old one. A discography has no such property — it *grows*, and
+	// a record released today is exactly the kind of thing somebody opening an
+	// artist page wants counted. A month's lag on new releases would be visible;
+	// a week's is not.
 	TTL time.Duration
 }
 
@@ -417,6 +469,11 @@ func parse(get lookup) (*Config, error) {
 		TTL:     p.duration("ENCORE_ALBUM_TRACKS_TTL", 30*24*time.Hour),
 	}
 
+	c.ArtistAlbums = ArtistAlbums{
+		Enabled: p.boolean("ENCORE_ARTIST_ALBUMS_ENABLED", true),
+		TTL:     p.duration("ENCORE_ARTIST_ALBUMS_TTL", 7*24*time.Hour),
+	}
+
 	c.Import = Import{
 		Dir:               p.str("ENCORE_IMPORT_DIR", "/var/lib/encore/imports"),
 		BatchSize:         p.intRange("ENCORE_IMPORT_BATCH_SIZE", 1000, 1, 100000),
@@ -532,11 +589,15 @@ func (c *Config) Redacted() map[string]any {
 		// off" is answerable from here or from nowhere.
 		"album_tracks_enabled": c.AlbumTracks.Enabled,
 		"album_tracks_ttl":     c.AlbumTracks.TTL.String(),
-		"import_dir":           c.Import.Dir,
-		"import_batch_size":    c.Import.BatchSize,
-		"import_workers":       c.Import.Workers,
-		"import_min_ms":        c.Import.MinMsPlayed,
-		"enrich_enabled":       c.Enrich.Enabled,
+		// Same reasoning as the two lines above: "why is the artist page saying
+		// discographies are turned off" is answerable from here or from nowhere.
+		"artist_albums_enabled": c.ArtistAlbums.Enabled,
+		"artist_albums_ttl":     c.ArtistAlbums.TTL.String(),
+		"import_dir":            c.Import.Dir,
+		"import_batch_size":     c.Import.BatchSize,
+		"import_workers":        c.Import.Workers,
+		"import_min_ms":         c.Import.MinMsPlayed,
+		"enrich_enabled":        c.Enrich.Enabled,
 		// The URL is operational information worth having in a startup log; the
 		// token is a credential and only its presence is reported.
 		"metadata_fallback":      c.MetadataFallback.URL,
