@@ -27,6 +27,7 @@ type Repo struct {
 	Settings    *Settings
 	Shares      *Shares
 	Playlists   *Playlists
+	NowPlaying  *NowPlaying
 }
 
 // New builds every identity repository from one store.
@@ -39,6 +40,7 @@ func New(db *store.Store) *Repo {
 		Settings:    NewSettings(db),
 		Shares:      NewShares(db),
 		Playlists:   NewPlaylists(db),
+		NowPlaying:  NewNowPlaying(db),
 	}
 }
 
