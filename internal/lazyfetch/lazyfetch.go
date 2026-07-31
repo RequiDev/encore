@@ -126,7 +126,7 @@ type State struct {
 // Policy is the timing, all of it supplied by the caller because the right
 // values depend on what is being fetched: an album's track list is one request
 // and effectively immutable after release, while an artist's discography is up
-// to twenty requests and grows.
+// to forty requests and grows.
 type Policy struct {
 	// Enabled is the operator's switch. False means this instance never asks the
 	// upstream anything — and note that it does not mean "forget what is on

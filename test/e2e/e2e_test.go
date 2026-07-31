@@ -2237,7 +2237,7 @@ func TestArtistDiscographyFillsInWithoutBlockingThePage(t *testing.T) {
 }
 
 // TestArtistDiscographyRefusesAnArtistNobodyHasPlayed keeps an arbitrary id in
-// the URL from spending up to twenty Spotify requests.
+// the URL from spending up to forty Spotify requests.
 func TestArtistDiscographyRefusesAnArtistNobodyHasPlayed(t *testing.T) {
 	inst := newInstance(t)
 	b := inst.browser()

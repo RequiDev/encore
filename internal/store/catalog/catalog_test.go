@@ -118,6 +118,10 @@ func TestReplaceArtistAlbumsSQLIsOneStatement(t *testing.T) {
 		t.Errorf("replace statement has %d INSERTs into artist_albums, want exactly 1:\n%s",
 			n, replaceArtistAlbumsSQL)
 	}
+	if !strings.Contains(replaceArtistAlbumsSQL, "album_id <> ALL") {
+		t.Errorf("the DELETE no longer scopes to the stale album ids, which the outcome-based tests "+
+			"cannot tell apart from a delete-everything-and-reinsert:\n%s", replaceArtistAlbumsSQL)
+	}
 }
 
 // TestArtistAlbumUpsertRefreshesTheGroup pins the one column whose staleness is

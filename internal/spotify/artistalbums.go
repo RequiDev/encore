@@ -80,7 +80,7 @@ type artistAlbumPage struct {
 // then reports truncation.
 //
 // **No include_groups parameter is sent**, so every group comes back. Asking
-// only for 'album' would cut a prolific artist from seven requests to one, and
+// only for 'album' would cut a prolific artist from forty requests to one, and
 // it is still wrong: completion counts albums and excludes singles,
 // compilations and appearances, so the page has to be able to say what it
 // excluded. "You have heard 4 of 11 albums" with 340 unmentioned singles is an
