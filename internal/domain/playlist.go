@@ -205,10 +205,11 @@ func (d PlaylistDefinition) Range(now, firstListen time.Time) TimeRange {
 
 // Describe renders the sentence Spotify shows beneath a playlist's name.
 //
-// It is regenerated on every rename and every rebuild, and never on a
-// schedule — the same rule migrations/00009_playlists.sql states for the
+// It is meant to be regenerated on every rename and every rebuild, and never
+// on a schedule — the same rule migrations/00009_playlists.sql states for the
 // tracks. A playlist that changed under its owner would be worse than one that
-// is merely out of date.
+// is merely out of date. Today only creation calls it; wiring rebuild and
+// rename to do the same is a later task in this phase.
 //
 // Every branch is written out rather than assembled from interchangeable
 // fragments. This is the only prose Encore writes into somebody else's Spotify
@@ -218,7 +219,17 @@ func (d PlaylistDefinition) Range(now, firstListen time.Time) TimeRange {
 // without branching.
 func (d PlaylistDefinition) Describe(builtAt time.Time) string {
 	ranged := !d.From.IsZero() && !d.To.IsZero()
-	period := "between " + playlistDate(d.From) + " and " + playlistDate(d.To)
+	// TimeRange is the half-open interval [From, To) — see timerange.go and
+	// rangeFilter's "played_at < to" in stats.go — so To itself is one moment
+	// after the range's last included instant, never a moment a listen can
+	// fall on. Printing To as-is would show the day after the range actually
+	// ends: a "my 2025" playlist (From 1 Jan 2025, To 1 Jan 2026, per
+	// Settings.tsx) would read as running into a January on which nothing in
+	// it could have been played. web/src/lib/range.ts labels a range the same
+	// way, at its own one-millisecond resolution ("`to` is exclusive, so the
+	// last day a person sees is the instant before it").
+	lastIncluded := d.To.Add(-time.Nanosecond)
+	period := "between " + playlistDate(d.From) + " and " + playlistDate(lastIncluded)
 
 	rank := "ranked by play count"
 	if d.Sort == SortByTime {
@@ -229,9 +240,9 @@ func (d PlaylistDefinition) Describe(builtAt time.Time) string {
 	var what string
 	switch {
 	case d.Mode == PlaylistModeMinPlays && ranged:
-		what = "Every track you played " + atLeastTimes(d.MinPlays) + " " + period
+		what = tracksUpTo(d.Limit) + " you played " + atLeastTimes(d.MinPlays) + " " + period
 	case d.Mode == PlaylistModeMinPlays:
-		what = "Every track you have ever played " + atLeastTimes(d.MinPlays)
+		what = tracksUpTo(d.Limit) + " you have ever played " + atLeastTimes(d.MinPlays)
 	case d.Mode == PlaylistModeDiscoveries && ranged:
 		what = "Tracks you heard for the first time " + period
 	case d.Mode == PlaylistModeDiscoveries:
@@ -249,8 +260,18 @@ func (d PlaylistDefinition) Describe(builtAt time.Time) string {
 }
 
 // atLeastTimes avoids "at least 1 times".
+//
+// n <= 1 is floored to the singular rather than only n == 1: Validate refuses
+// a MinPlays below 1, but migrations/00009_playlists.sql's own check
+// (min_plays >= 0) is looser, and a row written by some other route — or read
+// back by a rebuild, which loads the stored definition without re-validating
+// it — could carry a 0. That is not merely a cosmetic floor: the query behind
+// this mode groups listens per track and keeps groups with
+// "HAVING count(*) >= n", and a track can only be in that grouping at all if
+// it has at least one listen, so n <= 1 and n == 1 already select exactly the
+// same tracks. "At least once" is the true description of both.
 func atLeastTimes(n int) string {
-	if n == 1 {
+	if n <= 1 {
 		return "at least once"
 	}
 	return "at least " + strconv.Itoa(n) + " times"
@@ -262,6 +283,22 @@ func mostPlayed(limit int) string {
 		return "single most played track"
 	}
 	return strconv.Itoa(limit) + " most played tracks"
+}
+
+// tracksUpTo phrases a MinPlays limit honestly.
+//
+// stats/playlist.go applies "LIMIT $4" (def.Limit) identically across every
+// mode, MinPlays included, so a playlist built from this definition can
+// contain fewer tracks than qualify — Describe has no way to know the true
+// count in advance, only the cap. "Every track ..." is a claim the query does
+// not keep for any listener whose history clears the limit, which is the
+// common case at the mode's own 100-track default. "Up to N tracks ..." is
+// true whether fewer tracks qualify than N or more do.
+func tracksUpTo(limit int) string {
+	if limit == 1 {
+		return "Up to 1 track"
+	}
+	return "Up to " + strconv.Itoa(limit) + " tracks"
 }
 
 // playlistDate is the one date format Encore writes into a Spotify account:
