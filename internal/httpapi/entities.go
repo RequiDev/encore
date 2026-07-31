@@ -382,6 +382,65 @@ func (s *Server) handleAlbumTracklist(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, toAlbumTrackList(listing, heard))
 }
 
+// handleArtistDiscography answers GET /api/artists/{id}/discography.
+//
+// It is a separate route from GET /api/artists/{id} for the two reasons
+// handleAlbumTracklist is separate from GET /api/albums/{id}. It is the only
+// trigger for the lazy walk, so there is exactly one place that can start one;
+// and the client polls it while a walk runs, which must not re-run the artist
+// page's whole statistics on every tick.
+//
+// It never waits for Spotify. Everything below reads the database; the service
+// starts a detached walk when one is due and this returns "pending", and the
+// client asks again. A page that hangs on a third party is a defect.
+func (s *Server) handleArtistDiscography(w http.ResponseWriter, r *http.Request) {
+	user, err := requireUser(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	id, err := parseSpotifyIDPath(r, "id")
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+
+	// The artist must already be in the catalogue. Without this, any base-62
+	// string in the URL would spend up to forty of the instance's Spotify
+	// requests on somebody nobody has listened to — the same quota argument §5.2
+	// uses to reject a background sweep, arriving through a different door, and
+	// costing rather more per door than the album endpoint's one request.
+	if _, err := s.catalog.GetArtist(ctx, s.querier, id); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Two independent round trips rather than one transaction, and deliberately
+	// so: the discography is global catalogue data with its own TTL and the heard
+	// set is one user's history, and there is no snapshot to lose by reading them
+	// separately. toArtistDiscography derives Coverage, Missing and Excluded from
+	// one (discography, heard) pair in a single pass — every release is counted
+	// once and lands in exactly one bucket — so the response cannot disagree with
+	// itself for whatever heard happens to be. A listen landing between these two
+	// calls is simply included or not.
+	d, err := s.artistAlbums.Discography(ctx, s.querier, id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	// Asked with exactly the set the denominator is taken over, so the numerator
+	// and the denominator can never be computed over different populations. An
+	// artist with nothing counted asks nothing at all — see stats.HeardAlbums.
+	heard, err := s.stats.HeardAlbums(ctx, s.querier, user.ID, d.CountedIDs())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, toArtistDiscography(d, heard))
+}
+
 // handleSearch answers GET /api/search.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if _, err := requireUser(r); err != nil {

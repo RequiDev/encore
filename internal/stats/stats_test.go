@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"context"
 	"errors"
 	"regexp"
 	"strconv"
@@ -75,6 +76,7 @@ func statements() []statement {
 		{name: "playlistContextCoverage", sql: playlistContextCoverageSQL, params: 3},
 		{name: "albumCompletion", sql: albumCompletionSQL, params: 2},
 		{name: "albumHeardTracks", sql: albumHeardTracksSQL, params: 2},
+		{name: "heardAlbums", sql: heardAlbumsSQL, params: 2},
 		{name: "completedAlbums", sql: completedAlbumsSQL, params: 3},
 		{name: "librarySnapshot", sql: librarySnapshotSQL, params: 1},
 		{name: "savedNeverPlayed", sql: savedNeverPlayedSQL, params: 2},
@@ -187,6 +189,52 @@ func TestAlbumHeardTracksSQLIsNotRangeScoped(t *testing.T) {
 			t.Errorf("%s references played_at; completion is a property of a listening "+
 				"lifetime, not of whatever window a page happens to be showing", st.name)
 		}
+	}
+}
+
+// TestHeardAlbumsSQLIsNotRangeScoped pins for HeardAlbums what
+// TestAlbumHeardTracksSQLIsNotRangeScoped pins beside it, and for the same
+// reason: the call takes no range argument at all, so a test that only ever
+// calls it can never vary the range and show the answer is independent of one.
+// What can be pinned is the composed statement — it may not reference played_at,
+// the only column a range predicate could be written against. "You have never
+// played this album" is a fact about a listening lifetime; scoping it to
+// whatever window the page happens to be showing would report an album heard
+// five years ago as one this listener has never touched.
+func TestHeardAlbumsSQLIsNotRangeScoped(t *testing.T) {
+	if strings.Contains(heardAlbumsSQL, "played_at") {
+		t.Errorf("heardAlbums references played_at; discography coverage is all-time, like the album "+
+			"completion figure it sits beside:\n%s", heardAlbumsSQL)
+	}
+}
+
+// TestHeardAlbumsRejectsANilUser keeps a zero uuid from reaching SQL looking
+// like a legitimate parameter, where it would match nothing rather than fail.
+func TestHeardAlbumsRejectsANilUser(t *testing.T) {
+	s := &Service{}
+	if _, err := s.HeardAlbums(context.Background(), nil, uuid.Nil, []string{"a1"}); err == nil {
+		t.Fatal("HeardAlbums with a nil user succeeded; it would silently report nothing heard")
+	} else if !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("error = %v, want domain.ErrValidation", err)
+	}
+}
+
+// TestHeardAlbumsShortCircuitsAnEmptySet pins that no statement is sent for an
+// artist with nothing counted — the all-singles case, which is an ordinary
+// artist rather than an edge case. The nil Querier is the assertion: reaching
+// the database at all would panic.
+func TestHeardAlbumsShortCircuitsAnEmptySet(t *testing.T) {
+	s := &Service{}
+	got, err := s.HeardAlbums(context.Background(), nil, uuid.New(), nil)
+	if err != nil {
+		t.Fatalf("HeardAlbums with no ids: %v", err)
+	}
+	if got == nil {
+		t.Fatal("HeardAlbums returned nil rather than an empty slice; a caller that ranges over it " +
+			"is fine either way, but one that reports len(nil) as unknown is not")
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %v, want empty", got)
 	}
 }
 

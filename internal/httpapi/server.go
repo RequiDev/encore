@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/RequiDev/encore/internal/albumtracks"
+	"github.com/RequiDev/encore/internal/artistalbums"
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/importer"
@@ -70,6 +71,11 @@ type Deps struct {
 	// /api/albums/{id}/tracklist could only answer "unavailable" for ever, which
 	// is a broken instance wearing the mask of a working one.
 	AlbumTracks albumTrackSource
+	// ArtistAlbums serves the cached discography of an artist and starts a
+	// refresh when one is due. Required: without it GET
+	// /api/artists/{id}/discography could only answer "unavailable" for ever,
+	// which is a broken instance wearing the mask of a working one.
+	ArtistAlbums artistDiscographySource
 }
 
 // The narrow interfaces below are the only view the HTTP layer takes of the
@@ -151,6 +157,16 @@ type albumTrackSource interface {
 	Listing(ctx context.Context, q store.Querier, albumID string) (albumtracks.Listing, error)
 }
 
+// artistDiscographySource is the artist discography cache as the HTTP layer
+// needs it.
+//
+// An interface rather than the concrete service, for the reason albumTrackSource
+// is one: this package holds no SQL and never imports pgx, and the handler is
+// exercised without a Spotify client behind it.
+type artistDiscographySource interface {
+	Discography(ctx context.Context, q store.Querier, artistID string) (artistalbums.Discography, error)
+}
+
 // Server owns the routing table and the middleware chain.
 type Server struct {
 	cfg *config.Config
@@ -191,6 +207,10 @@ type Server struct {
 	// caller has never played. See albumTrackSource for why this is an
 	// interface rather than *albumtracks.Service.
 	albumTracks albumTrackSource
+	// artistAlbums is the artist discography cache: how much of an artist's own
+	// catalogue the caller has heard. See artistDiscographySource for why this
+	// is an interface rather than *artistalbums.Service.
+	artistAlbums artistDiscographySource
 
 	syncNow func(ctx context.Context, userID uuid.UUID) (SyncOutcome, error)
 	syncing *inFlight
@@ -230,6 +250,8 @@ func New(deps Deps) (*Server, error) {
 		return nil, errors.New("httpapi: spotify client is required")
 	case deps.AlbumTracks == nil:
 		return nil, errors.New("httpapi: album track source is required")
+	case deps.ArtistAlbums == nil:
+		return nil, errors.New("httpapi: artist discography source is required")
 	}
 	if deps.Accounts.Users == nil || deps.Accounts.Sessions == nil || deps.Accounts.Credentials == nil ||
 		deps.Accounts.OAuthStates == nil || deps.Accounts.Settings == nil {
@@ -252,32 +274,33 @@ func New(deps Deps) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:         deps.Config,
-		querier:     deps.Store.DB(),
-		pool:        deps.Store.Pool(),
-		log:         lg.With("component", "httpapi"),
-		version:     deps.Version,
-		now:         now,
-		users:       deps.Accounts.Users,
-		sessions:    deps.Accounts.Sessions,
-		credentials: deps.Accounts.Credentials,
-		oauthStates: deps.Accounts.OAuthStates,
-		settings:    deps.Accounts.Settings,
-		catalog:     deps.Catalog,
-		shares:      deps.Accounts.Shares,
-		playlists:   deps.Accounts.Playlists,
-		userToken:   deps.UserToken,
-		listens:     deps.Listens,
-		imports:     deps.Imports,
-		stats:       deps.Stats,
-		intake:      deps.Intake,
-		spotify:     deps.Spotify,
-		metrics:     deps.Metrics,
-		albumTracks: deps.AlbumTracks,
-		syncNow:     syncNow,
-		syncing:     newInFlight(),
-		touched:     newTouchTracker(),
-		ready:       &readyCache{},
+		cfg:          deps.Config,
+		querier:      deps.Store.DB(),
+		pool:         deps.Store.Pool(),
+		log:          lg.With("component", "httpapi"),
+		version:      deps.Version,
+		now:          now,
+		users:        deps.Accounts.Users,
+		sessions:     deps.Accounts.Sessions,
+		credentials:  deps.Accounts.Credentials,
+		oauthStates:  deps.Accounts.OAuthStates,
+		settings:     deps.Accounts.Settings,
+		catalog:      deps.Catalog,
+		shares:       deps.Accounts.Shares,
+		playlists:    deps.Accounts.Playlists,
+		userToken:    deps.UserToken,
+		listens:      deps.Listens,
+		imports:      deps.Imports,
+		stats:        deps.Stats,
+		intake:       deps.Intake,
+		spotify:      deps.Spotify,
+		metrics:      deps.Metrics,
+		albumTracks:  deps.AlbumTracks,
+		artistAlbums: deps.ArtistAlbums,
+		syncNow:      syncNow,
+		syncing:      newInFlight(),
+		touched:      newTouchTracker(),
+		ready:        &readyCache{},
 	}
 	if deps.Metrics != nil && deps.Config.Metrics.Enabled {
 		s.metricsHandler = deps.Metrics.Handler(deps.Config.Metrics.Username, deps.Config.Metrics.Password)

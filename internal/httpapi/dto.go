@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/RequiDev/encore/internal/albumtracks"
+	"github.com/RequiDev/encore/internal/artistalbums"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/importer"
 	"github.com/RequiDev/encore/internal/stats"
@@ -192,19 +193,7 @@ type Album struct {
 // as the catalogue actually knows it, so a year-precision release does not
 // acquire an invented first of January.
 func releaseDate(a domain.Album) *string {
-	if a.ReleaseDate == nil {
-		return nil
-	}
-	var s string
-	switch a.ReleasePrecision {
-	case "year":
-		s = a.ReleaseDate.Format("2006")
-	case "month":
-		s = a.ReleaseDate.Format("2006-01")
-	default:
-		s = a.ReleaseDate.Format("2006-01-02")
-	}
-	return &s
+	return partialDate(a.ReleaseDate, a.ReleasePrecision)
 }
 
 func toAlbumRef(a domain.Album) AlbumRef {
@@ -756,6 +745,215 @@ func toAlbumTrackList(l albumtracks.Listing, heard []string) AlbumTrackList {
 		out.FetchedAt = &at
 	}
 	return out
+}
+
+// DiscographyAlbumRef is one release from an artist's own discography.
+//
+// Deliberately not an AlbumRef. These come from Spotify's list of what an
+// artist released rather than from the catalogue, and an album nobody has played
+// is not in the catalogue at all — see migrations/00014_artist_albums.sql.
+// Giving it the shape of a catalogue entity would invite a client to link to an
+// album page that 404s, which is precisely what most of these would do.
+//
+// No image: artwork would make it look more like a link than it is, and the
+// listing does not need one to name a record.
+type DiscographyAlbumRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// The same partial-date pair AlbumRef carries: "2016", "2016-05" or
+	// "2016-05-20", with the precision beside it so a client renders only what
+	// Spotify actually knew.
+	ReleaseDate      *string `json:"releaseDate"`
+	ReleasePrecision string  `json:"releasePrecision"`
+}
+
+// DiscographyExcluded is what coverage did *not* count.
+//
+// It exists so the page can say what it set aside. "You have heard 4 of 11
+// albums" is true and, without this, misleading: an artist with 340 singles and
+// appearances looks like an artist with 11 releases. A client MUST render these
+// numbers alongside the coverage rather than treating them as diagnostics.
+//
+// Other is any album_group Spotify sends that is none of the four it documents.
+// It is zero today and is a field rather than a silent drop so the four buckets
+// plus coverage.total always account for every release stored: a group added
+// upstream joins the excluded side and is counted, instead of disappearing from
+// both the numerator and the sentence describing the remainder.
+type DiscographyExcluded struct {
+	Singles      int64 `json:"singles"`
+	Compilations int64 `json:"compilations"`
+	AppearsOn    int64 `json:"appearsOn"`
+	Other        int64 `json:"other"`
+}
+
+// ArtistDiscography is how much of an artist's own catalogue the caller has
+// played.
+//
+// State is one of:
+//
+//	"ready"       — a discography is stored; Coverage, Missing and Excluded mean
+//	                something
+//	"pending"     — no discography yet, and nothing has recorded a reason there
+//	                should not be one
+//	"unavailable" — no discography, and none is being read: the last attempt
+//	                failed
+//	"disabled"    — no discography, and this instance does not fetch them at all
+//	                (ENCORE_ARTIST_ALBUMS_ENABLED=false)
+//
+// The same four words, with the same meanings, as AlbumTrackList's — pinned
+// one definition since Task 4 (both alias lazyfetch.Outcome), and their wire
+// values are pinned by TestTheLazyFetchStatesKeepTheirWireValues.
+//
+// A client MUST render all four differently, and must never read anything but
+// "ready" as "you have played everything by them". Missing is empty in three of
+// the four, which is exactly why State exists.
+//
+// **Coverage counts album_group "album" only.** Singles, compilations and
+// appearances are excluded, because "you have heard 4 of 340 releases" is not a
+// useful sentence — and a client that renders Coverage without also rendering
+// Excluded is making a claim this payload does not support.
+//
+// **"Ready" with Coverage.Total == 0 is a real answer, not an empty one.** An
+// artist whose every release is a single has nothing to count, and Excluded is
+// then the only thing that describes them. This has no counterpart on the album
+// endpoint, where an empty listing is impossible and is recorded as a failure.
+//
+// **Covered counts albums with any play, not albums played in full.** One track
+// off a record puts it in Covered. A client must say so, or "you have heard 4 of
+// their 11 albums" reads as four albums heard end to end.
+//
+// "pending" is deliberately not phrased as "a fetch is running": it also covers
+// a lease another replica holds, no free local slot on this one, a shutdown in
+// progress, and — the one that matters here — a claim against
+// artist_album_fetches that errored, after which nothing was read and nothing
+// was recorded, so the very next request re-enters this same branch. Nothing in
+// the payload bounds how long that can go on, and every "pending" response for
+// one artist is byte-identical regardless of how long the state has held. A
+// client MUST cap how long it keeps polling on "pending" and render the
+// "unavailable" copy once that cap is reached.
+//
+// "disabled" is deliberately distinct from "unavailable". The first is the
+// operator's choice and the second is Spotify failing to answer; a client that
+// renders the failure copy for the first blames a third party for a local
+// decision.
+//
+// A discography already cached is still served as "ready" when fetching is
+// disabled, past its TTL or not — turning off fetching does not hide what is on
+// disk. FetchedAt is what keeps that honest, and it is the reason there is no
+// separate "this will never refresh" field.
+type ArtistDiscography struct {
+	State    string           `json:"state"`
+	Coverage CoverageResponse `json:"coverage"`
+	// Missing is the counted albums with no play, in the order they were listed
+	// — newest release first. Always present and never null, so a client can
+	// iterate it without a guard; it is empty when everything was played, when
+	// nothing is counted, and when there is no discography at all, which is
+	// exactly why State exists.
+	//
+	// Unlike AlbumTrackList's Missing, which a release's own track count bounds
+	// naturally, this one has no ceiling: it is bounded only by how many
+	// album_group "album" releases Spotify lists for the artist, which for an
+	// unusually prolific one (see defaultArtistAlbumPages's own comment) can run
+	// to hundreds. There is no page size and nothing here is truncated — a long
+	// list is this endpoint's actual answer for that artist, not a defect to
+	// guard against, and a client should render it as a scrollable list rather
+	// than a fixed-height panel.
+	Missing  []DiscographyAlbumRef `json:"missing"`
+	Excluded DiscographyExcluded   `json:"excluded"`
+	// FetchedAt is when the discography was last read from Spotify, absent until
+	// one has succeeded.
+	FetchedAt *time.Time `json:"fetchedAt,omitempty"`
+}
+
+// toArtistDiscography diffs the discography against what the caller has played
+// and tallies what was set aside.
+//
+// One pass, one classification per release: every release either counts (and is
+// then Covered or Missing, never neither and never both) or lands in exactly one
+// excluded bucket. That is what makes the invariant
+// TestArtistDiscographyExclusionsAccountForEveryRelease asserts hold by
+// construction rather than by luck.
+//
+// The diff is done here rather than in SQL because the two halves come from
+// different places for different reasons: the discography is global catalogue
+// data cached from Spotify, and the played set is one user's own history with
+// their own blacklist applied.
+func toArtistDiscography(d artistalbums.Discography, heard []string) ArtistDiscography {
+	played := make(map[string]struct{}, len(heard))
+	for _, id := range heard {
+		played[id] = struct{}{}
+	}
+
+	// Missing can only ever hold the counted subset, never the whole release
+	// list — a prolific artist's singles and appearances routinely outnumber
+	// their albums several times over, and sizing the slice on len(d.Releases)
+	// would over-allocate every response by that ratio.
+	counted := 0
+	for _, r := range d.Releases {
+		if r.Group == artistalbums.CountedGroup {
+			counted++
+		}
+	}
+
+	out := ArtistDiscography{
+		State:   string(d.State),
+		Missing: make([]DiscographyAlbumRef, 0, counted),
+	}
+	for _, r := range d.Releases {
+		if r.Group != artistalbums.CountedGroup {
+			switch r.Group {
+			case catalog.AlbumGroupSingle:
+				out.Excluded.Singles++
+			case catalog.AlbumGroupCompilation:
+				out.Excluded.Compilations++
+			case catalog.AlbumGroupAppearsOn:
+				out.Excluded.AppearsOn++
+			default:
+				// A group Spotify documents but this build does not know, or a blank
+				// one. Counted rather than dropped so the breakdown still accounts for
+				// every release stored.
+				out.Excluded.Other++
+			}
+			continue
+		}
+		out.Coverage.Total++
+		if _, ok := played[r.AlbumID]; ok {
+			out.Coverage.Covered++
+			continue
+		}
+		out.Missing = append(out.Missing, DiscographyAlbumRef{
+			ID:               r.AlbumID,
+			Name:             r.Name,
+			ReleaseDate:      partialDate(r.ReleaseDate, r.ReleasePrecision),
+			ReleasePrecision: r.ReleasePrecision,
+		})
+	}
+	if !d.FetchedAt.IsZero() {
+		at := d.FetchedAt.UTC()
+		out.FetchedAt = &at
+	}
+	return out
+}
+
+// partialDate renders a release date at the precision Spotify actually
+// supplied, so a year-precision release does not acquire an invented first of
+// January. releaseDate() above is this same rendering for a domain.Album;
+// this takes the two fields directly because DiscographyAlbumRef's releases
+// are not always in the catalogue at all.
+func partialDate(at *time.Time, precision string) *string {
+	if at == nil {
+		return nil
+	}
+	var s string
+	switch precision {
+	case "year":
+		s = at.Format("2006")
+	case "month":
+		s = at.Format("2006-01")
+	default:
+		s = at.Format("2006-01-02")
+	}
+	return &s
 }
 
 // --- genres ----------------------------------------------------------------

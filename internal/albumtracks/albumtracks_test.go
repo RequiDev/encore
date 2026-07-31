@@ -960,6 +960,13 @@ func TestCloseEndsAFetchInFlight(t *testing.T) {
 // TestNothingIsStartedAfterClose is the shutdown race, asserted on the one
 // operation that must not run concurrently with Close.
 //
+// The direct assertions on the WaitGroup registration moved to
+// internal/lazyfetch, where that mechanism now lives and where they are
+// package-private rather than a reach-through. What is left here is the half
+// that is this package's own to prove: that Listing, after Close, declines all
+// the way down — no lease claimed, no fetcher called — which is the delegation
+// working rather than the mechanism working.
+//
 // http.Server.Shutdown returns on timeout with handlers still running, so a
 // request can be inside Listing while Close is waiting. Registering a fetch
 // then is at best a goroutine nothing waits for — which is exactly what Close
@@ -972,21 +979,10 @@ func TestNothingIsStartedAfterClose(t *testing.T) {
 	fetch := &fakeFetcher{}
 	s := newService(t, cat, fetch, now)
 
-	if !s.track() {
-		t.Fatal("track refused a fetch before Close")
-	}
-	s.wg.Done() // hand the registration straight back
-
 	s.Close()
 
-	if s.track() {
-		s.wg.Done()
-		t.Error("track registered a fetch after Close; wg.Add can then run concurrently " +
-			"with wg.Wait, which panics at shutdown, and when it does not, leaves a " +
-			"goroutine nothing waits for")
-	}
-	// And the whole path declines, without so much as taking a lease it would
-	// only abandon.
+	// The whole path declines, without so much as taking a lease it would only
+	// abandon.
 	if _, err := s.Listing(context.Background(), nil, "album000000000000000001"); err != nil {
 		t.Fatalf("Listing: %v", err)
 	}
@@ -999,71 +995,10 @@ func TestNothingIsStartedAfterClose(t *testing.T) {
 	}
 }
 
-// TestCloseRefusesNewFetchesBeforeItWaits pins the *ordering* inside Close,
-// which TestNothingIsStartedAfterClose does not.
-//
-// That test asserts the post-condition — track refuses once Close has returned
-// — and a Close written as cancel(); wg.Wait(); closing = true satisfies it
-// perfectly while reintroducing the whole M1 race: for as long as Close is
-// parked in Wait, track still says yes, so a request already inside Listing
-// can raise the WaitGroup counter with a waiter registered. Neither -race nor
-// -count catches that, because the window needs a concurrent Listing to be
-// open at all. So this test opens one.
-//
-// The invariant being pinned is that closing is set before wg.Wait. Moving the
-// assignment after the Wait fails this test every time.
-//
-// Two things about the mechanism, for whoever edits Close next. It reads
-// s.base.Done() as the signal that Close has begun, which is a *sound* signal
-// only because Close sets closing before it cancels. Moving the assignment to
-// between the cancel and the Wait leaves Close correct — the invariant still
-// holds — but silently costs this test its detector: base.Done() would then
-// fire while closing is still unset, and the assertion below would be racing
-// rather than asserting. Verified: that variant passes 30 runs out of 30. So
-// keep the assignment first, not because Close needs it there, but because
-// this test stops meaning anything if it moves.
-func TestCloseRefusesNewFetchesBeforeItWaits(t *testing.T) {
-	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
-	cat := &fakeCatalog{claimOK: true}
-	block := make(chan struct{})
-	fetch := &fakeFetcher{block: block, heedCtx: true}
-	s := newService(t, cat, fetch, now)
-	var once sync.Once
-	release := func() { once.Do(func() { close(block) }) }
-	t.Cleanup(release)
-
-	// A fetch that cannot finish, so Close is guaranteed to park in wg.Wait
-	// rather than running straight through it.
-	if _, err := s.Listing(context.Background(), nil, "album000000000000000001"); err != nil {
-		t.Fatalf("Listing: %v", err)
-	}
-
-	closed := make(chan struct{})
-	go func() {
-		defer close(closed)
-		s.Close()
-	}()
-
-	// Close has reached at least its cancel, and cannot get past Wait until this
-	// test releases the fetch. Everything below happens inside that window.
-	<-s.base.Done()
-
-	if s.track() {
-		// Undo it, or the Close parked above never returns and the failure below
-		// is buried under a timeout.
-		s.wg.Done()
-		t.Error("track accepted a fetch while Close was waiting: Close marks itself " +
-			"closing only after wg.Wait returns, so a request already inside Listing " +
-			"can still call wg.Add against a registered waiter — the panic M1 fixed")
-	}
-
-	release()
-	select {
-	case <-closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close did not return after the fetch was released")
-	}
-}
+// The ordering inside Close — that `closing` is set before wg.Wait, and before
+// the cancel that makes base.Done() a sound barrier — is pinned in
+// internal/lazyfetch by TestCloseRefusesNewFetchesBeforeItWaits and
+// TestCloseSetsClosingBeforeItCancels. It moved with the code it guards.
 
 // TestAPanicDoesNotLeakASlot is why the slot goes back on a defer.
 //
