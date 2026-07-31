@@ -280,6 +280,28 @@ describe('the now-playing panel', () => {
     return section
   }
 
+  /**
+   * The description, pinned above both bodies it can sit over — and swept for
+   * text that is not text.
+   *
+   * This string was covered by nothing at all: the dashboard card's own escape
+   * sweep is scoped to the card's `<section>`, so this was the one sentence in
+   * the feature it could not reach, and a `…` injected here left the whole
+   * suite green while the same injection into the card's description killed
+   * thirteen tests. That is the Phase 3a defect class in the one uncovered spot.
+   *
+   * Fails when: the description is dropped, made conditional, or written with an
+   * escape or an HTML entity.
+   */
+  function expectPanelSaysWhatItIs(section: HTMLElement): void {
+    expect(
+      within(section).getByText('What this instance asks Spotify about your player.'),
+    ).toBeInTheDocument()
+    const text = section.textContent ?? ''
+    expect(text).not.toMatch(/\\u[0-9a-fA-F]{4}/)
+    expect(text).not.toMatch(/&(?:amp|nbsp|mdash|ndash|hellip|#\d+);/)
+  }
+
   // It follows the house formula the album and artist pages use for a feature an
   // operator has turned off: what is not happening, what is unaffected, and the
   // one thing that would change it.
@@ -302,6 +324,7 @@ describe('the now-playing panel', () => {
         'This instance does not ask Spotify what you are playing right now, so the dashboard shows no now-playing card. Every other figure in Encore comes from your own listening history and is unaffected. An administrator can turn this on with ENCORE_NOWPLAYING_INTERVAL.',
       ),
     ).toBeInTheDocument()
+    expectPanelSaysWhatItIs(section)
     // An operator's choice is not a failure and not something to retry.
     expect(within(section).queryByText(/failed|error|could not/i)).not.toBeInTheDocument()
   })
@@ -325,6 +348,7 @@ describe('the now-playing panel', () => {
         'Encore asks Spotify what you are playing every minute. It records nothing from those checks — your listening history still comes only from the recently-played feed.',
       ),
     ).toBeInTheDocument()
+    expectPanelSaysWhatItIs(section)
     expect(within(section).queryByText(/turned off/i)).not.toBeInTheDocument()
   })
 

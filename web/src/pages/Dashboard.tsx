@@ -1170,6 +1170,21 @@ function artistsOf(item: HistoryItem): string {
  */
 function NowPlayingCard({ query }: { query: UseQueryResult<NowPlaying> }): ReactElement {
   const data = query.data
+
+  // Read so this component re-renders on every failed attempt, and for no other
+  // reason.
+  //
+  // With an observation retained through a failure, nothing this component reads
+  // changes any more: `data` is structurally shared, `isPending` and `isError`
+  // settle after the first failure, and `error` is never reached on this path.
+  // TanStack only notifies for tracked properties, so without this the card
+  // stops re-rendering entirely and `Last checked …` freezes on whatever phrase
+  // it held when the request first failed — measured at twenty-four failed polls
+  // over eleven and a half minutes still reading "just now". A present-tense
+  // display frozen under a stale clock is a worse lie than the error panel it
+  // replaced.
+  void query.errorUpdatedAt
+
   return (
     <Panel
       title="Now playing"
@@ -1180,7 +1195,14 @@ function NowPlayingCard({ query }: { query: UseQueryResult<NowPlaying> }): React
           <span className="sr-only">Loading what you are playing</span>
           <SkeletonText lines={2} className="max-w-sm" />
         </div>
-      ) : query.isError ? (
+      ) : // A failed request discards nothing it already has. Three layers below
+      // this one spend real effort keeping a good observation alive through a
+      // failure — the store's failure write touches two columns precisely so
+      // this card can say "the last check failed; this is what you were playing
+      // four minutes ago" — and one dropped HTTP request is a weaker failure
+      // than that chain already survives. The error panel is for having nothing
+      // at all.
+      query.isError && !data ? (
         <ErrorState
           error={query.error}
           title="Now playing could not be loaded"
@@ -1321,6 +1343,25 @@ const KIND_NOTE: Record<PlaybackItemKind, string> = {
   unknown: 'It will not appear in your listening history.',
 }
 
+/**
+ * What stands in for a name when there is none.
+ *
+ * A noun phrase, not a sentence, and deliberately without a verb. `unknown` is
+ * the only kind that is described rather than named, and an earlier draft
+ * described it in the present tense — which put "Spotify is playing something
+ * Encore cannot identify." directly under a chip reading `Paused`, and directly
+ * under "This is what you were playing 4 minutes ago." in a stale one. Both are
+ * one line contradicting the line above it.
+ *
+ * A verb here can only ever repeat what the chip and the age sentences already
+ * say, so it earns nothing and can disagree with them in four different
+ * combinations of state and staleness. Written this way there is one string, it
+ * sits exactly where every other kind puts its title, and it cannot be wrong in
+ * any of them. That is the same reasoning as the category notes below: describe
+ * the thing, and let the surrounding lines carry tense and state.
+ */
+const UNIDENTIFIED = 'Something Encore cannot identify.'
+
 function NowPlayingItem({
   observation,
   stale,
@@ -1334,15 +1375,7 @@ function NowPlayingItem({
   return (
     <div>
       {kind === 'unknown' ? (
-        // The same rule the missing chip above follows: an unconfirmed
-        // observation gets no present-tense verb. This is the only item sentence
-        // with one, because it is the only kind that is described rather than
-        // named.
-        <p className="text-sm text-ink">
-          {stale
-            ? 'Spotify was playing something Encore cannot identify.'
-            : 'Spotify is playing something Encore cannot identify.'}
-        </p>
+        <p className="text-sm text-ink">{UNIDENTIFIED}</p>
       ) : trackId ? (
         <p className="truncate text-sm font-medium text-ink">
           <Link to={`/tracks/${encodeURIComponent(trackId)}`} className="hover:text-lamp">
@@ -1397,6 +1430,11 @@ function NowPlayingProgress({
         aria-valuemin={0}
         aria-valuemax={100}
         aria-label="Progress when Encore last checked"
+        // Without this a screen reader is read the percentage — "63" — where the
+        // eye is given "2:41 of 4:15". The figure above is the meaningful one,
+        // and every other `.meter` in Encore supplies its own text for the same
+        // reason.
+        aria-valuetext={`${formatClock(progressMs)} of ${formatClock(durationMs)}`}
       >
         <span style={{ width: `${share * 100}%` }} />
       </div>

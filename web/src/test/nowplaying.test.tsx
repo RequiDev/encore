@@ -233,6 +233,31 @@ async function settledCard(): Promise<HTMLElement> {
   return section
 }
 
+/**
+ * The same, on fake timers, which cannot use `findBy` at all.
+ *
+ * A fixed `advanceTimersByTimeAsync(100)` is not enough, and the way it is not
+ * enough is invisible in a full-file run: the dashboard is a lazily imported
+ * chunk and its body renders only once the summary query lands, neither of which
+ * is a timer. After forty other tests in this file the module is warm and 100ms
+ * is plenty; run alone, it is not, and the card is simply not on screen yet. The
+ * first draft of this suite's failed-poll test asserted against that and failed
+ * on its own while passing in the file — an order-dependent test, which can
+ * verify nothing, and which faked two mutation kills before it was caught.
+ */
+async function settledCardWhileTicking(): Promise<HTMLElement> {
+  for (let tick = 0; tick < 100; tick += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    const section = screen.queryByRole('heading', { name: 'Now playing' })?.closest('section')
+    if (section && !within(section).queryByText('Loading what you are playing')) return section
+  }
+  // A whole second of fake time, still short of the shortest poll interval, so
+  // reaching here is a card that never settled rather than a clock that ran on.
+  throw new Error('the now-playing card never settled')
+}
+
 beforeEach(() => {
   vi.unstubAllGlobals()
 })
@@ -324,6 +349,85 @@ describe('the now-playing card', () => {
     expect(within(section).getByRole('button', { name: /try again/i })).toBeInTheDocument()
     expect(within(section).queryByText(/nothing is playing/i)).not.toBeInTheDocument()
     expect(within(section).queryByText(/turned off/i)).not.toBeInTheDocument()
+  })
+
+  // The failure that must *not* reach for that panel, and the thing that goes
+  // wrong when it does not.
+  //
+  // Three layers keep a good observation alive through a failed poll so the card
+  // can say how stale it is. One dropped HTTP request is a weaker failure than
+  // that chain already survives, so the observation stays — but keeping it means
+  // nothing this component reads changes any more, and TanStack stops notifying
+  // it. The card then sits frozen on the phrase it held when the request first
+  // failed: "Last checked just now.", for ever, over an observation nobody has
+  // confirmed since. That is the present-tense claim rule 1 drops the chip for,
+  // with a stale clock underneath it.
+  //
+  // Twelve minutes and twenty-four failed polls is the shape the defect was
+  // measured in. A test that failed once could not see it.
+  //
+  // Fails when: the `!data` guard is dropped (the observation is discarded and
+  // "The Wheel" is gone), or the `errorUpdatedAt` read is dropped (the card
+  // stops re-rendering and "Last checked just now." is still on screen twelve
+  // minutes later).
+  it('keeps the observation through failed polls, and keeps saying how old it is', async () => {
+    vi.useFakeTimers()
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const path = new URL(url, 'http://encore.test').pathname
+        if (path === '/api/nowplaying') {
+          attempts += 1
+          // The first check succeeds; every poll after it fails, which is the
+          // shape of a server that has gone away under an open tab.
+          if (attempts > 1) {
+            return new Response(
+              JSON.stringify({ error: { code: 'unavailable', message: 'No.' } }),
+              { status: 404, headers: { 'content-type': 'application/json' } },
+            )
+          }
+          return new Response(
+            JSON.stringify(payload({ checkedAt: ago(0), observation: observation() })),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        const body = DASHBOARD_BODIES[path]
+        if (body === undefined) {
+          return new Response(JSON.stringify({ error: { code: 'not_found', message: 'No.' } }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }),
+    )
+    render(mountAt('/'))
+
+    const section = await settledCardWhileTicking()
+    expect(within(section).getByText('Last checked just now.')).toBeInTheDocument()
+    expect(attempts).toBe(1)
+
+    // Twenty-four polls, every one of them a failure.
+    for (let i = 0; i < 24; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_100)
+      })
+    }
+    expect(attempts).toBeGreaterThan(20)
+
+    // Still there: a dropped request is not a reason to throw away the last
+    // thing Encore actually saw.
+    expect(within(section).getByText('The Wheel')).toBeInTheDocument()
+    expect(within(section).queryByText('Now playing could not be loaded')).not.toBeInTheDocument()
+
+    // And no longer claiming to be fresh.
+    expect(within(section).queryByText('Last checked just now.')).not.toBeInTheDocument()
+    expect(within(section).getByText(/^Last checked \d+ minutes ago\.$/)).toBeInTheDocument()
   })
 
   // Fails when: the scope branch is dropped, or is worded as a failure — a grant
@@ -459,6 +563,11 @@ describe('the now-playing card', () => {
     // As observed, never extrapolated: 161 of 255 seconds is 63%, and the bar
     // says the same number the figure does.
     expect(meter).toHaveAttribute('aria-valuenow', '63')
+    // And a screen reader is given the figure the eye is given, not "63".
+    //
+    // Fails when: aria-valuetext is dropped, which every other `.meter` in
+    // Encore supplies.
+    expect(meter).toHaveAttribute('aria-valuetext', '2:41 of 4:15')
   })
 
   // Fails when: the chip is hard-coded to "Playing".
@@ -553,40 +662,68 @@ describe('the now-playing card', () => {
 
   // Fails when: the unknown branch renders a title — an advert's own label would
   // then sit where a listener expects their music.
-  it('says something is playing that it cannot identify, and names nothing', async () => {
+  it('says it cannot identify what is playing, and names nothing', async () => {
     const section = await card(payload({ observation: unidentifiable() }))
-    expect(
-      within(section).getByText('Spotify is playing something Encore cannot identify.'),
-    ).toBeInTheDocument()
+    expect(within(section).getByText('Playing')).toBeInTheDocument()
+    expect(within(section).getByText('Something Encore cannot identify.')).toBeInTheDocument()
     expect(
       within(section).getByText('It will not appear in your listening history.'),
     ).toBeInTheDocument()
     expect(within(section).queryByText('The Wheel')).not.toBeInTheDocument()
   })
 
-  // The one item sentence with a verb in it, above a display nobody has
-  // confirmed. The chip and the progress figure are dropped in a stale state for
-  // exactly this reason, and a sentence reading "Spotify is playing" under "this
-  // is what you were playing four minutes ago" contradicts the line above it.
+  // `unknown` is the only kind Encore describes rather than names, so it is the
+  // only one whose line could carry a verb — and a verb there can only repeat
+  // what the chip and the age sentences already say, while disagreeing with them
+  // in three of the four combinations it can appear in. This pins all four at
+  // once: the same line, over playing and paused, fresh and stale, with no verb
+  // in any of them.
   //
-  // Fails when: the unknown sentence stops varying with staleness.
-  it('does not claim an unidentifiable item is playing now, four minutes after a failed check', async () => {
-    const section = await card(
+  // Both contradictions this replaced are reachable. A pause during an advert
+  // produces `paused` + `unknown` from one flag in the poller, which put
+  // "Spotify is playing something Encore cannot identify." directly under a chip
+  // reading `Paused`; and a failed check over the same observation put it under
+  // "This is what you were playing 4 minutes ago."
+  //
+  // Fails when: any verb is reintroduced into the unidentified line.
+  it.each([
+    ['playing', payload({ observation: unidentifiable() })],
+    ['paused', payload({ observation: unidentifiable({ state: 'paused' }) })],
+    [
+      'stale after playing',
       payload({
         failed: true,
         checkedAt: ago(3 * 60_000),
         observation: unidentifiable({ observedAt: ago(4 * 60_000) }),
       }),
-    )
-    expect(
-      within(section).getByText('This is what you were playing 4 minutes ago.'),
-    ).toBeInTheDocument()
-    expect(
-      within(section).getByText('Spotify was playing something Encore cannot identify.'),
-    ).toBeInTheDocument()
-    expect(
-      within(section).queryByText('Spotify is playing something Encore cannot identify.'),
-    ).not.toBeInTheDocument()
+    ],
+    [
+      'stale after pausing',
+      payload({
+        failed: true,
+        checkedAt: ago(3 * 60_000),
+        observation: unidentifiable({ state: 'paused', observedAt: ago(4 * 60_000) }),
+      }),
+    ],
+  ])('describes an unidentifiable item without a verb, when %s', async (_label, np) => {
+    const section = await card(np)
+    expect(within(section).getByText('Something Encore cannot identify.')).toBeInTheDocument()
+    // Not "is playing" over a paused item, not "was playing" over a live one,
+    // and not either of them in the state whose own two sentences carry the
+    // tense already.
+    expect(section.textContent ?? '').not.toMatch(/(?:is|was) (?:playing|paused)[^.]*identify/)
+  })
+
+  // The chip is what carries the state over an unidentifiable item, exactly as
+  // it does over a track — so it has to vary there too.
+  //
+  // Fails when: the unknown branch is rendered without a chip, or with a fixed
+  // one: a card reading "Playing" over a paused advert is a present-tense claim
+  // about something nobody is hearing.
+  it('says Paused over an unidentifiable item that is paused', async () => {
+    const section = await card(payload({ observation: unidentifiable({ state: 'paused' }) }))
+    expect(within(section).getByText('Paused')).toBeInTheDocument()
+    expect(within(section).queryByText('Playing')).not.toBeInTheDocument()
   })
 })
 
@@ -629,6 +766,7 @@ describe('the card, swept for text that is not text', () => {
       }),
     ],
     ['an unidentifiable item', payload({ observation: unidentifiable() })],
+    ['a paused unidentifiable item', payload({ observation: unidentifiable({ state: 'paused' }) })],
     ['a stale observation', payload({ failed: true, observation: observation() })],
     ['a stale unidentifiable item', payload({ failed: true, observation: unidentifiable() })],
   ]
