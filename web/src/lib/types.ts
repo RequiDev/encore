@@ -8,6 +8,14 @@
 
 import type { LazyFetchState } from './fetchpoll'
 
+/**
+ * Re-exported so a page can name a lazy panel's state without also importing
+ * the polling module for a type. `AlbumTrackListState` below is an alias of it
+ * kept for the album payload's own readability; the discography uses this name
+ * directly, because there is nothing album-shaped about it.
+ */
+export type { LazyFetchState }
+
 // --- primitives ------------------------------------------------------------
 
 /** RFC 3339 timestamp with a `Z` offset. */
