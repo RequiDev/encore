@@ -213,8 +213,19 @@ func (w *Watcher) Run(ctx context.Context) error {
 // Exported so a worker supervisor, or a test, can drive one tick without owning
 // the schedule.
 func (w *Watcher) RunOnce(ctx context.Context) (int, error) {
+	if !w.cfg.Enabled() {
+		// Run's own guard already covers the loop, but this method is exported:
+		// a "refresh now" control, or a later phase's caller, could reach it
+		// directly. An instance that never set ENCORE_NOWPLAYING_INTERVAL never
+		// opted in, and no caller may spend its Spotify quota on that decision's
+		// behalf — least of all one that arrived here with a zero interval,
+		// where the due predicate below degenerates into "every connected
+		// account, every time".
+		return 0, nil
+	}
+
 	due, err := w.dep.NowPlaying.ListDue(
-		ctx, w.dep.Store.DB(), w.now().Add(-w.cfg.Interval), accountsPerTick)
+		ctx, w.dep.Store.DB(), w.now().Add(-w.cfg.Interval+w.dueSlack()), accountsPerTick)
 	if err != nil {
 		return 0, fmt.Errorf("list accounts due for a playback check: %w", err)
 	}
@@ -294,6 +305,15 @@ func (w *Watcher) check(ctx context.Context, account accounts.DueAccount) bool {
 	// pb == nil is a 204: nothing is playing. Not an error, and the commonest
 	// answer this endpoint gives.
 	if err := w.dep.NowPlaying.Record(ctx, w.dep.Store.DB(), account.UserID, observe(pb, w.now())); err != nil {
+		if ctx.Err() != nil {
+			// Cancelled between a good response and the write. The same
+			// non-event as the two guards above, and the third of the three
+			// places one is needed: the account keeps its previous row, stays
+			// due, and the next process asks again. Logging it at Error would
+			// put a line every clean shutdown deserves nothing for into the
+			// severity reserved for things an operator has to act on.
+			return false
+		}
 		log.Error("could not record what is playing", logging.Err(err))
 		return false
 	}
@@ -458,6 +478,31 @@ func hasScope(granted []string, want string) bool {
 // interval.
 func (w *Watcher) firstDelay() time.Duration {
 	return time.Duration(w.rnd() * float64(w.cfg.Interval))
+}
+
+// dueSlack is how much less than a full interval still counts as due.
+//
+// It exists because the schedule and the queue would otherwise disagree.
+// nextDelay draws each tick from [I − spread/2, I + spread/2], while a due
+// predicate asking for a whole interval since the last check rejects every tick
+// in the lower half of that range — so half of all ticks would find the account
+// not yet due, skip it, and leave it for the tick after that. The mean effective
+// period would be about 1.5 intervals and the worst case two: an operator asking
+// for thirty seconds would get a card refreshed every forty-five on average, and
+// up to a minute stale.
+//
+// internal/sync and internal/library have the same disagreement and are left
+// alone, deliberately. It costs them little — nobody watches a daily library
+// enumeration land — where here freshness is the entire product, and on the
+// single-worker deployment this feature is aimed at the jitter buys nothing at
+// all to pay for it.
+//
+// Asking with exactly spread/2 of slack, rather than dropping the jitter or
+// widening it arbitrarily, keeps the two definitions derived from one constant:
+// the queue is asked with the same tolerance the schedule is drawn with, so
+// neither can be changed without the other following.
+func (w *Watcher) dueSlack() time.Duration {
+	return time.Duration(float64(w.cfg.Interval) * tickJitter / 2)
 }
 
 // nextDelay is the configured interval with symmetric jitter applied, so

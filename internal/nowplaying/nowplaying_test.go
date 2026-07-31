@@ -1,6 +1,7 @@
 package nowplaying
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"go/build"
@@ -677,6 +678,127 @@ func TestRunStopsWhenItsContextIsCancelled(t *testing.T) {
 	}
 }
 
+// TestTheQueueIsAskedWithTheSameToleranceTheScheduleIsDrawnWith pins that the
+// two halves of the schedule agree.
+//
+// nextDelay draws each tick from a band around the interval. A due predicate
+// demanding a whole interval since the last check would reject every tick from
+// the lower half of that band, so half of all ticks would do nothing and the
+// account would wait for the one after — a mean effective period of about one
+// and a half intervals, and up to two. An operator who asked for thirty seconds
+// would silently get forty-five.
+//
+// The assertion is a relation between the two, not a number: whatever the
+// soonest tick nextDelay can produce is, the cut-off RunOnce asks the queue for
+// must be no earlier than that. Anything earlier is a band of delays that find
+// nobody due.
+//
+// The two meet exactly at the boundary, and ListDue's predicate is a strict
+// checked_at < olderThan, so an account checked at precisely the soonest instant
+// is not due — a case of measure zero against a delay drawn from a continuous
+// distribution, and pinned below as "a hair over the soonest is due" rather than
+// papered over with a fudge factor in dueSlack.
+//
+// Fails when: dueSlack is dropped from RunOnce's olderThan, or the jitter widens
+// past the slack the queue is asked with.
+func TestTheQueueIsAskedWithTheSameToleranceTheScheduleIsDrawnWith(t *testing.T) {
+	const interval = 30 * time.Second
+	obs := &fakeObservations{}
+	w := newWatcherWith(t, config.NowPlaying{Interval: interval}, &fakeSpotify{}, obs, &fakeTokens{})
+
+	// The soonest a tick can arrive after the previous one.
+	w.rnd = func() float64 { return 0 }
+	soonest := w.nextDelay()
+	if soonest >= interval {
+		t.Fatalf("the soonest delay is %s, which is not below the interval %s; this "+
+			"test has nothing to say unless the jitter can fire early", soonest, interval)
+	}
+
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	olderThan := obs.lastOlderThan()
+
+	if olderThan.Before(testNow.Add(-soonest)) {
+		t.Fatalf("RunOnce asked for checks older than %s, but a tick can arrive as soon as "+
+			"%s after the last one (at %s). Every tick in that band finds nobody due and "+
+			"the account waits for the tick after, so the real refresh period is around "+
+			"1.5 intervals rather than one.",
+			olderThan, soonest, testNow.Add(-soonest))
+	}
+	// The consequence, stated as the queue itself would answer it.
+	if lastChecked := testNow.Add(-soonest - time.Millisecond); !lastChecked.Before(olderThan) {
+		t.Fatalf("an account last checked %s ago is not due, though a tick can fire at %s",
+			testNow.Sub(lastChecked), soonest)
+	}
+}
+
+// TestADisabledPollerListsNobodyEvenWhenDrivenDirectly is the exported half of
+// the configuration contract.
+//
+// Run's guard covers the loop; this covers everything else that can reach
+// RunOnce — a later phase's "refresh now" control, a supervisor, a test. Unset
+// means the instance never opted in, and a zero interval also degenerates the
+// due predicate into "every connected account, every time", so a caller that got
+// through here would poll the whole instance at once.
+//
+// Fails when: the Enabled() guard is only in Run.
+func TestADisabledPollerListsNobodyEvenWhenDrivenDirectly(t *testing.T) {
+	var checks, listings atomic.Int32
+	due := []accountsDue{playbackAccount(uuid.New())}
+	w := newTestWatcher(t, config.NowPlaying{}, &checks, &listings, due)
+
+	polled, err := w.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce on a disabled poller: %v", err)
+	}
+	if polled != 0 {
+		t.Errorf("polled = %d, want 0", polled)
+	}
+	if got := listings.Load(); got != 0 {
+		t.Errorf("%d account listings were made by a disabled poller driven directly, want 0", got)
+	}
+	if got := checks.Load(); got != 0 {
+		t.Errorf("%d Spotify requests were made by a disabled poller driven directly, want 0", got)
+	}
+}
+
+// TestAShutdownBetweenTheResponseAndTheWriteIsNotAnError is the third of the
+// three places a check can be interrupted, and the one the other two guards do
+// not cover: Spotify answered, and the process stopped before the row was
+// written.
+//
+// Nothing is lost — the account keeps its previous observation and stays due —
+// so this belongs at the same severity as the other two interruptions, which is
+// none. Error is what an operator is asked to act on, and a line every clean
+// shutdown produces teaches them to ignore the level.
+//
+// Fails when: the ctx.Err() guard on the Record path is removed, leaving the
+// success path disagreeing with the two above it about what a shutdown is.
+func TestAShutdownBetweenTheResponseAndTheWriteIsNotAnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var logs lockedBuffer
+	obs := &fakeObservations{due: []accountsDue{playbackAccount(uuid.New())}}
+	// A pool query fails exactly this way once its context is gone.
+	obs.recFn = func(ctx context.Context) error { return ctx.Err() }
+	api := &fakeSpotify{respond: func(context.Context, string) (*spotify.Playback, error) {
+		// The process stops between Spotify answering and Encore writing.
+		cancel()
+		return playing("track-1", "The Wheel"), nil
+	}}
+	w := newWatcherLogging(t, config.NowPlaying{Interval: 30 * time.Second}, api, obs, &fakeTokens{},
+		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	if _, err := w.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce = %v, want nil", err)
+	}
+	if got := logs.String(); strings.Contains(got, "level=ERROR") {
+		t.Fatalf("a shutdown between the response and the write was logged at Error:\n%s", got)
+	}
+}
+
 // TestATickThatCannotListItsWorkReportsItRatherThanSpinning pins that a database
 // failure is the tick's error, not an account's: nothing is recorded against
 // anybody, and Run logs it and waits rather than retrying immediately.
@@ -900,19 +1022,24 @@ type fakeObservations struct {
 	due     []accountsDue
 	listErr error
 	recErr  error
+	// recFn fails a write the way the pool does when the caller's context is
+	// already gone, which a fixed error cannot express.
+	recFn func(ctx context.Context) error
 
 	mu        stdsync.Mutex
 	listings  int
+	olderThan time.Time
 	mirror    *atomic.Int32
 	successes map[uuid.UUID]domain.NowPlaying
 	failures  map[uuid.UUID]int
 }
 
 func (f *fakeObservations) ListDue(
-	_ context.Context, _ store.Querier, _ time.Time, limit int,
+	_ context.Context, _ store.Querier, olderThan time.Time, limit int,
 ) ([]accountsDue, error) {
 	f.mu.Lock()
 	f.listings++
+	f.olderThan = olderThan
 	f.mu.Unlock()
 	if f.mirror != nil {
 		f.mirror.Add(1)
@@ -926,9 +1053,22 @@ func (f *fakeObservations) ListDue(
 	return f.due, nil
 }
 
+// lastOlderThan is the cut-off the poller last asked the queue for, which is
+// where the schedule and the due predicate meet.
+func (f *fakeObservations) lastOlderThan() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.olderThan
+}
+
 func (f *fakeObservations) Record(
-	_ context.Context, _ store.Querier, userID uuid.UUID, n domain.NowPlaying,
+	ctx context.Context, _ store.Querier, userID uuid.UUID, n domain.NowPlaying,
 ) error {
+	if f.recFn != nil {
+		if err := f.recFn(ctx); err != nil {
+			return err
+		}
+	}
 	if f.recErr != nil {
 		return f.recErr
 	}
@@ -1003,16 +1143,45 @@ func newWatcherWith(
 	t *testing.T, cfg config.NowPlaying, api *fakeSpotify, obs *fakeObservations, tokens *fakeTokens,
 ) *Watcher {
 	t.Helper()
+	return newWatcherLogging(t, cfg, api, obs, tokens, slog.New(slog.DiscardHandler))
+}
+
+// newWatcherLogging is newWatcherWith for the one test whose assertion is about
+// what was logged and at what level.
+func newWatcherLogging(
+	t *testing.T, cfg config.NowPlaying, api *fakeSpotify, obs *fakeObservations,
+	tokens *fakeTokens, log *slog.Logger,
+) *Watcher {
+	t.Helper()
 	w, err := New(cfg, Deps{
 		Store:      &store.Store{},
 		NowPlaying: obs,
 		Spotify:    api,
 		Tokens:     tokens,
-		Logger:     slog.New(slog.DiscardHandler),
+		Logger:     log,
 		Now:        func() time.Time { return testNow },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return w
+}
+
+// lockedBuffer collects log output. The handler is written to from the check
+// goroutines, and a bare bytes.Buffer is not safe for that.
+type lockedBuffer struct {
+	mu  stdsync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

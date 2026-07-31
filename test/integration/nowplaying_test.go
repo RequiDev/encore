@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -301,14 +302,19 @@ func TestDeletingAUserRemovesTheirNowPlayingRow(t *testing.T) {
 
 // fakeNowPlayingAPI satisfies nowplaying.SpotifyAPI without a network, and
 // counts what was actually asked of it.
+//
+// The counter is atomic because a tick calls this from up to four goroutines at
+// once. Every test here happens to use one account today, which would make a
+// plain int safe by accident; adding a second account would make it a data race
+// that only CI's -race run would find.
 type fakeNowPlayingAPI struct {
 	playback *spotify.Playback
 	err      error
-	calls    int
+	calls    atomic.Int32
 }
 
 func (f *fakeNowPlayingAPI) CurrentlyPlaying(context.Context, string) (*spotify.Playback, error) {
-	f.calls++
+	f.calls.Add(1)
 	return f.playback, f.err
 }
 
@@ -416,9 +422,9 @@ func TestThePollerAddsNoListens(t *testing.T) {
 		// almost nothing.
 		makeDueAgain(t, e, user.ID)
 	}
-	if api.calls != 5 {
+	if got := api.calls.Load(); got != 5 {
 		t.Fatalf("the poller made %d requests, want 5: this test is only meaningful "+
-			"if a whole listening session was actually observed", api.calls)
+			"if a whole listening session was actually observed", got)
 	}
 
 	if after := countListens(t, e, user.ID); after != before {
@@ -605,6 +611,57 @@ func TestAnAccountNeedingReauthIsNeverChecked(t *testing.T) {
 		if a.UserID == user.ID {
 			t.Fatal("a needs_reauth account is queued for a playback check")
 		}
+	}
+}
+
+// TestATickFiringEarlyWithinTheJitterStillFindsTheAccountDue is the jitter fix
+// end to end, against the real query rather than a captured argument.
+//
+// The tick schedule draws each delay from a band around the interval, so a tick
+// arriving at the early edge of that band must still find an account it checked
+// one delay ago. Without the slack RunOnce adds, the due predicate would demand
+// a whole interval, the early half of every band would poll nobody, and the card
+// an operator asked to refresh every thirty seconds would refresh every
+// forty-five on average.
+//
+// Twenty-eight seconds, rather than the twenty-seven the earliest tick can
+// actually fire at: at exactly twenty-seven the two sides meet and ListDue's
+// strict checked_at < olderThan decides the tie against polling, which is a
+// millisecond-wide race against the wall clock rather than a property worth
+// pinning. Twenty-eight is inside the jitter band either way and outside it by a
+// clear second.
+//
+// Fails when: dueSlack is dropped — the second tick then makes no request at all.
+func TestATickFiringEarlyWithinTheJitterStillFindsTheAccountDue(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("np-jitter-due")
+	connectWithPlaybackScope(t, e, user.ID)
+
+	api := playingResponse("track-1", "The Wheel")
+	w := newWatcher(t, e, api)
+	if _, err := w.RunOnce(e.Ctx()); err != nil {
+		t.Fatalf("first RunOnce: %v", err)
+	}
+	if got := api.calls.Load(); got != 1 {
+		t.Fatalf("the first tick made %d requests, want 1", got)
+	}
+
+	// Twenty-eight seconds of a thirty-second interval have passed: inside the
+	// jitter band, short of a whole interval.
+	if _, err := e.Store.DB().Exec(e.Ctx(),
+		`UPDATE now_playing SET checked_at = checked_at - interval '28 seconds' WHERE user_id = $1`,
+		user.ID.String()); err != nil {
+		t.Fatalf("age the last check: %v", err)
+	}
+
+	polled, err := w.RunOnce(e.Ctx())
+	if err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if polled != 1 || api.calls.Load() != 2 {
+		t.Fatalf("a tick firing 28s into a 30s interval polled %d accounts over %d requests, "+
+			"want 1 and 2: the schedule can fire this early, so the queue must answer this "+
+			"early, or half of every tick does nothing", polled, api.calls.Load())
 	}
 }
 
