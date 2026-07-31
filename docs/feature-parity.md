@@ -84,7 +84,8 @@ Encore's target is practical parity with the user-facing capabilities of
 | Different artists per period | **Implemented** | |
 | Average album release year | **Implemented** | |
 | Average artists per track | **Implemented** | |
-| Album completion | **Implemented** | "Heard 9 of 12 tracks", from `albums.total_tracks`, which needs no Spotify call. All-time rather than range-scoped, because completion is a property of a listening lifetime. An album whose track count has not been enriched reports that rather than a ratio. Naming *which* tracks are missing needs `GET /albums/{id}/tracks` and is not built. |
+| Album completion | **Implemented** | "Heard 9 of 12 tracks", from `albums.total_tracks`, which needs no Spotify call. All-time rather than range-scoped, because completion is a property of a listening lifetime. An album whose track count has not been enriched reports that rather than a ratio. Naming *which* tracks are missing is a separate capability — see below. |
+| Naming the tracks you have never played | **Implemented** | `GET /api/albums/{id}/tracklist` reads Spotify's own list of what is on the album (`GET /v1/albums/{id}/tracks`) and names which of those tracks have no plays in the caller's history, all time. Fetched lazily the first time somebody opens that album's page and cached for `ENCORE_ALBUM_TRACKS_TTL` (30 days by default) — there is no background sweep, since most albums in a large history are never opened and enumerating them all would spend the instance's quota on questions nobody asked. Costs roughly one Spotify request per album viewed per TTL. It is the one Spotify request this instance makes as a side effect of *viewing* a page rather than of a click, so it is switchable with `ENCORE_ALBUM_TRACKS_ENABLED`; a listing already cached keeps being shown after the switch is turned off, with the date it was read. Coverage across a whole artist's discography, rather than one already-opened album, is not built — see Known gaps. |
 | Listening history feed | **Implemented** | Keyset paginated on `(played_at, id)`, never `OFFSET`. |
 | Date-range filtering everywhere | **Implemented** | Half-open `[from, to)` in the URL, so any view is linkable. |
 | Artist blacklist | **Implemented** | Excluded from every statistic through one shared SQL fragment. |
@@ -174,3 +175,7 @@ Where Encore does less than the reference, or less than it could:
   not report it; a synced listen counts as the track's full duration. Importing an export over the
   same period corrects it in place, and the `source` column records which rows came from where. See
   the note in the README's limitations.
+- **Discography-wide coverage is not built.** `GET /api/albums/{id}/tracklist` names the tracks
+  missing from one album already opened; there is no equivalent that reads a whole artist's
+  discography (`GET /v1/artists/{id}/albums`) to say which *albums* a listener has never touched.
+  Out of scope for this phase, outstanding for phase 2e-ii.
