@@ -643,9 +643,7 @@ function MissingAlbums({
         title="Spotify lists no albums for this artist"
         description={
           <>
-            {
-              "Everything Spotify lists for them is a single, a compilation or an appearance on someone else's record, and this panel counts none of those."
-            }
+            {'Nothing Spotify lists for them is an album, and an album is all this panel counts.'}
             {excluded ? (
               // No "also": nothing else was listed, so there is nothing for this
               // to be in addition to. And no "does not count": the sentence

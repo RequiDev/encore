@@ -385,7 +385,9 @@ describe('the discography panel', () => {
     render(mountAt('/artists/artist-1'))
     const section = await panel('You have played something from every album by this artist')
 
-    expect(within(section).getByText('Spotify lists 11 albums for this artist.')).toBeInTheDocument()
+    expect(
+      within(section).getByText('Spotify lists 11 albums for this artist.'),
+    ).toBeInTheDocument()
     // Not "you have played every album": coverage counts an album with any play,
     // and the shorter sentence claims eleven records heard end to end.
     expect(within(section).queryByText(/played every album/)).not.toBeInTheDocument()
@@ -427,8 +429,7 @@ describe('the discography panel', () => {
 
     expect(
       within(section).getByText(
-        'Everything Spotify lists for them is a single, a compilation or an appearance on someone ' +
-          "else's record, and this panel counts none of those.",
+        'Nothing Spotify lists for them is an album, and an album is all this panel counts.',
       ),
     ).toBeInTheDocument()
     // No "also": nothing else was listed for this artist.
@@ -440,6 +441,36 @@ describe('the discography panel', () => {
     expect(within(section).queryByText(/could not/i)).not.toBeInTheDocument()
     // Nothing was counted, so the sentence about what counting means says nothing.
     expect(within(section).queryByText(/counts as played/)).not.toBeInTheDocument()
+  })
+
+  // total === 0 does not confine every excluded release to a single, a
+  // compilation or an appearance: `other` — the bucket toArtistDiscography's
+  // default arm fills for any album_group Spotify sends that is none of the
+  // four documented ones, including a blank one — can be positive here too.
+  // Nothing exercised that combination before this case, which is exactly the
+  // gap that let the old "a single, a compilation or an appearance" sentence
+  // ship false: it named an exhaustive set that excluded `other`.
+  it('says there are no albums to count, even when Spotify lists an unrecognised release', async () => {
+    stubRoutes({
+      '/api/me': ME,
+      '/api/artists/artist-1': artistPayload(),
+      '/api/artists/artist-1/discography': discography({
+        coverage: { covered: 0, total: 0 },
+        missing: [],
+        excluded: { singles: 0, compilations: 0, appearsOn: 0, other: 1 },
+      }),
+    })
+    render(mountAt('/artists/artist-1'))
+    const section = await panel('Spotify lists no albums for this artist')
+
+    expect(
+      within(section).getByText(
+        'Nothing Spotify lists for them is an album, and an album is all this panel counts.',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(section).getByText('Spotify lists 1 other release for this artist.'),
+    ).toBeInTheDocument()
   })
 
   it('says this instance does not fetch discographies, and never blames Spotify', async () => {
@@ -677,7 +708,11 @@ describe('the panel description, read together with the body under it', () => {
       { ...PENDING, state: 'unavailable' },
       "This artist's discography could not be read",
     ],
-    ['fetching turned off', { ...PENDING, state: 'disabled' }, 'Artist discographies are turned off'],
+    [
+      'fetching turned off',
+      { ...PENDING, state: 'disabled' },
+      'Artist discographies are turned off',
+    ],
     [
       'everything played',
       { coverage: { covered: 11, total: 11 }, missing: [] },
@@ -758,7 +793,9 @@ describe('the discography poll', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100)
     })
-    expect(within(panelNow()).getByText('Asking Spotify what this artist has released')).toBeVisible()
+    expect(
+      within(panelNow()).getByText('Asking Spotify what this artist has released'),
+    ).toBeVisible()
 
     // Just short of three minutes. Advanced in stages rather than one jump
     // because `act` holds React's updates until its callback returns, so a single
@@ -824,7 +861,10 @@ describe('the discography poll', () => {
   })
 
   it('forgets the cap once the artist resolves, so a later pending artist starts fresh', async () => {
-    window.sessionStorage.setItem(`${DISCOGRAPHY_POLL_START_KEY}artist-1`, String(Date.now() - 1_000))
+    window.sessionStorage.setItem(
+      `${DISCOGRAPHY_POLL_START_KEY}artist-1`,
+      String(Date.now() - 1_000),
+    )
     stubRoutes({
       '/api/me': ME,
       '/api/artists/artist-1': artistPayload(),
