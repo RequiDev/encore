@@ -1633,6 +1633,65 @@ func TestASharedLinkCannotReachTheListeningHistory(t *testing.T) {
 	}
 }
 
+// TestASharedLinkCarriesNoNowPlaying pins §2.3's rule that a share exposes what
+// somebody listens to and never what they are doing right now.
+//
+// handleSharedStats composes its own fixed payload from *stats.Service and
+// *catalog.Repo, both of which need a live schema — there is no fake for either
+// inside internal/httpapi's own fast test suite, so this is the only layer that
+// can drive the handler's real success path end to end. The row is written
+// directly through the repository, standing in for the poller so this test
+// does not have to run one.
+//
+// Asserted against the response bytes rather than a struct field, because the
+// defect this guards is somebody adding the field, and a struct-field assertion
+// would have to be updated by the same person adding it.
+//
+// Fails when: a NowPlayingObservation, or any of its fields, is added to the
+// shared-stats payload under any name — the device name and title seeded below
+// then appear in the body a stranger holding the link can read.
+func TestASharedLinkCarriesNoNowPlaying(t *testing.T) {
+	inst := newInstance(t)
+	owner := inst.browser()
+	inst.signIn(owner)
+	ownerID := userIDOf(t, inst, "listener-one")
+
+	at := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	progress, duration := 90000, 200000
+	err := inst.env.Accounts.NowPlaying.Record(inst.env.Ctx(), inst.env.Store.DB(), ownerID, domain.NowPlaying{
+		ObservedAt: at, State: domain.PlaybackPlaying, Kind: domain.PlaybackItemTrack,
+		TrackID: "shrnp0000000000000001", Title: "The Wheel", Artist: "SOHN",
+		ProgressMs: &progress, DurationMs: &duration, DeviceName: "Kitchen speaker",
+		CheckedAt: at,
+	})
+	if err != nil {
+		t.Fatalf("record now playing: %v", err)
+	}
+
+	created := decode[map[string]any](t, owner.postJSON("/api/shares", map[string]any{}), http.StatusCreated)
+	token := created["token"].(string)
+
+	resp := inst.browser().get("/api/share/" + token)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read shared response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/share/%s = %d, want 200: %s", token, resp.StatusCode, body)
+	}
+
+	text := string(body)
+	for _, forbidden := range []string{
+		"nowPlaying", "nowplaying", "Kitchen speaker", "deviceName", "The Wheel",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("the shared payload contains %q; a share exposes what somebody "+
+				"listens to, never when they are awake", forbidden)
+		}
+	}
+}
+
 // TestRevokingALinkStopsItImmediately: revocation is the only recourse once a
 // link has been sent to somebody, so it has to be instant and complete.
 func TestRevokingALinkStopsItImmediately(t *testing.T) {

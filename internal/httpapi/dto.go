@@ -1371,6 +1371,84 @@ type MetadataStatus struct {
 	FallbackConfigured bool `json:"fallbackConfigured"`
 }
 
+// NowPlayingResponse is GET /api/nowplaying: what the caller is playing right
+// now, as far as this instance has been able to tell.
+//
+// It answers three questions that are routinely conflated, and keeps them apart
+// structurally rather than by convention:
+//
+//   - does this instance poll at all (Enabled);
+//   - may it poll *this* account (ScopeGranted);
+//   - has it ever managed to (Observation being non-nil).
+//
+// Reading Observation is therefore the only way to learn what is playing, and a
+// client cannot accidentally render "nothing is playing" for an account nobody
+// has looked at — there is no state value to misread, because there is no
+// observation at all.
+type NowPlayingResponse struct {
+	// Enabled reports that this instance runs the now-playing poller.
+	// ENCORE_NOWPLAYING_INTERVAL unset means false, and the client renders no
+	// card at all rather than an empty one.
+	Enabled bool `json:"enabled"`
+	// IntervalSeconds is how often the poller checks, and therefore how often
+	// it is worth asking this endpoint again. Zero when Enabled is false.
+	//
+	// Sent so the client polls at the instance's own rate rather than guessing
+	// one: a client that polled faster than the poller would ask repeatedly for
+	// an answer that cannot have changed.
+	IntervalSeconds int `json:"intervalSeconds"`
+	// ScopeGranted reports that this account's grant includes
+	// user-read-playback-state.
+	//
+	// Computed on the server against the stored grant, like /api/me's
+	// missingScopes and for the same reason: two copies of the required scope
+	// would drift and the TypeScript one would drift silently.
+	ScopeGranted bool `json:"scopeGranted"`
+	// CheckedAt is when the poller last tried, successfully or not. Absent when
+	// it never has.
+	CheckedAt *time.Time `json:"checkedAt"`
+	// Failed reports that the attempt at CheckedAt did not succeed. Observation,
+	// if present, is then the last one that did — which is what lets the client
+	// say how stale the display is instead of discarding a true thing.
+	Failed bool `json:"failed"`
+	// Observation is the last successful observation, or null when there has
+	// never been one.
+	//
+	// Null is "Encore has not managed to look". An Observation whose State is
+	// "idle" is "nothing is playing". They are different facts and must not
+	// share a sentence.
+	Observation *NowPlayingObservation `json:"observation"`
+}
+
+// NowPlayingObservation is one successful look at a listener's player.
+type NowPlayingObservation struct {
+	// ObservedAt is when everything below was true.
+	ObservedAt time.Time `json:"observedAt"`
+	// State is "idle", "playing" or "paused". Never "unknown": that value means
+	// there was no observation, which this type's absence already says.
+	State string `json:"state"`
+	// Kind is "none", "track", "episode", "local" or "unknown", and decides
+	// which sentence the client renders — a podcast and a local file never
+	// become listens, and an advert cannot be named at all.
+	Kind string `json:"kind"`
+	// Title and Artist are what Spotify called it. Empty for an unknown item,
+	// which carries no description by design.
+	Title  string `json:"title"`
+	Artist string `json:"artist"`
+	// TrackID names a track in Encore's own catalogue, so the client can link
+	// to it. Empty when the item is not a track, or is a track Encore has never
+	// seen — a link to a page that does not exist is worse than no link.
+	TrackID string `json:"trackId"`
+	// ProgressMs is progress at ObservedAt and is never extrapolated. The
+	// client states the observation's age beside it rather than animating a bar
+	// from a fact up to one interval old.
+	ProgressMs *int `json:"progressMs"`
+	DurationMs *int `json:"durationMs"`
+	// DeviceName is empty when Spotify reported no device, and the client then
+	// renders no device clause rather than an unknown one.
+	DeviceName string `json:"deviceName"`
+}
+
 // --- sharing ---------------------------------------------------------------
 
 // CreateShareRequest is the body of POST /api/shares.

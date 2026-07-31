@@ -105,6 +105,11 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	s.route(mux, "GET /api/artists/{id}/discography", s.handleArtistDiscography)
 	s.route(mux, "GET /api/search", s.handleSearch)
 	s.route(mux, "GET /api/status", s.handleStatus)
+	// What the caller is playing right now. Reads the stored observation and
+	// never calls Spotify, so an open dashboard costs no quota. Deliberately
+	// absent from the share surface below: a share exposes what somebody
+	// listens to, never when they are awake.
+	s.route(mux, "GET /api/nowplaying", s.handleNowPlaying)
 
 	// Sharing. The first three belong to the owner; the last is the only path in
 	// Encore that answers with somebody's data and no session, which is why it

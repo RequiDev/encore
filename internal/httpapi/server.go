@@ -141,6 +141,12 @@ type playlistStore interface {
 	SetCover(ctx context.Context, q store.Querier, userID, id uuid.UUID, cover domain.PlaylistCover) error
 }
 
+// nowPlayingStore is the now-playing repository as this package needs it: one
+// read, and nothing that writes. The poller owns every write to that table.
+type nowPlayingStore interface {
+	Get(ctx context.Context, q store.Querier, userID uuid.UUID) (domain.NowPlaying, error)
+}
+
 // shareStore is the sharing repository as this package needs it.
 type shareStore interface {
 	Create(ctx context.Context, q store.Querier, userID uuid.UUID, tokenHash []byte, link domain.ShareLink) (domain.ShareLink, error)
@@ -207,9 +213,10 @@ type Server struct {
 	oauthStates oauthStateStore
 	settings    settingsStore
 
-	catalog   *catalog.Repo
-	shares    shareStore
-	playlists playlistStore
+	catalog    *catalog.Repo
+	shares     shareStore
+	playlists  playlistStore
+	nowPlaying nowPlayingStore
 	// userToken returns a usable Spotify access token for one account. Injected
 	// because refreshing one belongs to the sync package, and a playlist acts on
 	// the listener's own account so must use the listener's own token.
@@ -274,7 +281,7 @@ func New(deps Deps) (*Server, error) {
 		return nil, errors.New("httpapi: artist discography source is required")
 	}
 	if deps.Accounts.Users == nil || deps.Accounts.Sessions == nil || deps.Accounts.Credentials == nil ||
-		deps.Accounts.OAuthStates == nil || deps.Accounts.Settings == nil {
+		deps.Accounts.OAuthStates == nil || deps.Accounts.Settings == nil || deps.Accounts.NowPlaying == nil {
 		return nil, errors.New("httpapi: the accounts repository is incomplete")
 	}
 
@@ -308,6 +315,7 @@ func New(deps Deps) (*Server, error) {
 		catalog:      deps.Catalog,
 		shares:       deps.Accounts.Shares,
 		playlists:    deps.Accounts.Playlists,
+		nowPlaying:   deps.Accounts.NowPlaying,
 		userToken:    deps.UserToken,
 		listens:      deps.Listens,
 		imports:      deps.Imports,
