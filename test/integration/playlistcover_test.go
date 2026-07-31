@@ -121,11 +121,37 @@ func TestSetCoverTruncatesTheReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if len(got.Cover.Error) > 256 {
-		t.Fatalf("stored reason is %d bytes, want it bounded", len(got.Cover.Error))
+	// coverErrorLimit is 200, and Truncate appends "..." (3 bytes) on top of
+	// that, so the real ceiling is about 203 bytes. 210 leaves headroom for
+	// the rune-boundary backtrack without being loose enough that a
+	// regression widening the limit to, say, 250 would still pass.
+	if len(got.Cover.Error) > 210 {
+		t.Fatalf("stored reason is %d bytes, want it bounded near coverErrorLimit (200)", len(got.Cover.Error))
 	}
 	if !utf8.ValidString(got.Cover.Error) {
 		t.Fatal("stored reason is not valid UTF-8")
+	}
+}
+
+// TestCoverAtMustMatchState pins playlists_cover_at_matches_state (00016): a
+// row claiming cover_state = 'ready' with no timestamp would tell a listener
+// an attempt succeeded at an unknown, unrecorded time, which is exactly the
+// silent misrepresentation this phase's rules forbid. The write goes straight
+// through SQL rather than SetCover, because SetCover always supplies both
+// columns together and could never produce this row itself — the constraint
+// is what stops a future, buggier caller from doing it instead.
+//
+// Fails when: migration 00016 is not applied, or its CHECK is dropped — the
+// UPDATE below then succeeds instead of being rejected.
+func TestCoverAtMustMatchState(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("cover-consistency")
+	p := newCoverPlaylist(t, e, user.ID, "Heavy rotation")
+
+	_, err := e.Store.DB().Exec(e.Ctx(),
+		`UPDATE playlists SET cover_state = 'ready', cover_at = NULL WHERE id = $1`, p.ID)
+	if err == nil {
+		t.Fatal("UPDATE set cover_state = 'ready' with a null cover_at and nothing rejected it")
 	}
 }
 
