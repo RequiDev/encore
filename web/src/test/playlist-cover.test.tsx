@@ -203,11 +203,23 @@ describe('coverLine', () => {
   // Fails when: a failure and a missing permission share a sentence.
   it('separates a failure from a missing permission', () => {
     expect(coverLine(cover({ state: 'failed', reason: 'Spotify would not accept the cover.' }))).toBe(
-      'Cover not generated. Spotify would not accept the cover.',
+      "Encore's last attempt to set a cover did not finish. Spotify would not accept the cover.",
     )
     expect(coverLine(cover({ state: 'unauthorised' }))).toBe(
-      'Cover not generated. Encore has not been given permission to set playlist covers.',
+      'Encore does not have permission to set a cover for this playlist.',
     )
+  })
+
+  // Fails when: either sentence claims the account has no cover. SetCover
+  // overwrites the whole cover block, so both `failed` and `unauthorised` can
+  // follow a *replacement* attempt made against a playlist that already had a
+  // mosaic — and "cover not generated" would be a false claim about that
+  // playlist's actual artwork in that case.
+  it('never claims the account has no cover, only that the last attempt did not finish', () => {
+    expect(coverLine(cover({ state: 'failed', reason: 'Spotify would not accept the cover.' }))).not.toMatch(
+      /not generated/i,
+    )
+    expect(coverLine(cover({ state: 'unauthorised' }))).not.toMatch(/not generated/i)
   })
 })
 
@@ -289,13 +301,15 @@ describe('the playlist row', () => {
     const section = await playlistPanel()
 
     expect(
-      await within(section).findByText('Cover not generated. Spotify would not accept the cover.'),
+      await within(section).findByText(
+        "Encore's last attempt to set a cover did not finish. Spotify would not accept the cover.",
+      ),
     ).toBeInTheDocument()
     expect(within(section).getByRole('button', { name: /try again/i })).toBeInTheDocument()
 
     expect(
       within(section).getByText(
-        'Cover not generated. Encore has not been given permission to set playlist covers.',
+        'Encore does not have permission to set a cover for this playlist.',
       ),
     ).toBeInTheDocument()
     const consent = within(section).getByRole('link', { name: 'Allow Encore to set covers' })
@@ -305,6 +319,98 @@ describe('the playlist row', () => {
     const rows = within(section).getAllByRole('listitem')
     expect(rows).toHaveLength(2)
     expect(within(rows[1]!).queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
+  })
+
+  // Fails when: the "Building the cover…" status is bare JSXText rather than
+  // a string literal in braces. JSX text children are taken verbatim — escape
+  // sequences are not processed — so a Unicode escape sitting outside braces
+  // renders as a literal backslash followed by "u2026" for the whole upload,
+  // rather than the ellipsis the sibling `Renaming…` status (a string
+  // literal in braces) actually shows. Nothing before this test rendered this
+  // branch at all.
+  it('shows "Building the cover…" — not a literal backslash escape — while a cover uploads', async () => {
+    let resolveCover: (response: Response) => void = () => {}
+    const pending = new Promise<Response>((resolve) => {
+      resolveCover = resolve
+    })
+    // Flips once the upload resolves, so the refetch that invalidateQueries
+    // triggers on success reflects the new cover — the same sequence the real
+    // handler produces, rather than a GET stub frozen on the pre-upload row.
+    let coverReady = false
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const path = new URL(url, 'http://encore.test').pathname
+        const method = (init?.method ?? 'GET').toUpperCase()
+        const json = (code: number, body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: code,
+            headers: { 'content-type': 'application/json' },
+          })
+
+        if (path === '/api/me') return json(200, ME)
+        if (path === '/api/blacklist') return json(200, [])
+        if (path === '/api/status') return json(200, status())
+        if (path === '/api/playlists' && method === 'GET') {
+          return json(200, [
+            playlist({
+              cover: coverReady ? cover({ state: 'ready', kind: 'mosaic', covered: 4 }) : cover(),
+            }),
+          ])
+        }
+        if (path === '/api/playlists/pl-1/cover' && method === 'POST') return pending
+        return json(404, { error: { code: 'not_found', message: 'No.' } })
+      }),
+    )
+
+    render(mountSettings())
+    const section = await playlistPanel()
+
+    fireEvent.click(
+      await within(section).findByRole('button', { name: `Add cover for ${PLAYLIST_NAME}` }),
+    )
+
+    expect(await within(section).findByText('Building the cover…')).toBeInTheDocument()
+    // The literal defect: a backslash-u escape rendered as visible text
+    // rather than being parsed into the ellipsis it names.
+    expect(within(section).queryByText(/u2026/)).not.toBeInTheDocument()
+
+    coverReady = true
+    resolveCover(
+      new Response(
+        JSON.stringify(playlist({ cover: cover({ state: 'ready', kind: 'mosaic', covered: 4 }) })),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+
+    expect(await within(section).findByText('Cover built from 4 of 4 album covers.')).toBeInTheDocument()
+  })
+
+  // Fails when: rebuildCover has no isError rendering. docs/api.md's "always
+  // 200" only holds once handlePlaylistCover is reached — a request that
+  // fails earlier (an expired session, an id Spotify no longer has) is a real
+  // request failure, and silently doing nothing to the row would leave
+  // somebody pressing a button that visibly does nothing.
+  it('surfaces an error when the cover request itself fails, not just a cover outcome', async () => {
+    stubRoutes({
+      '/api/me': ME,
+      '/api/blacklist': [],
+      '/api/status': status(),
+      '/api/playlists': [playlist()],
+      '/api/playlists/pl-1/cover': respond(401, {
+        error: { code: 'unauthenticated', message: 'Your session has expired. Sign in again.' },
+      }),
+    })
+    render(mountSettings())
+    const section = await playlistPanel()
+
+    fireEvent.click(
+      await within(section).findByRole('button', { name: `Add cover for ${PLAYLIST_NAME}` }),
+    )
+
+    expect(await within(section).findByRole('alert')).toHaveTextContent(/session has expired/i)
   })
 
   // Fails when: the rename hint is dropped. It is the one sentence telling

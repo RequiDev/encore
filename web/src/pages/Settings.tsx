@@ -57,7 +57,6 @@ import {
   errorMessage,
   useToast,
 } from '../components/ui'
-import { Artwork } from './top/TopList'
 
 /**
  * How often the metadata panel re-reads the instance status while work is
@@ -136,9 +135,17 @@ export function coverLine(cover: PlaylistCover): string {
       }
       return `Cover built from ${cover.covered} of 4 album covers; the rest is a generated pattern.`
     case 'failed':
-      return `Cover not generated. ${cover.reason}`
+      // Not "cover not generated": SetCover overwrites the whole cover block,
+      // so this branch is also reached by a *replacement* that failed after a
+      // mosaic was already sitting on the account. "Not generated" would be a
+      // false claim about the playlist's actual artwork in that case; naming
+      // the attempt rather than the account is true in both.
+      return `Encore's last attempt to set a cover did not finish. ${cover.reason}`
     case 'unauthorised':
-      return 'Cover not generated. Encore has not been given permission to set playlist covers.'
+      // Same reasoning as CoverFailed above: this state can follow a
+      // previously-successful cover if the permission was revoked since, so
+      // the sentence must not claim there is no cover on the account.
+      return 'Encore does not have permission to set a cover for this playlist.'
     default:
       return ''
   }
@@ -338,9 +345,12 @@ export default function Settings(): ReactElement {
     },
   })
 
-  // Deliberately no toast: the endpoint always answers 200 and the outcome is
-  // the state on the refreshed row, so a "success" toast would fire for a
-  // cover that failed.
+  // Deliberately no success toast: the endpoint always answers 200 once
+  // handlePlaylistCover is reached, and the outcome is the state on the
+  // refreshed row, so a "success" toast would fire for a cover that failed.
+  // A failure *before* that point — an expired session, a playlist Spotify
+  // no longer has — is a real request failure, not a cover outcome, and is
+  // surfaced through isError below like every other playlist mutation.
   const rebuildCover = useMutation({
     mutationFn: (id: string) => api.post<Playlist>(`/playlists/${id}/cover`),
     onSuccess: () => {
@@ -812,7 +822,6 @@ export default function Settings(): ReactElement {
 
               return (
                 <li key={playlist.id} className="flex flex-wrap items-center gap-3 py-2.5">
-                  <Artwork src="" kind="album" size={40} />
                   <div className="min-w-0 flex-1">
                     {isRenaming ? (
                       <form
@@ -873,7 +882,7 @@ export default function Settings(): ReactElement {
                         </p>
                         {buildingCover ? (
                           <p role="status" className="text-xs text-ink-faint">
-                            Building the cover\u2026
+                            {'Building the cover\u2026'}
                           </p>
                         ) : playlist.cover.state !== 'none' ? (
                           <p className="text-xs text-ink-faint">{coverLine(playlist.cover)}</p>
@@ -931,9 +940,9 @@ export default function Settings(): ReactElement {
             })}
           </ul>
         )}
-        {rebuildPlaylist.isError || forgetPlaylist.isError ? (
+        {rebuildPlaylist.isError || forgetPlaylist.isError || rebuildCover.isError ? (
           <p role="alert" className="mt-2 text-sm text-ember">
-            {errorMessage(rebuildPlaylist.error ?? forgetPlaylist.error)}
+            {errorMessage(rebuildPlaylist.error ?? forgetPlaylist.error ?? rebuildCover.error)}
           </p>
         ) : null}
       </Panel>
