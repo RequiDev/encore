@@ -85,7 +85,16 @@ const compactFormatter = new Intl.NumberFormat(LOCALE, {
 export function formatCompact(value: number): string {
   if (!Number.isFinite(value)) return '0'
   if (Math.abs(value) < 1000) return formatCount(value)
-  return compactFormatter.format(value)
+  // ICU changed en-GB's short-thousands suffix from "K" to "k" between
+  // versions, so the same number rendered differently depending on which
+  // platform ran the code: "1.2K" on this project's Windows machines, "1.2k"
+  // in the Linux container Encore actually deploys as. Only the thousands
+  // suffix moved — "M" is unchanged — which is why it went unnoticed. Upper
+  // case is what the rest of this file documents and what the axis labels
+  // were designed against, so normalise rather than let the build host decide
+  // what a listener sees. Safe to apply to the whole string: en-GB compact
+  // output is digits, a decimal point, an optional minus and one letter.
+  return compactFormatter.format(value).toUpperCase()
 }
 
 /**
