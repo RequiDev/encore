@@ -471,6 +471,7 @@ function NeverPlayedPanel({
     >
       <MissingTracks
         list={list}
+        isPending={tracklist.isPending}
         failed={tracklist.isError}
         gaveUp={gaveUp}
         totalTracks={totalTracks}
@@ -531,12 +532,14 @@ function missingSummary(missing: number, listed: number): string {
  */
 function MissingTracks({
   list,
+  isPending,
   failed,
   gaveUp,
   totalTracks,
   timeZone,
 }: {
   list: AlbumTrackList | undefined
+  isPending: boolean
   failed: boolean
   gaveUp: boolean
   totalTracks: number
@@ -549,7 +552,7 @@ function MissingTracks({
     return (
       <EmptyState
         title="Album track lists are turned off"
-        description="This instance does not ask Spotify what is on an album, so Encore cannot say which tracks you have never played. Everything else on this page comes from your own listening and is unaffected. An administrator can turn this on with ENCORE_ALBUM_TRACKS_ENABLED."
+        description="This instance does not ask Spotify what is on an album, so Encore cannot say which tracks you have never played. Every other figure on this page comes from your own history and is unaffected. An administrator can turn this on with ENCORE_ALBUM_TRACKS_ENABLED."
       />
     )
   }
@@ -578,11 +581,30 @@ function MissingTracks({
       />
     )
   }
+  // A listing being fetched (`pending`, confirmed by the server) and a listing
+  // this panel has not even asked about yet (`isPending`, this request still in
+  // flight) used to share one body — "Asking Spotify for this album's track
+  // list". That is true on an enabled instance and false on a disabled one, and
+  // nothing distinguished them before the response landed: an operator who set
+  // ENCORE_ALBUM_TRACKS_ENABLED=false would see that claim on every album page,
+  // for the whole round trip, immediately followed by "This instance does not
+  // ask Spotify what is on an album" — two contradictory claims in sequence, on
+  // the instance whose operator explicitly asked Encore not to talk to Spotify.
+  // So the request-in-flight case gets a neutral skeleton instead, and
+  // "Asking Spotify" is reserved for a `pending` the server has actually sent.
+  if (isPending && !list) {
+    return (
+      <div className="px-4 py-3" role="status" aria-live="polite" aria-busy="true">
+        <span className="sr-only">Loading this album's track list</span>
+        <SkeletonText lines={2} className="max-w-md" />
+      </div>
+    )
+  }
   if (!list || list.state === 'pending') {
     return (
       <EmptyState
         title="Asking Spotify for this album's track list"
-        description="Encore reads it once and keeps it, so this happens only the first time somebody opens this album. The list appears here on its own."
+        description="Encore reads it once and keeps it, so this step is skipped on most visits. The list appears here on its own."
       />
     )
   }
@@ -591,8 +613,8 @@ function MissingTracks({
   // Two separate reads of the same album, and the identity panel above is
   // already showing the other one. Silence here would be two different totals
   // on one screen with nothing to tell a reader which to believe — including
-  // the very common case of a fresh instance, where the album record has no
-  // count at all and this panel would otherwise be the only confident number
+  // the very common case of a fresh instance, where Encore's own count has no
+  // value at all and this panel would otherwise be the only confident number
   // on a page that has just said "Not known" twice.
   //
   // In two forms, because the two ready states differ in what they have already
@@ -600,17 +622,26 @@ function MissingTracks({
   // repeating it here would print the same clause and the same number twice on
   // one screen. On the played-everything state nothing else names it, so the
   // long form does. Neither offers to follow one number over another when there
-  // is no other number: an album record with no count yet is a gap, not a rival
+  // is no other number: Encore having no count yet is a gap, not a rival
   // figure, and "this panel follows the list" would be answering a question
   // nobody asked.
+  //
+  // Said as "Encore's own count", not "the album record" — in a music app
+  // "record" reads as the LP, so the two lines would parse as the album
+  // agreeing with itself. Naming Encore as the source of the second number is
+  // what makes the disagreement, and the reconciliation, legible.
   const disagrees = listed > 0 && listed !== totalTracks
-  const albumRecord =
-    totalTracks > 0 ? `says ${formatCount(totalTracks)}` : 'has no track count yet'
+  const encoreCount =
+    totalTracks > 0
+      ? `Encore's own count for this album says ${formatCount(totalTracks)}.`
+      : 'Encore has no track count for this album yet.'
   const follows = totalTracks > 0 ? " This panel follows Spotify's list." : ''
-  const reconciliationShort = disagrees ? `The album record ${albumRecord}.${follows}` : null
+  const reconciliationShort = disagrees ? `${encoreCount}${follows}` : null
   const reconciliationLong = disagrees
-    ? `Spotify lists ${formatPlural(listed, 'track')} for this album; the album record ${albumRecord}.${
-        totalTracks > 0 ? ' This panel follows the list.' : ''
+    ? `Spotify lists ${formatPlural(listed, 'track')} for this album; ${
+        totalTracks > 0
+          ? `Encore's own count for this album says ${formatCount(totalTracks)}. This panel follows the list.`
+          : 'Encore has no track count for this album yet.'
       }`
     : null
   // Rendered on every `ready` state, not only when something is missing. On an

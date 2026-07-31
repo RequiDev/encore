@@ -113,6 +113,52 @@ function stubRoutes(bodies: Record<string, unknown>): string[] {
   return asked
 }
 
+/**
+ * Like `stubRoutes`, but one path's response is held open until `resolve` is
+ * called. This is what puts the panel's own request in the one state the
+ * ordinary stub can never produce — settled nowhere, not even "pending" —
+ * which is exactly the frame I3 is about: before the response lands, an
+ * instance with fetching turned off and one still asking Spotify look
+ * identical, and the panel must not guess which it is.
+ */
+function stubRoutesWithHeldPath(
+  bodies: Record<string, unknown>,
+  heldPath: string,
+): { asked: string[]; resolveHeld: (body: unknown) => void } {
+  const asked: string[] = []
+  let release: (body: unknown) => void = () => {}
+  const held = new Promise<unknown>((resolve) => {
+    release = resolve
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      const path = new URL(url, 'http://encore.test').pathname
+      asked.push(path)
+      if (path === heldPath) {
+        const body = await held
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const body = bodies[path]
+      if (body === undefined) {
+        return new Response(JSON.stringify({ error: { code: 'not_found', message: 'No.' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }),
+  )
+  return { asked, resolveHeld: release }
+}
+
 function mountAt(path: string): ReactElement {
   const router = createMemoryRouter(routes, { initialEntries: [path] })
   return (
@@ -148,9 +194,10 @@ const PENDING: Partial<AlbumTrackList> = {
  * its heading.
  *
  * The wait is on a line of the answer rather than on the heading, because the
- * heading is there from the first frame — the panel renders "asking Spotify"
- * while its own request is still in flight, deliberately, since a listing being
- * fetched and a listing not yet asked for are the same thing to a reader.
+ * heading is there from the first frame — before the panel's own request has
+ * even resolved, it renders a neutral skeleton rather than "Asking Spotify",
+ * so an instance with fetching turned off never shows that claim only to
+ * contradict it a moment later.
  */
 async function panel(settled: string | RegExp): Promise<HTMLElement> {
   const heading = await screen.findByRole('heading', { name: 'Tracks you have never played' })
@@ -241,7 +288,7 @@ describe('the never-played panel', () => {
     ).toBeInTheDocument()
     expect(
       within(section).getByText(
-        'Encore reads it once and keeps it, so this happens only the first time somebody opens this album. The list appears here on its own.',
+        'Encore reads it once and keeps it, so this step is skipped on most visits. The list appears here on its own.',
       ),
     ).toBeInTheDocument()
     expect(within(section).queryByText(/played every track/i)).not.toBeInTheDocument()
@@ -261,7 +308,7 @@ describe('the never-played panel', () => {
 
     expect(
       within(section).getByText(
-        'This instance does not ask Spotify what is on an album, so Encore cannot say which tracks you have never played. Everything else on this page comes from your own listening and is unaffected. An administrator can turn this on with ENCORE_ALBUM_TRACKS_ENABLED.',
+        'This instance does not ask Spotify what is on an album, so Encore cannot say which tracks you have never played. Every other figure on this page comes from your own history and is unaffected. An administrator can turn this on with ENCORE_ALBUM_TRACKS_ENABLED.',
       ),
     ).toBeInTheDocument()
     // An operator's choice is not a Spotify failure, and not a promise to retry.
@@ -269,6 +316,41 @@ describe('the never-played panel', () => {
     expect(within(section).queryByText(/tries again/i)).not.toBeInTheDocument()
     expect(within(section).queryByText(/failed|error/i)).not.toBeInTheDocument()
     expect(within(section).queryByText(/played every track/i)).not.toBeInTheDocument()
+    expect(within(section).queryByText(/Asking Spotify/i)).not.toBeInTheDocument()
+  })
+
+  it('shows a neutral skeleton while its own request is still in flight, never "Asking Spotify" on a disabled instance', async () => {
+    // The `!list` frame used to share its body with a confirmed `pending`, so
+    // an instance with fetching turned off said "Asking Spotify for this
+    // album's track list" for the whole round trip of its own request, then
+    // flipped to "Album track lists are turned off" a moment later — two
+    // contradictory claims in sequence. Holding the response open is what
+    // makes that frame observable at all: the ordinary stub settles too fast
+    // for a test to catch it.
+    const { resolveHeld } = stubRoutesWithHeldPath(
+      {
+        '/api/me': ME,
+        '/api/albums/album-1': albumPayload({ heard: 10, total: 12, known: true }),
+      },
+      '/api/albums/album-1/tracklist',
+    )
+    render(mountAt('/albums/album-1'))
+
+    const heading = await screen.findByRole('heading', { name: 'Tracks you have never played' })
+    const section = heading.closest('section')
+    if (!section) throw new Error('the heading is not inside a panel')
+
+    // Nothing is known yet, so nothing is claimed yet: not that Spotify is
+    // being asked, and not that this instance declines to ask.
+    expect(within(section).queryByText(/Asking Spotify/i)).not.toBeInTheDocument()
+    expect(within(section).queryByText(/turned off/i)).not.toBeInTheDocument()
+    expect(within(section).getByRole('status')).toBeInTheDocument()
+
+    resolveHeld({ ...PENDING, state: 'disabled' })
+
+    await within(section).findByText('Album track lists are turned off')
+    // The contradiction I3 is about: this must never have appeared on the way
+    // to a disabled instance's answer.
     expect(within(section).queryByText(/Asking Spotify/i)).not.toBeInTheDocument()
   })
 
@@ -332,7 +414,7 @@ describe('the never-played panel', () => {
     await panel("This album's track list could not be read")
   })
 
-  it('prints both numbers when the listing and the album record disagree', async () => {
+  it("prints both numbers when the listing and Encore's own count disagree", async () => {
     stubRoutes({
       '/api/me': ME,
       // album.totalTracks is 12 in the shared fixture.
@@ -348,7 +430,7 @@ describe('the never-played panel', () => {
       }),
     })
     render(mountAt('/albums/album-1'))
-    await panel("The album record says 12. This panel follows Spotify's list.")
+    await panel("Encore's own count for this album says 12. This panel follows Spotify's list.")
   })
 
   it('reconciles the two numbers on the played-everything state, and says each once', async () => {
@@ -365,7 +447,7 @@ describe('the never-played panel', () => {
 
     expect(
       within(section).getByText(
-        'Spotify lists 14 tracks for this album; the album record says 12. This panel follows the list.',
+        "Spotify lists 14 tracks for this album; Encore's own count for this album says 12. This panel follows the list.",
       ),
     ).toBeInTheDocument()
     // The reconciliation already names the listing's total, so the count line
@@ -378,7 +460,7 @@ describe('the never-played panel', () => {
     ).toBeInTheDocument()
   })
 
-  it('says nothing about the album record when the two numbers agree', async () => {
+  it("says nothing about Encore's own count when the two numbers agree", async () => {
     stubRoutes({
       '/api/me': ME,
       '/api/albums/album-1': albumPayload({ heard: 10, total: 12, known: true }),
@@ -387,11 +469,11 @@ describe('the never-played panel', () => {
     render(mountAt('/albums/album-1'))
     const section = await panel('The Eleventh')
 
-    expect(within(section).queryByText(/the album record/i)).not.toBeInTheDocument()
+    expect(within(section).queryByText(/Encore's own count/i)).not.toBeInTheDocument()
     expect(within(section).queryByText(/follows the list/i)).not.toBeInTheDocument()
   })
 
-  it('names the album record as the thing that is missing, not the listing', async () => {
+  it("names Encore's own count as the thing that is missing, not the listing", async () => {
     // The identity panel above says "Tracks — Not known" on the same screen. A
     // confident "12 tracks" under it with no explanation is the same defect as
     // rendering "Tracks: 0" over "Track count not known yet".
@@ -401,7 +483,7 @@ describe('the never-played panel', () => {
       '/api/albums/album-1/tracklist': tracklist(),
     })
     render(mountAt('/albums/album-1'))
-    const section = await panel('The album record has no track count yet.')
+    const section = await panel('Encore has no track count for this album yet.')
 
     // There is no rival number to follow over, so it does not offer to.
     expect(within(section).queryByText(/follows/i)).not.toBeInTheDocument()
