@@ -122,7 +122,7 @@ And the fourth thing that falls out of it: **an artist with no `album`-group rel
 - **`Close` must be safe against a concurrent `start`**, and `svc.Close()` must be deferred *after* `pool.Close()` so LIFO runs it first.
 - **`disabled` must never read as a Spotify failure**; `unavailable` only from a recorded failure; **`pending` can persist indefinitely**, so the page caps its own polling.
 - **Regenerate `docker-compose.portainer.yml` with `./scripts/gen-portainer-stack.sh`** after adding any config key. CI diffs it and `test/deploy` does not cover it. This was 2e-i's only Critical.
-- **A 429 on an app-token request pauses Spotify instance-wide** (`app_settings.spotify_paused_until`), 409ing sync-now for every user. This adds a second unattended trigger; it is documented in `docs/configuration.md` and `docs/api.md` where an operator will read it (Tasks 3 and 6).
+- **A 429 on an app-token request pauses Spotify instance-wide** (`app_settings.spotify_paused_until`), 409ing sync-now for every user. Every non-interactive request shares that limiter, so this is one more among many rather than the second; what is unusual is that it fires from a page view. It is documented in `docs/configuration.md` and `docs/api.md` where an operator will read it (Tasks 3 and 6).
 - Test DB on port **5433**, not 5432. `make` is NOT installed.
 - `go test -race` will NOT work locally: no gcc. Omit it. CI runs `go test -tags=integration -race -count=1 -p 1 ./test/...` on Linux.
 - **Tagged suites share one database — run one package at a time**, e.g. `go test -tags=integration -count=1 ./test/integration/ -run TestArtistAlbum`.
@@ -1662,7 +1662,7 @@ Add the type immediately after the `AlbumTracks` type ends (after :218):
 // falls back to its default, so somebody who had turned album track listings
 // off would silently start making unattended requests again. The budgets differ
 // by nearly an order of magnitude — roughly one request per album viewed
-// against up to seven per artist, since a discography includes every single,
+// against up to forty per artist, since a discography includes every single,
 // compilation and appearance. And one key would mean turning off the expensive
 // feature also turns off the cheap one.
 type ArtistAlbums struct {
@@ -1734,7 +1734,7 @@ In `.env.example`, immediately after `#ENCORE_ALBUM_TRACKS_TTL=720h` (:167):
 # Whether the artist page asks Spotify what an artist has released, which is
 # what lets it say "you have heard 4 of their 11 albums". Same trade as the
 # album setting above and a separate switch on purpose: a discography walk
-# includes every single, compilation and appearance, so it costs up to seven
+# includes every single, compilation and appearance, so it costs up to forty
 # requests for a prolific artist against roughly one for an album. Reading it
 # fires on a page view rather than on a click, so it is the operator's call.
 # Discographies already cached are still shown when it is off, with the date
@@ -1752,7 +1752,7 @@ In `.env.example`, immediately after `#ENCORE_ALBUM_TRACKS_TTL=720h` (:167):
 Add two rows immediately after the `ENCORE_ALBUM_TRACKS_TTL` row (:96):
 
 ```markdown
-| `ENCORE_ARTIST_ALBUMS_ENABLED` | `true` | Whether this instance asks Spotify what an artist has released, which is what lets the artist page say "you have heard 4 of this artist's 11 albums". Like `ENCORE_ALBUM_TRACKS_ENABLED` above it fires as a side effect of *viewing* a page rather than of a click, so unattended egress stays the operator's decision — and it is a **separate** switch on purpose, because the two cost very different amounts and because renaming a key an operator may already have set would fail open. A walk costs `ceil(releases/50)` requests per artist *viewed* per TTL, counting every single, compilation and appearance: one request for most artists, up to seven for a prolific one, and nothing at all for artists nobody opens. Set to `false` and `encore-api` makes no discography request. **Turning it off does not hide discographies already cached** — those are still shown, with the date they were read; only fetching stops, and the artist page says so plainly rather than reporting a Spotify failure that did not happen. Like the album track listing above, **a rate-limit response to this request pauses Spotify access instance-wide** for the window Spotify asks for, which 409s "sync now" for every user on the instance until it lifts; with `ENCORE_ALBUM_TRACKS_ENABLED` this is now the second unattended request that can trigger that pause, so an operator with a tight quota should weigh both. |
+| `ENCORE_ARTIST_ALBUMS_ENABLED` | `true` | Whether this instance asks Spotify what an artist has released, which is what lets the artist page say "you have heard 4 of this artist's 11 albums". Like `ENCORE_ALBUM_TRACKS_ENABLED` above it fires as a side effect of *viewing* a page rather than of a click, so unattended egress stays the operator's decision — and it is a **separate** switch on purpose, because the two cost very different amounts and because renaming a key an operator may already have set would fail open. A walk costs `ceil(releases/50)` requests per artist *viewed* per TTL, counting every single, compilation and appearance: one request for most artists, up to forty for a prolific one, and nothing at all for artists nobody opens. Set to `false` and `encore-api` makes no discography request. **Turning it off does not hide discographies already cached** — those are still shown, with the date they were read; only fetching stops, and the artist page says so plainly rather than reporting a Spotify failure that did not happen. Like the album track listing above, **a rate-limit response to this request pauses Spotify access instance-wide** for the window Spotify asks for, which 409s "sync now" for every user on the instance until it lifts; a 429 here is not routine, but this request is unusual in firing from a page view rather than a schedule or a click, and its worst case costs far more of the quota than the album track listing.s, which is reason enough for an operator with a tight quota to turn it off. |
 | `ENCORE_ARTIST_ALBUMS_TTL` | `168h` (7 days) | How long a cached discography is trusted before the next view of that artist's page refreshes it. Deliberately shorter than `ENCORE_ALBUM_TRACKS_TTL`: a released album's track list does not change, but a discography *grows*, and a record released today should be counted within a week rather than within a month. A failed fetch is retried after fifteen minutes rather than after this interval. Ignored when `ENCORE_ARTIST_ALBUMS_ENABLED` is `false`: nothing refreshes, so nothing expires. Must be positive. |
 ```
 
@@ -4400,7 +4400,7 @@ const (
 	leaseTTL = 3 * time.Minute
 	// fetchTimeout bounds one artist's whole walk — every page, every retry and
 	// every rate-limit wait inside it. Longer than albumtracks' ninety seconds
-	// because this walk is up to twenty sequential requests rather than one.
+	// because this walk is up to forty sequential requests rather than one.
 	fetchTimeout = 120 * time.Second
 	// failedRetryAfter is how long a failed discography is left alone. Failures
 	// here are timeouts and rate limits, which clear in minutes; making somebody
@@ -4765,7 +4765,7 @@ a walk starts is internal/lazyfetch's, which the album track cache has used
 since the previous commit; this supplies the parts a discography does not share
 with anything else.
 
-Which is most of what is interesting here. Reading up to twenty pages, refusing
+Which is most of what is interesting here. Reading up to forty pages, refusing
 to store a truncated one, committing the rows and their 'ok' together, and
 knowing that album_group 'album' is what completion counts and the rest is what
 the page has to name.
@@ -5440,7 +5440,7 @@ func (s *Server) handleArtistDiscography(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 
 	// The artist must already be in the catalogue. Without this, any base-62
-	// string in the URL would spend up to twenty of the instance's Spotify
+	// string in the URL would spend up to forty of the instance's Spotify
 	// requests on somebody nobody has listened to — the same quota argument §5.2
 	// uses to reject a background sweep, arriving through a different door, and
 	// costing rather more per door than the album endpoint's one request.
@@ -5627,7 +5627,7 @@ func TestArtistDiscographyFillsInWithoutBlockingThePage(t *testing.T) {
 }
 
 // TestArtistDiscographyRefusesAnArtistNobodyHasPlayed keeps an arbitrary id in
-// the URL from spending up to twenty Spotify requests.
+// the URL from spending up to forty Spotify requests.
 func TestArtistDiscographyRefusesAnArtistNobodyHasPlayed(t *testing.T) {
 	inst := newInstance(t)
 	b := inst.browser()
@@ -5809,7 +5809,7 @@ history are never opened.
 
 It is the second Spotify request `encore-api` makes that nobody clicked for, so an operator can
 switch it off with `ENCORE_ARTIST_ALBUMS_ENABLED=false` — a **separate** switch from
-`ENCORE_ALBUM_TRACKS_ENABLED`, because a discography walk costs up to seven requests against roughly
+`ENCORE_ALBUM_TRACKS_ENABLED`, because a discography walk costs up to forty requests against roughly
 one. **A rate-limit response to either pauses Spotify access instance-wide** for the window Spotify
 asks for, which 409s "sync now" for every user until it lifts.
 
@@ -5878,7 +5878,7 @@ API: serve how much of an artist's catalogue you have heard
 GET /api/artists/{id}/discography answers "you have heard 4 of this artist's 11
 albums" from the database and starts the Spotify walk behind it, so the page
 never waits on a third party. The artist must already be in the catalogue: an
-arbitrary id in the URL would otherwise spend up to twenty requests on somebody
+arbitrary id in the URL would otherwise spend up to forty requests on somebody
 nobody listened to.
 
 Coverage counts album_group 'album' and nothing else, which makes it an
@@ -6294,7 +6294,7 @@ for that to be got wrong.
 
 Only the mechanism moves. Every interval, every cap and every word of copy stays
 on the page that renders it — the two panels wait different lengths of time,
-because an album's walk is one request and an artist's is up to twenty, and they
+because an album's walk is one request and an artist's is up to forty, and they
 say entirely different things when they give up.
 
 web/src/test/album-tracklist.test.tsx is unchanged, which is the gate: the album
@@ -7155,7 +7155,7 @@ import { formatRelease } from './top/TopList'
 /**
  * How often the page asks again while Spotify is being walked.
  *
- * Three seconds rather than the album page's two: a discography is up to twenty
+ * Three seconds rather than the album page's two: a discography is up to forty
  * sequential requests where an album's track list is one, so the answer is
  * further away and a tighter interval buys nothing but load.
  */
@@ -7534,7 +7534,7 @@ Expected: PASS, and `src/test/album-tracklist.test.tsx` still green and still un
 In `docs/feature-parity.md`, change the "Coverage across a whole artist's discography … is not built — see Known gaps." sentence at the end of the album-tracks row (:88) to "Coverage across a whole artist's discography is the row below.", and add a row after it:
 
 ```markdown
-| How much of an artist you have heard | **Implemented** | `GET /api/artists/{id}/discography` reads Spotify's own list of what an artist released (`GET /v1/artists/{id}/albums`) and says how many of those albums have any play in the caller's history, all time. Fetched lazily the first time somebody opens that artist's page and cached for `ENCORE_ARTIST_ALBUMS_TTL` (7 days by default, shorter than the album track listing's 30 because a discography grows); there is no background sweep, for the reason §5.2 gives. Costs `ceil(releases/50)` requests per artist viewed per TTL — one for most artists, up to seven for a prolific one — and it is switchable with `ENCORE_ARTIST_ALBUMS_ENABLED`, a **separate** key from `ENCORE_ALBUM_TRACKS_ENABLED` because the two cost very different amounts. **Completion counts `album_group = "album"` only**, excluding singles, compilations and appearances, because "you have heard 4 of 340 releases" is not a useful sentence — and the page names what it set aside rather than leaving the exclusion silent. An album counts as played when any track from it was played, which the page also says. |
+| How much of an artist you have heard | **Implemented** | `GET /api/artists/{id}/discography` reads Spotify's own list of what an artist released (`GET /v1/artists/{id}/albums`) and says how many of those albums have any play in the caller's history, all time. Fetched lazily the first time somebody opens that artist's page and cached for `ENCORE_ARTIST_ALBUMS_TTL` (7 days by default, shorter than the album track listing's 30 because a discography grows); there is no background sweep, for the reason §5.2 gives. Costs `ceil(releases/50)` requests per artist viewed per TTL — one for most artists, up to forty for a prolific one — and it is switchable with `ENCORE_ARTIST_ALBUMS_ENABLED`, a **separate** key from `ENCORE_ALBUM_TRACKS_ENABLED` because the two cost very different amounts. **Completion counts `album_group = "album"` only**, excluding singles, compilations and appearances, because "you have heard 4 of 340 releases" is not a useful sentence — and the page names what it set aside rather than leaving the exclusion silent. An album counts as played when any track from it was played, which the page also says. |
 ```
 
 Search the file for any other "Known gaps" entry naming discography coverage and remove it in the
