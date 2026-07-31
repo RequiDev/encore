@@ -50,8 +50,9 @@ import (
 //
 // They are string constants rather than a type so a caller's own column
 // constants can be compared to them without conversion; the callers'
-// repositories declare the same three values against their own tables and a test
-// pins the two sets equal.
+// repositories declare the same three values against their own tables, and each
+// caller's tests fail if either set drifts — due would stop recognising the
+// status, fall through to its default, and never refresh anything.
 const (
 	// StatusFetching is a lease: somebody is filling this entity now.
 	StatusFetching = "fetching"
@@ -115,7 +116,11 @@ type State struct {
 	Status      string
 	FetchedAt   time.Time
 	AttemptedAt time.Time
-	Attempts    int
+	// Attempts is the count of consecutive failures. Nothing here reads it yet:
+	// it is carried because both callers already store it and an escalating
+	// backoff — the obvious next use — would be decided here rather than in a
+	// caller.
+	Attempts int
 }
 
 // Policy is the timing, all of it supplied by the caller because the right
@@ -275,6 +280,11 @@ func New(p Policy, deps Deps) (*Gate, error) {
 
 // Now is the Gate's clock, so a caller timestamping its own writes uses the same
 // one the schedule is computed against.
+//
+// No caller needs it yet: albumtracks holds its own clock from before the
+// extraction. It is here so the next caller has one obvious clock to reach for
+// rather than a second one that can disagree with the schedule by a test's worth
+// of drift.
 func (g *Gate) Now() time.Time { return g.now() }
 
 // Resolve decides what a page can say about one entity, and starts a fill when

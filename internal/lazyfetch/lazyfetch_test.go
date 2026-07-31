@@ -69,26 +69,50 @@ func (f *fakeLeases) recordContextErr() error {
 // fill records what the Gate asked it to do and can be held open or made to
 // fail, which is every shape a caller's Fill has from the Gate's point of view.
 type fill struct {
-	mu     sync.Mutex
-	calls  int
-	err    error
-	block  chan struct{}
+	mu    sync.Mutex
+	calls int
+	err   error
+	block chan struct{}
+	// heedCtx makes the fill behave the way a real one does: it gives up when its
+	// context ends, and reports the state of that context on return.
+	//
+	// Off by default, and that is not laziness — it is what makes
+	// TestCloseRefusesNewFetchesBeforeItWaits an assertion rather than a race.
+	// Close both cancels and waits. A fill that always noticed the cancellation
+	// would be released by Close's own cancel, hand back its WaitGroup
+	// registration, and let Close out of wg.Wait — closing the very window that
+	// test opens to assert inside. Measured: with this on for that test, Mutation
+	// A (closing = true moved below wg.Wait) was caught 18 times in 20 rather
+	// than every time, and CI runs each package once. With it off, the fill
+	// cannot end until the test says so, so Close is provably parked and
+	// `closing` is provably unset for the whole window.
+	//
+	// The two tests that are *about* which context the fill was given turn it on;
+	// everything else uses block purely as a barrier — "the fill is in flight,
+	// now assert" — and closes it explicitly.
+	heedCtx bool
+	// sawCtx is the state of the fill's context at the moment it gave up, which
+	// is how a test sees *which* context it was handed.
 	sawCtx error
 }
 
 func (f *fill) run(ctx context.Context, _ string) error {
 	f.mu.Lock()
 	f.calls++
-	block, err := f.block, f.err
+	block, heed, err := f.block, f.heedCtx, f.err
 	f.mu.Unlock()
 	if block != nil {
-		select {
-		case <-block:
-		case <-ctx.Done():
-			f.mu.Lock()
-			f.sawCtx = ctx.Err()
-			f.mu.Unlock()
-			return ctx.Err()
+		if !heed {
+			<-block
+		} else {
+			select {
+			case <-block:
+			case <-ctx.Done():
+				f.mu.Lock()
+				f.sawCtx = ctx.Err()
+				f.mu.Unlock()
+				return ctx.Err()
+			}
 		}
 	}
 	return err
@@ -147,12 +171,18 @@ func TestResolveStartsTheFirstFillAndReportsPending(t *testing.T) {
 	l := &fakeLeases{claimOK: true}
 	f := &fill{block: make(chan struct{})}
 	g := newGate(t, policy(true), l, f, at)
+	// The fill ignores its context, so only this test can end it. Registered
+	// after the gate, so it runs before Cleanup's Close: a failing assertion
+	// below must report itself rather than hang the package on a stuck Cleanup.
+	var once sync.Once
+	release := func() { once.Do(func() { close(f.block) }) }
+	t.Cleanup(release)
 
 	got := g.Resolve(context.Background(), nil, "id-1", State{}, false)
 	if got != OutcomePending {
 		t.Fatalf("outcome = %q, want %q", got, OutcomePending)
 	}
-	close(f.block)
+	release()
 	g.Close()
 	if f.called() != 1 {
 		t.Fatalf("fill ran %d times, want 1", f.called())
@@ -165,6 +195,11 @@ func TestResolveDoesNotWaitForTheFill(t *testing.T) {
 	l := &fakeLeases{claimOK: true}
 	f := &fill{block: make(chan struct{})}
 	g := newGate(t, policy(true), l, f, at)
+	// See TestResolveStartsTheFirstFillAndReportsPending: the fill ignores its
+	// context, so the rescue goes in before Cleanup's Close.
+	var once sync.Once
+	release := func() { once.Do(func() { close(f.block) }) }
+	t.Cleanup(release)
 
 	done := make(chan struct{})
 	go func() {
@@ -176,7 +211,7 @@ func TestResolveDoesNotWaitForTheFill(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Resolve did not return while the fill was in flight; the page waits on a third party")
 	}
-	close(f.block)
+	release()
 }
 
 // TestDuePolicy pins all four arms of the schedule at once, including their
@@ -327,6 +362,11 @@ func TestNoFreeSlotIsPendingAndClaimsNothing(t *testing.T) {
 	l := &fakeLeases{claimOK: true}
 	f := &fill{block: make(chan struct{})}
 	g := newGate(t, p, l, f, at)
+	// See TestResolveStartsTheFirstFillAndReportsPending: the fill ignores its
+	// context, so the rescue goes in before Cleanup's Close.
+	var once sync.Once
+	release := func() { once.Do(func() { close(f.block) }) }
+	t.Cleanup(release)
 
 	if got := g.Resolve(context.Background(), nil, "id-1", State{}, false); got != OutcomePending {
 		t.Fatalf("first outcome = %q, want %q", got, OutcomePending)
@@ -340,7 +380,7 @@ func TestNoFreeSlotIsPendingAndClaimsNothing(t *testing.T) {
 		t.Fatalf("claimed %d leases with one slot, want 1: a lease taken with no slot to fill it "+
 			"strands the entity for the whole LeaseTTL", claims)
 	}
-	close(f.block)
+	release()
 }
 
 // TestAFailingFillIsRecordedAndTheErrorNeverReturned: a third-party outage is a
@@ -371,7 +411,10 @@ func TestAFailingFillIsRecordedAndTheErrorNeverReturned(t *testing.T) {
 func TestTheFillOutlivesTheRequestContext(t *testing.T) {
 	l := &fakeLeases{claimOK: true}
 	release := make(chan struct{})
-	f := &fill{block: release}
+	// heedCtx, because this test is *about* which context the fill was handed: a
+	// fill that ignored it could not tell a request's cancellation from anything
+	// else, and there would be nothing to observe.
+	f := &fill{block: release, heedCtx: true}
 	g := newGate(t, policy(true), l, f, at)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -491,7 +534,9 @@ func TestNewRefusesALeaseShorterThanTheFetchTimeout(t *testing.T) {
 func TestCloseEndsAFillInFlight(t *testing.T) {
 	l := &fakeLeases{claimOK: true}
 	block := make(chan struct{}) // deliberately never closed by the test body
-	f := &fill{block: block}
+	// heedCtx, because the fill ending when Close cancels it is the whole
+	// assertion: with it off, Close would wait for a fill nothing can release.
+	f := &fill{block: block, heedCtx: true}
 	g := newGate(t, policy(true), l, f, at)
 
 	// A rescue, registered after the gate so it runs *before* Cleanup's Close: if
@@ -610,14 +655,22 @@ func TestNothingIsStartedAfterClose(t *testing.T) {
 func TestCloseRefusesNewFetchesBeforeItWaits(t *testing.T) {
 	l := &fakeLeases{claimOK: true}
 	block := make(chan struct{})
+	// heedCtx deliberately off, and it is the whole mechanism of this test. A
+	// fill that noticed its context would be released by Close's own cancel,
+	// hand its registration back, and let Close out of wg.Wait — so the window
+	// this test asserts inside would be closing while it asserted, and the
+	// assertion would be sampling a race. Ignoring the context makes the fill
+	// end only when this test says so, which is what makes "Close is parked"
+	// a fact rather than a likelihood.
 	f := &fill{block: block}
 	g := newGate(t, policy(true), l, f, at)
 	var once sync.Once
 	release := func() { once.Do(func() { close(block) }) }
 	t.Cleanup(release)
 
-	// A fill that cannot finish, so Close is guaranteed to park in wg.Wait
-	// rather than running straight through it.
+	// A fill that genuinely cannot finish — nothing but release() can end it —
+	// so Close is guaranteed to park in wg.Wait rather than running straight
+	// through it.
 	if got := g.Resolve(context.Background(), nil, "id-1", State{}, false); got != OutcomePending {
 		t.Fatalf("outcome = %q, want %q", got, OutcomePending)
 	}
