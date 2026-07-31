@@ -9,24 +9,23 @@
 // answers from the database and, when a fetch is due, hands the walk to a
 // goroutine on a context of its own.
 //
-// Two guards keep that from becoming a stampede, and they answer different
-// questions. A bounded slot channel is this process asking "am I already busy?"
-// A conditional write against album_track_fetches is the whole deployment
-// asking "is anybody busy?" — and only the second survives two browser tabs,
-// two API replicas, or a page that polls.
+// The lifecycle behind that — the lease, the TTL and failure backoff, the
+// bounded slot channel, the detached goroutine and the shutdown — is
+// internal/lazyfetch, shared with the artist page. What stays here is what a
+// *track listing* means: how it is paged, when it counts as empty, and the one
+// transaction that stores it.
 package albumtracks
 
 import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/RequiDev/encore/internal/config"
-	"github.com/RequiDev/encore/internal/logging"
+	"github.com/RequiDev/encore/internal/lazyfetch"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/store"
 	"github.com/RequiDev/encore/internal/store/catalog"
@@ -67,41 +66,17 @@ const (
 var errEmptyListing = errors.New("albumtracks: spotify returned no tracks for this album")
 
 // State is what the page can say about the listing.
-type State string
+//
+// An alias of lazyfetch.Outcome rather than a second declaration: the four words
+// are an API contract two endpoints share, and one definition is what stops them
+// forking. The names here are unchanged, so internal/httpapi is untouched.
+type State = lazyfetch.Outcome
 
 const (
-	// StateReady means a listing is stored and can be reasoned about. It may be
-	// older than the TTL, in which case a refresh is already running behind it.
-	StateReady State = "ready"
-	// StatePending means nothing is stored yet and a fetch is running, or is due
-	// and nothing has recorded a reason it should not be.
-	//
-	// Everything that merely *delays* a fetch reports this: a lease somebody else
-	// holds, no free local slot, a claim that errored, a shutdown in progress.
-	// None of them records an *outcome*, which is what makes "keep polling" the
-	// right advice — but they do not all resolve the same way. Most leave the row
-	// untouched, so the listing is still due and the very next view starts it. A
-	// claim this process wins and then abandons at shutdown leaves the row
-	// 'fetching' with a fresh attempted_at, so the next view waits out leaseTTL
-	// before anybody reclaims it. Still pending, just not immediately.
-	StatePending State = "pending"
-	// StateUnavailable means nothing is stored and the last attempt to read a
-	// listing failed, recently enough that no new one has been started.
-	//
-	// It is emphatically not "this album has no tracks", and it is deliberately
-	// not "this process was too busy to ask" either: only a *recorded* failure
-	// reaches here, which is what lets the page treat it as a reason to stop
-	// polling and say so. Reporting local backpressure as unavailable would tell
-	// somebody Spotify would not answer when Spotify was never asked — the same
-	// category error that keeps StateDisabled separate.
-	StateUnavailable State = "unavailable"
-	// StateDisabled means nothing is stored and this instance will not fetch it,
-	// because its operator turned that off.
-	//
-	// Deliberately not folded into StateUnavailable. "Spotify would not answer"
-	// and "nobody asked Spotify" are different facts, and a page that renders the
-	// first for the second blames a third party for a local decision.
-	StateDisabled State = "disabled"
+	StateReady       = lazyfetch.OutcomeReady
+	StatePending     = lazyfetch.OutcomePending
+	StateUnavailable = lazyfetch.OutcomeUnavailable
+	StateDisabled    = lazyfetch.OutcomeDisabled
 )
 
 // Track is one entry of a listing.
@@ -174,26 +149,28 @@ type Deps struct {
 
 // Service fills and serves album track listings.
 type Service struct {
-	cat Store
-	sp  Fetcher
-	w   Writer
-	log *slog.Logger
-	now func() time.Time
-	// enabled is the operator's switch. False means this instance never asks
-	// Spotify anything — see config.AlbumTracks.Enabled.
-	enabled bool
-	ttl     time.Duration
-	slots   chan struct{}
-	// base is the parent of every detached fetch, so Close can end them all. It
-	// is a context in a struct on purpose: these fetches outlive the request
-	// that started them, so there is no incoming context for them to inherit.
-	base   context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	// mu guards closing, which is the only thing that may not race wg.Add
-	// against wg.Wait. See track.
-	mu      sync.Mutex
-	closing bool
+	cat  Store
+	sp   Fetcher
+	w    Writer
+	log  *slog.Logger
+	now  func() time.Time
+	gate *lazyfetch.Gate
+}
+
+// leases adapts the catalogue's two lease statements to lazyfetch.Leases. It is
+// the whole of what the Gate knows about album_track_fetches.
+type leases struct{ cat Store }
+
+func (l leases) Claim(
+	ctx context.Context, q store.Querier, albumID string, now, leaseCutoff time.Time,
+) (bool, error) {
+	return l.cat.ClaimAlbumTrackFetch(ctx, q, albumID, now, leaseCutoff)
+}
+
+func (l leases) Fail(
+	ctx context.Context, q store.Querier, albumID string, at time.Time, reason string,
+) error {
+	return l.cat.FailAlbumTrackFetch(ctx, q, albumID, at, reason)
 }
 
 // New validates the dependencies and builds the service.
@@ -222,7 +199,33 @@ func New(cfg config.AlbumTracks, deps Deps) (*Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	base, cancel := context.WithCancel(context.Background())
+	s := &Service{
+		cat: deps.Catalog,
+		sp:  deps.Spotify,
+		w:   deps.Writer,
+		log: lg.With("component", "albumtracks"),
+		now: now,
+	}
+	gate, err := lazyfetch.New(lazyfetch.Policy{
+		Enabled:          cfg.Enabled,
+		TTL:              cfg.TTL,
+		LeaseTTL:         leaseTTL,
+		FailedRetryAfter: failedRetryAfter,
+		FetchTimeout:     fetchTimeout,
+		RecordTimeout:    recordTimeout,
+		Concurrency:      concurrency,
+	}, lazyfetch.Deps{
+		Leases:  leases{cat: deps.Catalog},
+		Fill:    s.fill,
+		DB:      deps.Writer.DB,
+		Subject: "album",
+		Logger:  s.log,
+		Now:     now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.gate = gate
 	if !cfg.Enabled {
 		// Said once, at startup, rather than on every page view: an operator who
 		// wonders why the album page reports this as turned off can find it here
@@ -230,18 +233,7 @@ func New(cfg config.AlbumTracks, deps Deps) (*Service, error) {
 		lg.Info("album track listings are turned off; this instance will not ask spotify " +
 			"what is on an album. Listings already cached are still shown.")
 	}
-	return &Service{
-		cat:     deps.Catalog,
-		sp:      deps.Spotify,
-		w:       deps.Writer,
-		log:     lg.With("component", "albumtracks"),
-		now:     now,
-		enabled: cfg.Enabled,
-		ttl:     cfg.TTL,
-		slots:   make(chan struct{}, concurrency),
-		base:    base,
-		cancel:  cancel,
-	}, nil
+	return s, nil
 }
 
 // Listing returns the stored listing for one album, and starts a refresh when
@@ -270,205 +262,43 @@ func (s *Service) Listing(ctx context.Context, q store.Querier, albumID string) 
 		}
 	}
 
-	now := s.now()
-	// A live lease means somebody is fetching this album right now. Checking it
-	// before deciding anything is what keeps a polling browser from attempting a
-	// write on every tick. It is checked even when this instance has fetching
-	// turned off: another replica may have started one before the switch was
-	// flipped, and reporting that accurately costs nothing.
-	pending := st.Status == catalog.AlbumTrackFetching && now.Sub(st.AttemptedAt) < leaseTTL
-
-	// s.enabled is checked *before* s.due, and that order is load-bearing: a
-	// switched-off instance must not resume making requests the moment its cache
-	// expires. Guarding here rather than inside start also means the claim — a
-	// write — is never even attempted, which is what an operator asking for no
-	// unattended traffic actually asked for.
-	if !pending && s.enabled && s.due(st, now) {
-		s.start(ctx, q, albumID, now)
-		// Pending regardless of what start managed to do, and that is not
-		// optimism: not one of its decline paths records an outcome. Most — no
-		// free slot, a lease somebody else holds, a claim that errored — leave the
-		// row untouched, so the listing is still due and the next view starts it.
-		// The one that does not is a claim won and then abandoned at shutdown,
-		// which leaves the row 'fetching' and resolves when that lease expires.
-		// Both are "not yet". Reporting either as unavailable would blame Spotify
-		// for a local condition and, worse, would tell a page whose job is to stop
-		// polling on unavailable to give up on an album that was still coming.
-		pending = true
-	}
-
 	out := Listing{Tracks: tracks, FetchedAt: st.FetchedAt}
-	switch {
-	case len(tracks) > 0:
-		// A listing read successfully once is worth showing while a refresh runs
-		// behind it — and worth showing when no refresh is coming at all, because
-		// turning off fetching is not the same as forgetting what is on disk.
-		// Withholding it would replace a true answer that is old with no answer.
-		// FetchedAt travels with it so the page can say how old, which is the only
-		// honesty this case needs: a date claims nothing about freshness.
-		out.State = StateReady
-	case pending:
-		out.State = StatePending
-	case !s.enabled:
-		// Nothing stored, and this instance will not go and find out. That is the
-		// operator's decision, not a Spotify failure, and the page says so in its
-		// own words rather than reporting an outage that never happened.
-		out.State = StateDisabled
-	default:
-		// Nothing stored, nothing running, and nothing due: the last attempt
-		// failed and its backoff has not elapsed. The page must not read that as
-		// "this album has no tracks you have missed".
-		out.State = StateUnavailable
-	}
+	// len(tracks) > 0, exactly as before the extraction. A successful read of an
+	// album always stores at least one row, because a 200 carrying no tracks is
+	// recorded as a failure, so this and st.FetchedAt agree for every state this
+	// package can produce — but it is the predicate this service has always used
+	// and the refactor changes no behaviour.
+	out.State = s.gate.Resolve(ctx, q, albumID, lazyfetch.State{
+		Status:      st.Status,
+		FetchedAt:   st.FetchedAt,
+		AttemptedAt: st.AttemptedAt,
+		Attempts:    st.Attempts,
+	}, len(tracks) > 0)
 	return out, nil
 }
 
-// due reports whether a fetch should be started now.
-//
-// It deliberately knows nothing about s.enabled. Whether this instance fetches
-// at all is a different question from whether this listing is old, and its
-// caller asks them in that order.
-func (s *Service) due(st catalog.AlbumTrackState, now time.Time) bool {
-	switch st.Status {
-	case "":
-		// Never attempted: the lazy first fill.
-		return true
-	case catalog.AlbumTrackOK:
-		return now.Sub(st.FetchedAt) >= s.ttl
-	case catalog.AlbumTrackFailed:
-		// Much sooner than the TTL, and deliberately so — see failedRetryAfter.
-		return now.Sub(st.AttemptedAt) >= failedRetryAfter
-	case catalog.AlbumTrackFetching:
-		// The lease has expired: whatever process held it is gone.
-		return now.Sub(st.AttemptedAt) >= leaseTTL
-	default:
-		return false
-	}
-}
-
-// start begins a detached fetch if it can.
-//
-// It reports nothing, on purpose. Every way it can decline is a "not yet"
-// rather than a "no", because none of them records an outcome: the ones that
-// return before the claim leave the row untouched, so it is still due and the
-// next view starts it, and the one that returns after a won claim leaves the
-// row 'fetching', so it resolves when that lease expires. There is no outcome
-// here the page should be told about beyond "keep polling", which its caller
-// says unconditionally.
-func (s *Service) start(ctx context.Context, q store.Querier, albumID string, now time.Time) {
-	if s.base.Err() != nil {
-		// Close has already been called. Claiming a lease this process is about
-		// to abandon would strand the album for the whole leaseTTL for nothing.
-		// Not the guard that makes Close safe — track does that, atomically —
-		// just the one that keeps the common case from being wasteful.
-		return
-	}
-	select {
-	case s.slots <- struct{}{}:
-	default:
-		// Every slot is busy. Refusing is the point: queueing here would be
-		// queueing people behind a third party.
-		s.log.Debug("album track fetch not started; all slots busy", "album", albumID)
-		return
-	}
-	// The slot goes back unless the fetch goroutine takes ownership of it.
-	//
-	// A defer rather than a release() on each path: a panic anywhere below —
-	// a nil Querier reaching q.QueryRow would do it — would otherwise keep the
-	// slot for ever, and four of those stop this process fetching another
-	// listing for the rest of its life. Silently, because recovery middleware
-	// keeps serving pages.
-	started := false
-	defer func() {
-		if !started {
-			<-s.slots
-		}
-	}()
-
-	claimed, err := s.cat.ClaimAlbumTrackFetch(ctx, q, albumID, now, now.Add(-leaseTTL))
-	if err != nil {
-		s.log.Warn("could not claim an album track fetch", "album", albumID, logging.Err(err))
-		return
-	}
-	if !claimed {
-		// Somebody else holds the lease. A second request would be a wasted one
-		// against a quota the whole application shares — but a fetch *is* running,
-		// so the page is right to keep polling.
-		return
-	}
-
-	if !s.track() {
-		// Close began between the claim and here. Nothing is stranded that the
-		// lease does not already cover: this is the same state a process killed
-		// mid-fetch leaves behind, and leaseTTL exists for exactly that.
-		s.log.Debug("album track fetch abandoned; shutting down", "album", albumID)
-		return
-	}
-	// Nothing may go between these two statements. track has already done
-	// wg.Add(1), and only the goroutine below calls the matching Done — so
-	// anything inserted here that can panic leaves the WaitGroup one short and
-	// Close waits on it for ever, which is a worse failure than the slot leak
-	// the defer above exists to prevent. Whatever a future change needs to do,
-	// it belongs before track or inside the goroutine.
-	started = true
-	go func() {
-		defer s.wg.Done()
-		defer func() { <-s.slots }()
-		s.fetch(albumID)
-	}()
-}
-
-// track registers a fetch with the WaitGroup unless Close has begun, reporting
-// whether the caller may now spawn it.
-//
-// The mutex is what makes Close correct rather than merely likely. Without it,
-// a handler still inside Listing when the process shuts down races Close two
-// ways: commonly Wait sees zero, returns, and the goroutine started a moment
-// later is one nothing waits for — which is precisely what Close promises not
-// to allow; and rarely the Add raising the counter from zero with a waiter
-// already registered panics with "WaitGroup misuse: Add called concurrently
-// with Wait", taking the process down on its way out. Both are reachable
-// because http.Server.Shutdown returns on timeout with handlers still running.
-func (s *Service) track() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closing {
-		return false
-	}
-	s.wg.Add(1)
-	return true
-}
-
-// fetch reads one album's listing and stores it, on a context of its own.
-//
-// Deliberately not the request's context: that request has already been
-// answered, and cancelling when the browser navigated away would mean the
-// listing never arrives however many times the page is opened. fetchTimeout
-// bounds it instead, and Close cancels it at shutdown.
-func (s *Service) fetch(albumID string) {
-	ctx, cancel := context.WithTimeout(s.base, fetchTimeout)
-	defer cancel()
-
+// fill reads one album's listing and stores it. It is the Gate's Fill: whether
+// and when it runs is the Gate's decision, and everything it does is this
+// package's.
+func (s *Service) fill(ctx context.Context, albumID string) error {
 	items, err := s.sp.AlbumTracks(ctx, albumID, maxPages)
 	if err != nil {
 		// Every failure lands here, ErrTruncated included — and that one arrives
 		// with a partial listing attached. The partial must never reach the write:
-		// ReplaceAlbumTracks deletes whatever the incoming set does not contain,
-		// so a prefix would delete the tail of a listing that was correct and then
+		// ReplaceAlbumTracks deletes whatever the incoming set does not contain, so
+		// a prefix would delete the tail of a listing that was correct and then
 		// mark the result authoritative. This project has hit that trap three
 		// times; internal/spotify/library.go's ErrTruncated comment is the record
 		// of it. There is no exception clause here on purpose.
-		s.record(albumID, err)
-		return
+		return err
 	}
 	if len(items) == 0 {
 		// A 200 carrying no items, or one whose every item had a blank id, both of
 		// which spotify.AlbumTracks reports as (nil, nil). Checked here rather than
 		// left to ReplaceAlbumTracks' own refusal, because by then the intent would
 		// already be "make this album's listing empty" and only an error would stop
-		// it; recorded as a failure, the stored listing and its date are untouched.
-		s.record(albumID, errEmptyListing)
-		return
+		// it; returned as a failure, the stored listing and its date are untouched.
+		return errEmptyListing
 	}
 
 	rows := make([]catalog.AlbumTrack, 0, len(items))
@@ -479,7 +309,7 @@ func (s *Service) fetch(albumID string) {
 		})
 	}
 	at := s.now()
-	err = s.w.InTx(ctx, func(ctx context.Context, q store.Querier) error {
+	return s.w.InTx(ctx, func(ctx context.Context, q store.Querier) error {
 		if err := s.cat.ReplaceAlbumTracks(ctx, q, albumID, rows); err != nil {
 			return err
 		}
@@ -488,53 +318,12 @@ func (s *Service) fetch(albumID string) {
 		// half-replaced listing marked 'ok'.
 		return s.cat.MarkAlbumTracksFetched(ctx, q, albumID, at)
 	})
-	if err != nil {
-		s.record(albumID, err)
-		return
-	}
-	s.log.Debug("stored an album track listing", "album", albumID, "tracks", len(rows))
-}
-
-// record writes a failure on its own context, so a fetch cancelled at shutdown
-// still leaves the album out of 'fetching' rather than waiting out the lease.
-//
-// The reason is handed over whole. catalog.FailAlbumTrackFetch bounds it with
-// store.Truncate, which cuts on a rune boundary; truncating again here would
-// only risk two ellipses and a message cut twice.
-func (s *Service) record(albumID string, cause error) {
-	s.log.Warn("could not read an album track listing", "album", albumID, logging.Err(cause))
-
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.base), recordTimeout)
-	defer cancel()
-	if err := s.cat.FailAlbumTrackFetch(ctx, s.w.DB(), albumID, s.now(), cause.Error()); err != nil {
-		// Nothing further can be done, and nothing is stuck: the lease expires on
-		// its own, so the next page view after leaseTTL tries again.
-		s.log.Error("could not record an album track failure", "album", albumID, logging.Err(err))
-	}
 }
 
 // Close cancels every fetch in flight and waits for them. It is safe to call
 // more than once, and safe to call while requests are still in Listing.
 //
-// Bounded by recordTimeout per fetch, because a cancelled fetch still records
-// its failure — which is why the composition root must call this *before* it
-// closes the database pool. That write goes out on a context of its own
-// precisely so shutdown does not lose it, and a closed pool would lose it
-// anyway, leaving the album 'fetching' until its lease expires. Deferring
-// Close after the pool is opened gets the LIFO order right.
-func (s *Service) Close() {
-	// Before the Wait, necessarily: that is what stops a wg.Add landing against
-	// a registered waiter. Before the cancel too, which Close does not need but
-	// TestCloseRefusesNewFetchesBeforeItWaits does — it takes base.Done() as the
-	// signal that Close has begun, and that is only sound while this comes
-	// first. Moving it below the cancel leaves Close correct and quietly turns
-	// that test into one that cannot fail.
-	s.mu.Lock()
-	s.closing = true
-	s.mu.Unlock()
-
-	s.cancel()
-	// Safe now: no wg.Add can follow, because track takes the same mutex and
-	// sees closing.
-	s.wg.Wait()
-}
+// The ordering that makes it correct lives in lazyfetch.Gate.Close; this is the
+// delegation, and TestCloseEndsAFetchInFlight is what proves the delegation is
+// actually wired.
+func (s *Service) Close() { s.gate.Close() }
