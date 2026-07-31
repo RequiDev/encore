@@ -47,8 +47,9 @@ their own Spotify application. Encore requests eight read scopes at sign-in
 (`user-read-recently-played`, `user-read-private`, `user-read-email`, `user-top-read`,
 `user-library-read`, `user-follow-read`, `playlist-read-private`, `user-read-playback-state`) and never
 holds a grant that can modify a listener's Spotify account unless they have used a feature that needs
-it. Creating a playlist is the only such feature; it asks for its own write scope separately, at the
-moment it is used, and Encore never asks for permission to control playback.
+it. Creating or renaming a playlist, and giving it a cover, are the only such features; they ask for
+their two write scopes together, at the moment one of them is first used, and Encore never asks for
+permission to control playback.
 
 Album art and artist images are served as URLs from Spotify's own CDN and are not copied or cached by
 Encore.

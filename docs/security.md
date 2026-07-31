@@ -148,16 +148,19 @@ statistics it points at, with no account on the instance.
 
 ## Playlist permission
 
-Creating a playlist is the only thing Encore can do **to** a Spotify account
-rather than read from it, so the permission is handled deliberately.
+Creating, renaming and covering a playlist are the only things Encore can do
+**to** a Spotify account rather than read from it, so the permissions are
+handled deliberately.
 
 - Sign-in asks for eight read scopes: `user-read-recently-played`,
   `user-read-private`, `user-read-email`, `user-top-read`, `user-library-read`,
   `user-follow-read`, `playlist-read-private` and `user-read-playback-state`.
   None of them can change anything about the account.
-- `playlist-modify-private` is requested at the moment somebody uses the feature,
-  through a normal OAuth journey they can decline. Spotify issues a token with
-  the union of what was granted, so nothing already in place changes.
+- `playlist-modify-private` and `ugc-image-upload` are requested together, at
+  the moment somebody uses the feature — the first to create and rename a
+  playlist, the second to put a cover on it. Neither is in the sign-in grant,
+  so an account that never makes a playlist holds no scope that can alter
+  anything, even if the instance is compromised.
 - An account connected before the scope set grew keeps its old, narrower grant
   until it relinks — nothing forces re-authorisation on it — and `/api/me`
   reports the shortfall as `missingScopes` rather than the account failing
