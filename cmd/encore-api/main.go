@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/RequiDev/encore/internal/albumtracks"
+	"github.com/RequiDev/encore/internal/artistalbums"
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/crypto"
 	"github.com/RequiDev/encore/internal/httpapi"
@@ -150,6 +151,22 @@ func run() error {
 	}
 	defer albumTracks.Close()
 
+	// The artist page's discography cache, on the same terms as the album track
+	// cache above: read when somebody opens that artist's page, and Close cancels
+	// anything still in flight at shutdown. Deferred here, after the pool is
+	// open, so LIFO runs it before the pool closes — a cancelled walk still needs
+	// the pool to record that it failed.
+	artistAlbums, err := artistalbums.New(cfg.ArtistAlbums, artistalbums.Deps{
+		Catalog: catalogRepo,
+		Spotify: client,
+		Writer:  artistalbums.StoreWriter{Store: db},
+		Logger:  lg,
+	})
+	if err != nil {
+		return err
+	}
+	defer artistAlbums.Close()
+
 	api, err := httpapi.New(httpapi.Deps{
 		Config:   cfg,
 		Store:    db,
@@ -166,8 +183,9 @@ func run() error {
 		SyncNow:  syncNow(poller),
 		// Playlists act on the listener's own account, so they need the
 		// listener's own token, and refreshing one belongs to the poller.
-		UserToken:   poller.AccessToken,
-		AlbumTracks: albumTracks,
+		UserToken:    poller.AccessToken,
+		AlbumTracks:  albumTracks,
+		ArtistAlbums: artistAlbums,
 	})
 	if err != nil {
 		return err

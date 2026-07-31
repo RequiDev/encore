@@ -258,6 +258,77 @@ equivalences here.
 
 The album must already be in your catalogue; an id that is not answers 404 without touching Spotify.
 
+### How much of an artist you have heard
+
+`GET /api/artists/{id}/discography`
+
+Album completion counts the tracks on one record. This counts the records: "you have heard 4 of this
+artist's 11 albums". Nothing Encore stores can answer it — `albums` holds only records somebody
+played, so counting rows there would answer with the numerator — so it needs Spotify's own list of
+what the artist released.
+
+That list is read **the first time somebody opens the artist's page** and then cached for
+`ENCORE_ARTIST_ALBUMS_TTL` (7 days by default; shorter than the album track listing's 30 because a
+discography grows). There is no background sweep, for the reason §5.2 gives: most artists in a large
+history are never opened.
+
+It is the second Spotify request `encore-api` makes that nobody clicked for, so an operator can
+switch it off with `ENCORE_ARTIST_ALBUMS_ENABLED=false` — a **separate** switch from
+`ENCORE_ALBUM_TRACKS_ENABLED`, because a discography walk costs up to seven requests against roughly
+one. **A rate-limit response to either pauses Spotify access instance-wide** for the window Spotify
+asks for, which 409s "sync now" for every user until it lifts.
+
+**This endpoint never waits for Spotify.** It answers from the database and starts the walk behind
+it, so `state` says which of four situations you are in — the same four words, with the same
+meanings, as the album tracklist endpoint's:
+
+```json
+{
+  "state": "ready",
+  "coverage": { "covered": 4, "total": 11 },
+  "missing": [ { "id": "4uLU…", "name": "…", "releaseDate": "2022", "releasePrecision": "year" } ],
+  "excluded": { "singles": 40, "compilations": 3, "appearsOn": 7, "other": 0 },
+  "fetchedAt": "2026-07-20T09:00:00Z"
+}
+```
+
+| `state` | Means | What a client must render |
+|---|---|---|
+| `ready` | A discography is stored. `coverage`, `missing` and `excluded` are meaningful. | The list, or "you have played something from every album" when `missing` is empty, or "Spotify lists no albums for this artist" when `coverage.total` is 0. |
+| `pending` | No discography yet; one is being read from Spotify now, or is due and about to be. | "Encore is asking Spotify." Poll, with a cap. |
+| `unavailable` | No discography, and none is being read: the last attempt failed. | "Encore could not read it." Never "you have played everything." |
+| `disabled` | No discography, and this instance does not fetch them: `ENCORE_ARTIST_ALBUMS_ENABLED=false`. | "This instance does not fetch discographies." Never blame Spotify, and never promise a retry. |
+
+**`coverage` counts `album_group = "album"` and nothing else.** Singles, compilations and appearances
+are excluded, because "you have heard 4 of 340 releases" is not a useful sentence. That makes
+`coverage` alone an overclaim by omission, which is why `excluded` travels with it: **a client that
+renders the coverage without also naming what was set aside is making a claim this payload does not
+support.** `other` is any group Spotify sends that is none of the four it documents; it is zero
+today and exists so `coverage.total` plus the four buckets always account for every release stored.
+
+**`covered` counts albums with *any* play, not albums played in full.** One track off a record puts
+it in `covered`. A client must say so, or "4 of 11 albums" reads as four albums heard end to end. An
+album the caller played that Spotify does not list under this artist is in neither number.
+
+**`ready` with `coverage.total == 0` is a real answer.** An artist whose every release is a single
+has nothing to count and `excluded` is the only thing that describes them. This has no counterpart on
+the album endpoint, where an empty listing is impossible and is recorded as a failure — the emptiness
+rule here applies to the whole response, never to the filtered subset.
+
+**`missing` entries are not catalogue entities.** Most of them are records nobody has played, which
+are not in `albums` at all, so a client must not link them to `/albums/{id}`.
+
+**`pending` has no server-side bound**, exactly as on the album tracklist endpoint: a claim against
+`artist_album_fetches` that itself errors leaves the row as it was, so the next request lands back in
+the same branch. Encore's own web client caps its poll at three minutes and then says plainly that it
+gave up.
+
+**Turning fetching off does not hide a discography that is already cached.** One stored before the
+switch was flipped still arrives as `ready`, past its TTL or not; `fetchedAt` is what keeps that
+honest.
+
+The artist must already be in your catalogue; an id that is not answers 404 without touching Spotify.
+
 ### Playback context: what you were playing from
 
 `playlists` and `playlistCoverage`, part of `/api/stats/context`'s payload, answer what the range

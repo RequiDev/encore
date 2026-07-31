@@ -30,6 +30,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/RequiDev/encore/internal/albumtracks"
+	"github.com/RequiDev/encore/internal/artistalbums"
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/domain"
 	"github.com/RequiDev/encore/internal/httpapi"
@@ -74,6 +75,12 @@ type spotifyStub struct {
 	// cannot run -race locally to lean on it. atomic.Int64 makes it correct
 	// regardless.
 	albumTrackReqs atomic.Int64
+
+	// artistAlbums is what GET /v1/artists/{id}/albums answers for one artist.
+	// An id no test told it about comes back as an empty page, which is the shape
+	// that makes the discography unavailable — see the test that relies on it.
+	artistAlbums    map[string][]map[string]any
+	artistAlbumReqs atomic.Int64
 }
 
 func newSpotifyStub(t *testing.T) *spotifyStub {
@@ -83,6 +90,7 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 		grantedScopes: config.DefaultScopes(),
 		playlistItems: map[string][]string{},
 		albumTracks:   map[string][]map[string]any{},
+		artistAlbums:  map[string][]map[string]any{},
 	}
 	mux := http.NewServeMux()
 
@@ -186,6 +194,15 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 		writeJSON(w, map[string]any{"items": s.albumTracks[r.PathValue("id")], "next": nil})
 	})
 
+	// An artist's own discography, one page, "next": null. Same shape as the
+	// album track listing above: an id the test never seeded answers
+	// {"items":null}, which is the doorway into "unavailable" that needs no
+	// waiting at all.
+	mux.HandleFunc("/v1/artists/{id}/albums", func(w http.ResponseWriter, r *http.Request) {
+		s.artistAlbumReqs.Add(1)
+		writeJSON(w, map[string]any{"items": s.artistAlbums[r.PathValue("id")], "next": nil})
+	})
+
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
@@ -196,6 +213,10 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 // page that polls the tracklist endpoint several times must still only make
 // this instance ask Spotify once per album.
 func (s *spotifyStub) albumTrackCalls() int { return int(s.albumTrackReqs.Load()) }
+
+// artistAlbumCalls reports how many times GET /v1/artists/{id}/albums has been
+// served, which is how the tests below prove a walk happened exactly once.
+func (s *spotifyStub) artistAlbumCalls() int { return int(s.artistAlbumReqs.Load()) }
 
 func meProfile(id, name string) map[string]any {
 	return map[string]any{
@@ -284,13 +305,24 @@ func newInstanceWith(t *testing.T, overrides map[string]string) *instance {
 	}
 	t.Cleanup(albumTracks.Close)
 
+	artistAlbums, err := artistalbums.New(cfg.ArtistAlbums, artistalbums.Deps{
+		Catalog: env.Catalog, Spotify: client,
+		Writer: artistalbums.StoreWriter{Store: env.Store},
+		Logger: harness.Discard(),
+	})
+	if err != nil {
+		t.Fatalf("build artist albums service: %v", err)
+	}
+	t.Cleanup(artistAlbums.Close)
+
 	api, err := httpapi.New(httpapi.Deps{
 		Config: cfg, Store: env.Store, Accounts: env.Accounts, Catalog: env.Catalog,
 		Listens: env.Listens, Imports: env.Imports, Stats: stats.New(env.Store),
 		Intake: intake, Spotify: client, Metrics: metrics.New(),
 		Logger: harness.Discard(), Version: "test",
-		UserToken:   poller.AccessToken,
-		AlbumTracks: albumTracks,
+		UserToken:    poller.AccessToken,
+		AlbumTracks:  albumTracks,
+		ArtistAlbums: artistAlbums,
 		SyncNow: func(ctx context.Context, userID uuid.UUID) (httpapi.SyncOutcome, error) {
 			res, err := poller.SyncUser(ctx, userID)
 			out := httpapi.SyncOutcome{
@@ -676,6 +708,26 @@ func samePlayItem(trackID, albumID string, at time.Time) map[string]any {
 				"artists": []any{map[string]any{"id": "art" + albumID, "name": "Artist"}},
 			},
 			"artists": []any{map[string]any{"id": "art" + albumID, "name": "Artist"}},
+		},
+	}
+}
+
+// artistPlayItem is samePlayItem with the artist id pinned rather than derived
+// from the album id, so every play can be attributed to the one artist whose
+// discography a test is building — seedArtistWithPlays needs several albums to
+// all name the same artist, which samePlayItem's own "art"+albumID derivation
+// cannot produce.
+func artistPlayItem(trackID, albumID, artistID string, at time.Time) map[string]any {
+	return map[string]any{
+		"played_at": at.Format(time.RFC3339),
+		"track": map[string]any{
+			"id": trackID, "name": "Track " + trackID, "duration_ms": 210000,
+			"album": map[string]any{
+				"id": albumID, "name": "Album", "album_type": "album",
+				"release_date": "2019-06-01", "release_date_precision": "day",
+				"artists": []any{map[string]any{"id": artistID, "name": "Artist"}},
+			},
+			"artists": []any{map[string]any{"id": artistID, "name": "Artist"}},
 		},
 	}
 }
@@ -2086,5 +2138,243 @@ func TestAlbumTracklistUnavailableIsA200NotAnErrorEnvelope(t *testing.T) {
 	if n := inst.stub.albumTrackCalls(); n != 1 {
 		t.Fatalf("the stub served %d album-track requests, want exactly 1: a recorded failure "+
 			"must not be retried inside its fifteen-minute backoff", n)
+	}
+}
+
+// seedArtistWithPlays gives one artist a Spotify discography of `albums`
+// album-group releases plus `singles` singles, and plays one track from the
+// first `played` albums, so the discography endpoint has a real numerator and a
+// real denominator to work with.
+func (i *instance) seedArtistWithPlays(b *browser, artistID string, albums, singles, played int) {
+	i.t.Helper()
+	if played > albums {
+		i.t.Fatalf("seedArtistWithPlays: played (%d) exceeds albums (%d)", played, albums)
+	}
+	// One play per album puts the album (and the artist) in the catalogue.
+	plays := make([]map[string]any, 0, played)
+	at := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	listing := make([]map[string]any, 0, albums+singles)
+	for n := range albums {
+		albumID := fmt.Sprintf("%salb%02d", artistID[:14], n)
+		listing = append(listing, map[string]any{
+			"id": albumID, "name": fmt.Sprintf("Album %d", n), "album_group": "album",
+			"release_date": fmt.Sprintf("%d", 2010+n), "release_date_precision": "year",
+		})
+		if n < played {
+			plays = append(plays, artistPlayItem(
+				fmt.Sprintf("%strk%02d", artistID[:14], n), albumID, artistID, at.Add(-time.Duration(n)*time.Minute)))
+		}
+	}
+	for n := range singles {
+		listing = append(listing, map[string]any{
+			"id": fmt.Sprintf("%ssng%02d", artistID[:14], n), "name": fmt.Sprintf("Single %d", n),
+			"album_group": "single", "release_date": "2021", "release_date_precision": "year",
+		})
+	}
+	i.stub.artistAlbums[artistID] = listing
+	i.stub.plays = plays
+	res := decode[map[string]any](i.t, b.postJSON("/api/sync/now", nil), http.StatusOK)
+	if n, _ := res["imported"].(float64); int(n) != played {
+		i.t.Fatalf("sync reported %v imported while seeding, want %d", res["imported"], played)
+	}
+}
+
+// TestArtistDiscographyFillsInWithoutBlockingThePage walks the whole feature:
+// the first request answers immediately without a discography, the walk lands
+// behind it, and a later request names the albums that were never played.
+func TestArtistDiscographyFillsInWithoutBlockingThePage(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+	const artistID = "e2ediscofillsin000001"
+	// Eleven albums, four played, and forty singles nobody counts.
+	inst.seedArtistWithPlays(b, artistID, 11, 40, 4)
+
+	start := time.Now()
+	first := decode[httpapi.ArtistDiscography](t,
+		b.get("/api/artists/"+artistID+"/discography"), http.StatusOK)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the first request took %s; it waited for Spotify", elapsed)
+	}
+	if first.State != "pending" {
+		t.Fatalf("first state = %q, want \"pending\"", first.State)
+	}
+	if len(first.Missing) != 0 {
+		t.Fatalf("first response named %d missing albums before any walk finished", len(first.Missing))
+	}
+
+	var got httpapi.ArtistDiscography
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		got = decode[httpapi.ArtistDiscography](t,
+			b.get("/api/artists/"+artistID+"/discography"), http.StatusOK)
+		if got.State == "ready" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got.State != "ready" {
+		t.Fatalf("state never became ready; last was %q", got.State)
+	}
+	// The sentence §5.2 asks for, end to end.
+	if got.Coverage.Total != 11 || got.Coverage.Covered != 4 {
+		t.Fatalf("coverage = %d/%d, want 4/11: singles must not enter the denominator",
+			got.Coverage.Covered, got.Coverage.Total)
+	}
+	if len(got.Missing) != 7 {
+		t.Fatalf("named %d missing albums, want 7", len(got.Missing))
+	}
+	if got.Excluded.Singles != 40 {
+		t.Fatalf("excluded.singles = %d, want 40: the page cannot say what it set aside without this",
+			got.Excluded.Singles)
+	}
+	if got.FetchedAt == nil {
+		t.Fatal("fetchedAt is absent on a ready discography; the page cannot say how old it is")
+	}
+	if n := inst.stub.artistAlbumCalls(); n != 1 {
+		t.Fatalf("the stub served %d discography requests, want 1: the poll refetched", n)
+	}
+}
+
+// TestArtistDiscographyRefusesAnArtistNobodyHasPlayed keeps an arbitrary id in
+// the URL from spending up to twenty Spotify requests.
+func TestArtistDiscographyRefusesAnArtistNobodyHasPlayed(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+
+	resp := b.get("/api/artists/1BBBBBBBBBBBBBBBBBBBBB/discography")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an artist not in the catalogue", resp.StatusCode)
+	}
+	if n := inst.stub.artistAlbumCalls(); n != 0 {
+		t.Fatalf("the stub served %d requests for an unknown artist, want 0", n)
+	}
+}
+
+// TestArtistDiscographyDisabledAnswersWithoutTouchingSpotify walks the
+// operator's switch end to end, which is the only place the configuration, the
+// service and the handler are proved to agree about it — and the only place the
+// two switches are proved independent at runtime rather than in config parsing.
+func TestArtistDiscographyDisabledAnswersWithoutTouchingSpotify(t *testing.T) {
+	inst := newInstanceWith(t, map[string]string{"ENCORE_ARTIST_ALBUMS_ENABLED": "false"})
+	b := inst.browser()
+	inst.signIn(b)
+	const artistID = "e2ediscodisabled00001"
+	inst.seedArtistWithPlays(b, artistID, 11, 0, 4)
+
+	got := decode[httpapi.ArtistDiscography](t,
+		b.get("/api/artists/"+artistID+"/discography"), http.StatusOK)
+	if got.State != "disabled" {
+		t.Fatalf("state = %q, want \"disabled\"", got.State)
+	}
+	if n := inst.stub.artistAlbumCalls(); n != 0 {
+		t.Fatalf("the stub served %d discography requests on a disabled instance, want 0", n)
+	}
+	var rows int
+	if err := inst.env.Pool.QueryRow(inst.env.Ctx(),
+		`SELECT count(*)::int FROM artist_album_fetches`).Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("%d artist_album_fetches rows were written on a disabled instance, want 0", rows)
+	}
+	// And the album endpoint is untouched by the artist switch, which is the
+	// whole point of two keys.
+	const albumID = "e2ediscodisabled0alb0"
+	inst.seedAlbumWithPlays(b, albumID, 12, 9)
+	tl := decode[httpapi.AlbumTrackList](t, b.get("/api/albums/"+albumID+"/tracklist"), http.StatusOK)
+	if tl.State == "disabled" {
+		t.Fatal("turning off discographies also turned off album track listings; the two keys exist " +
+			"precisely so an operator can keep the cheap one")
+	}
+}
+
+// TestArtistDiscographyAllSinglesIsReadyNotAFailure is the state with no
+// counterpart on the album endpoint, walked end to end because it is the one
+// place a guard on the filtered set — rather than on the whole response — would
+// show up as a user-visible lie.
+func TestArtistDiscographyAllSinglesIsReadyNotAFailure(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+	const artistID = "e2ediscoallsingles001"
+	// One album so the artist reaches the catalogue at all, then the stub's
+	// listing is replaced with singles only: the artist Spotify knows has
+	// released nothing it calls an album.
+	inst.seedArtistWithPlays(b, artistID, 1, 0, 1)
+	inst.stub.artistAlbums[artistID] = []map[string]any{
+		{"id": "e2ediscoallsingsng01", "name": "One", "album_group": "single",
+			"release_date": "2021", "release_date_precision": "year"},
+		{"id": "e2ediscoallsingsng02", "name": "Two", "album_group": "single",
+			"release_date": "2022", "release_date_precision": "year"},
+	}
+
+	var got httpapi.ArtistDiscography
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		got = decode[httpapi.ArtistDiscography](t,
+			b.get("/api/artists/"+artistID+"/discography"), http.StatusOK)
+		if got.State == "ready" || got.State == "unavailable" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got.State != "ready" {
+		t.Fatalf("state = %q, want \"ready\": an artist who has only released singles was read "+
+			"successfully, and calling that a failure tells them Spotify would not answer about "+
+			"somebody Spotify answered about at length", got.State)
+	}
+	if got.Coverage.Total != 0 || len(got.Missing) != 0 {
+		t.Fatalf("coverage = %+v with %d missing, want nothing counted", got.Coverage, len(got.Missing))
+	}
+	if got.Excluded.Singles != 2 {
+		t.Fatalf("excluded.singles = %d, want 2", got.Excluded.Singles)
+	}
+}
+
+// TestArtistDiscographyUnavailableIsA200NotAnErrorEnvelope proves the one state
+// whose whole contract is "stop polling" arrives as an ordinary 200 carrying
+// {"state":"unavailable",...} rather than writeError's envelope. Leaving the
+// artist unseeded in stub.artistAlbums is what produces it: the stub answers
+// {"items":null} for any id nobody told it about, which the service records as a
+// failure because there is no such artist as one who has released nothing.
+func TestArtistDiscographyUnavailableIsA200NotAnErrorEnvelope(t *testing.T) {
+	inst := newInstance(t)
+	b := inst.browser()
+	inst.signIn(b)
+	const artistID = "e2ediscounavail000001"
+	inst.seedArtistWithPlays(b, artistID, 1, 0, 1)
+	delete(inst.stub.artistAlbums, artistID)
+
+	var got httpapi.ArtistDiscography
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := b.get("/api/artists/" + artistID + "/discography")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("discography answered %d while the walk was resolving, want 200 throughout every "+
+				"state; body: %s", resp.StatusCode, body)
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode discography: %v; body: %s", err, body)
+		}
+		if got.State == "unavailable" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got.State != "unavailable" {
+		t.Fatalf("state never became unavailable; last was %q", got.State)
+	}
+	if got.Coverage.Total != 0 || len(got.Missing) != 0 {
+		t.Fatalf("coverage = %+v with %d missing, want nothing with no discography ever stored",
+			got.Coverage, len(got.Missing))
+	}
+	if n := inst.stub.artistAlbumCalls(); n != 1 {
+		t.Fatalf("the stub served %d discography requests, want exactly 1: a recorded failure must "+
+			"not be retried inside its fifteen-minute backoff", n)
 	}
 }
