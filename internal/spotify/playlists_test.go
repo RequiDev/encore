@@ -333,6 +333,56 @@ func TestUpdatePlaylistDetailsSendsBothFields(t *testing.T) {
 	}
 }
 
+// TestUpdatePlaylistDescriptionSendsNoName pins the one property this call
+// exists for.
+//
+// A rebuild refreshes the description, because it names the date of the last
+// build and the rebuild has just made it false. It must do that without
+// touching the name: the listener may have renamed the playlist in the Spotify
+// app, Encore never recorded that, and overwriting it would destroy something
+// nothing here could restore.
+//
+// The absence of the key is the assertion. An empty name is not "leave it
+// alone" — Spotify takes it, and the playlist ends up with no name at all.
+//
+// Fails when: "name" is added to the body under any value, including "".
+func TestUpdatePlaylistDescriptionSendsNoName(t *testing.T) {
+	var (
+		gotMethod, gotPath, gotAuth string
+		gotBody                     map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	err := c.UpdatePlaylistDescription(context.Background(), "user-token", "playlist01",
+		"Your 100 most played tracks of all time.")
+	if err != nil {
+		t.Fatalf("UpdatePlaylistDescription: %v", err)
+	}
+
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/v1/playlists/playlist01" {
+		t.Errorf("path = %q, want /v1/playlists/playlist01", gotPath)
+	}
+	if gotAuth != "Bearer user-token" {
+		t.Errorf("authorization = %q, want the listener's own token", gotAuth)
+	}
+	if gotBody["description"] != "Your 100 most played tracks of all time." {
+		t.Errorf("description = %v, want the generated sentence", gotBody["description"])
+	}
+	if name, present := gotBody["name"]; present {
+		t.Errorf("the body carries name = %q; a partial update must omit it entirely, or "+
+			"a name the listener chose in Spotify is overwritten by this call", name)
+	}
+}
+
 // TestSetPlaylistCoverSendsBase64UnderImageJPEG pins the body shape Spotify
 // documents: base64 text, Content-Type image/jpeg, not multipart and not JSON.
 //

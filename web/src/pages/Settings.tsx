@@ -65,10 +65,20 @@ import {
  */
 const STATUS_POLL_MS = 30_000
 
-/** What each mode does, in the words the form uses. */
+/**
+ * What each mode does, in the words the form uses.
+ *
+ * `min_plays` is a threshold rather than a ranking, but the track limit applies
+ * to it exactly as it does to the others — so the hint may not promise
+ * "however many that is", which is a sentence the query does not keep for
+ * anyone whose history clears the limit. It is also the sentence Encore writes
+ * into the playlist's own description ("Up to 50 tracks you played at least 3
+ * times…"), and the form and the account must not disagree about what was
+ * asked for.
+ */
 const MODE_HINTS: Record<PlaylistMode, string> = {
   top: 'The most played tracks of the period.',
-  min_plays: 'Everything that reached a play count, however many that is.',
+  min_plays: 'Whatever reached a play count, up to the track limit.',
   discoveries: 'Tracks you heard for the first time ever in the period.',
   forgotten: 'Played heavily before the period, and not during it.',
 }
@@ -613,7 +623,7 @@ export default function Settings(): ReactElement {
               </Select>
             </Field>
             {playlistMode === 'min_plays' ? (
-              <Field label="Minimum plays" hint="Every track that reached this count.">
+              <Field label="Minimum plays" hint="How many plays a track needs to qualify.">
                 <Input
                   type="number"
                   min={1}
@@ -622,17 +632,26 @@ export default function Settings(): ReactElement {
                   onChange={(event) => setPlaylistMinPlays(event.target.value)}
                 />
               </Field>
-            ) : (
-              <Field label="How many tracks" hint="At most 500.">
-                <Input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={playlistLimit}
-                  onChange={(event) => setPlaylistLimit(event.target.value)}
-                />
-              </Field>
-            )}
+            ) : null}
+            {/*
+              Shown for every mode, min_plays included. The limit is applied to
+              all four of them by the query, so hiding the field here left
+              somebody choosing a threshold under a cap of 100 they could
+              neither see nor change — while the description Encore writes into
+              their Spotify account said "Up to 100 tracks".
+            */}
+            <Field
+              label="How many tracks"
+              hint="At most 500. It caps every mode, so a playlist can hold fewer tracks than qualify."
+            >
+              <Input
+                type="number"
+                min={1}
+                max={500}
+                value={playlistLimit}
+                onChange={(event) => setPlaylistLimit(event.target.value)}
+              />
+            </Field>
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">

@@ -175,10 +175,16 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 	// The name and the description, set in one request. A refusal is recorded
 	// before it is answered, so a test can prove Encore asked and was told no
 	// rather than never asking at all.
+	//
+	// The body is partial, exactly as Spotify's is: the fields are pointers, and
+	// a key that is absent leaves what Spotify holds alone. That distinction is
+	// the whole point — a caller that sends "name": "" is not leaving the name
+	// alone, it is clearing it, and a stub that could not tell the two apart
+	// would let a rebuild wipe a name the listener chose and still pass.
 	mux.HandleFunc("PUT /v1/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name        *string `json:"name"`
+			Description *string `json:"description"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if s.refusePlaylistDetails != 0 {
@@ -189,9 +195,14 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 			}})
 			return
 		}
-		s.playlistDetails[r.PathValue("id")] = playlistDetail{
-			name: body.Name, description: body.Description,
+		held := s.playlistDetails[r.PathValue("id")]
+		if body.Name != nil {
+			held.name = *body.Name
 		}
+		if body.Description != nil {
+			held.description = *body.Description
+		}
+		s.playlistDetails[r.PathValue("id")] = held
 		writeJSON(w, map[string]any{"snapshot_id": "snap"})
 	})
 
@@ -1814,6 +1825,12 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 		}
 	}
 
+	// The listener renames it in the Spotify app. Encore never hears about that
+	// and has no record of it, so a rebuild that wrote its own stored name back
+	// would destroy an edit nothing here could restore — and nobody pressing
+	// "rebuild" asked for anything about the name.
+	inst.stub.playlistDetails[spotifyID] = playlistDetail{name: "Gym"}
+
 	// A rebuild replaces in place: the same playlist, not a second one.
 	id := created["id"].(string)
 	rebuilt := decode[map[string]any](t, b.postJSON("/api/playlists/"+id+"/rebuild", nil), http.StatusOK)
@@ -1831,8 +1848,15 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 	// The description names the date of the last build, so a rebuild that left it
 	// alone would leave a sentence in somebody's Spotify account claiming the
 	// playlist was built on a day it was not.
-	if desc := inst.stub.playlistDetails[spotifyID].description; !strings.Contains(desc, "Built by Encore on") {
-		t.Fatalf("a rebuild did not refresh the description; Spotify holds %q", desc)
+	held := inst.stub.playlistDetails[spotifyID]
+	if !strings.Contains(held.description, "Built by Encore on") {
+		t.Fatalf("a rebuild did not refresh the description; Spotify holds %q", held.description)
+	}
+	// And it refreshed the description *only*. The name is the listener's.
+	if held.name != "Gym" {
+		t.Fatalf("a rebuild changed the playlist's name to %q, want the listener's own "+
+			"%q: Encore overwrote an edit it never recorded and cannot restore",
+			held.name, "Gym")
 	}
 
 	// Listed, and forgetting it leaves Spotify alone.

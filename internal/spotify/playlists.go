@@ -132,6 +132,44 @@ func (c *Client) UpdatePlaylistDetails(
 	return nil
 }
 
+// UpdatePlaylistDescription rewrites a playlist's description and nothing else.
+//
+// PUT /v1/playlists/{id} takes a partial body, so omitting "name" leaves the
+// name Spotify holds exactly as it is. That is the whole reason this exists
+// beside UpdatePlaylistDetails rather than as an argument to it: a rebuild has
+// to refresh the description, because it names the date of the last build and
+// has just been made false, and it must do that without touching a name the
+// listener may have changed in the Spotify app since. Encore never recorded
+// that edit, so overwriting it would destroy something nothing here could
+// restore — and nobody pressing "rebuild" asked for anything about the name.
+//
+// Sending an empty name rather than omitting it is not the same thing: Spotify
+// would take it, and the playlist would lose its name entirely.
+//
+// Interactive, for the reason UpdatePlaylistDetails is: somebody pressed a
+// button and is waiting on the rebuild this belongs to.
+func (c *Client) UpdatePlaylistDescription(
+	ctx context.Context, accessToken, playlistID, description string,
+) error {
+	if accessToken == "" {
+		return fmt.Errorf("update playlist description: no access token")
+	}
+	if playlistID == "" {
+		return fmt.Errorf("update playlist description: no playlist id")
+	}
+	if err := c.do(ctx, request{
+		method:      http.MethodPut,
+		url:         c.endpoint("/v1/playlists/"+playlistID, nil),
+		label:       "update playlist description",
+		bearer:      accessToken,
+		json:        map[string]any{"description": description},
+		interactive: true,
+	}); err != nil {
+		return fmt.Errorf("spotify: update playlist description: %w", err)
+	}
+	return nil
+}
+
 // SetPlaylistCover replaces a playlist's cover image.
 //
 // An empty image is refused here rather than sent. Spotify would answer 400,

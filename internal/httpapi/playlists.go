@@ -182,7 +182,16 @@ func (s *Server) handleRenamePlaylist(w http.ResponseWriter, r *http.Request) {
 	// because one request that sets both is one fewer state to be in.
 	description := playlistDescription(stored.Definition, stored.BuiltAt)
 	if err := s.spotify.UpdatePlaylistDetails(ctx, token, stored.SpotifyID, name, description); err != nil {
-		writeError(w, r, renameError(err))
+		refusal, unknown := renameError(err)
+		if unknown {
+			// The one outcome nobody can reconstruct afterwards. The listener is
+			// told Encore cannot tell what happened; if this were not logged, an
+			// operator asked "why is my playlist called something I did not
+			// choose" would have no record that Encore ever tried.
+			logging.FromContext(ctx).Warn("could not tell whether a rename reached spotify",
+				"playlist", stored.SpotifyID, logging.Err(err))
+		}
+		writeError(w, r, refusal)
 		return
 	}
 
@@ -199,7 +208,10 @@ func (s *Server) handleRenamePlaylist(w http.ResponseWriter, r *http.Request) {
 }
 
 // renameError turns a Spotify refusal into something a person can act on, and
-// every branch states what is true of the playlist afterwards.
+// every branch states what is true of the playlist afterwards. The second
+// return value is whether this is the outcome Encore cannot see through, which
+// is the one — and the only one — worth a log line: the caller is being told
+// that nobody knows what happened to their playlist.
 //
 // The last branch is the one that matters most and is the easiest to get
 // wrong. A transport error means the request may have reached Spotify and the
@@ -207,38 +219,54 @@ func (s *Server) handleRenamePlaylist(w http.ResponseWriter, r *http.Request) {
 // the cautious thing to say and is in fact an unverified claim about somebody
 // else's account. Encore says what it knows, which is nothing, and says that
 // trying again is safe — which is true, because a rename is idempotent.
-func renameError(err error) error {
+//
+// The symmetry matters as much as the caution, which is what the answered-4xx
+// branch is for. "Encore did not get an answer" is a positive assertion about
+// Encore's own state, and for a status it read and branched on it is simply
+// false — it would also send somebody to check a playlist Encore already knows
+// was not renamed, and invite a retry that will fail identically for ever.
+// Admitting ignorance is only the safe answer while it is the true one.
+func renameError(err error) (error, bool) {
 	var paused *spotify.PausedError
 	if errors.As(err, &paused) {
 		return ErrConflictf(
 			"Spotify is rate limiting this instance until %s, so it would not accept the "+
 				"rename. Your listening data is unaffected and the playlist still has the "+
 				"name it had before; try again after that.",
-			paused.Until.UTC().Format(time.RFC3339))
+			paused.Until.UTC().Format(time.RFC3339)), false
 	}
 	if apiErr, ok := spotify.AsAPIError(err); ok {
 		switch {
 		case apiErr.IsForbidden():
 			return ErrForbiddenf(
 				"Spotify refused the rename. The permission may have been revoked; granting " +
-					"it again from Settings restores it. The playlist still has the name it had before.")
+					"it again from Settings restores it. The playlist still has the name it had before."), false
 		case apiErr.StatusCode == http.StatusNotFound:
 			return ErrNotFoundf(
 				"Spotify no longer has that playlist — it may have been deleted from your " +
-					"account. Encore still has the definition, so you can build it again.")
+					"account. Encore still has the definition, so you can build it again."), false
+		case apiErr.StatusCode < http.StatusInternalServerError:
+			// Spotify answered and refused. Which status it chose is nothing a
+			// listener can act on, but "Encore did not get an answer" would be a
+			// false account of what happened — and a 4xx never applied the write,
+			// so the old name is a fact here rather than a guess.
+			return ErrConflictf(
+				"Spotify would not accept the rename and did not say why. The playlist still " +
+					"has the name it had before. If it keeps happening, signing in again from " +
+					"Settings is the usual fix.").WithCause(err), false
 		}
 	}
-	// The cause is attached rather than dropped, and only on this branch. It is
-	// the one where nobody knows what happened, so it is the one where an
-	// operator has nothing else to go on; the three above are fully described by
-	// the sentence they carry. It never reaches the response — writeError sends
-	// Message and logs the chain — and it keeps a caller that simply hung up
+	// A 5xx that outlived the retry budget, or no answer at all. The cause is
+	// attached rather than dropped, and only here: this is the branch where
+	// nobody knows what happened, so it is the one where an operator has nothing
+	// else to go on. It never reaches the response — writeError sends Message
+	// and logs the chain — and it keeps a caller that simply hung up
 	// recognisable as context.Canceled, which writeError answers by writing
 	// nothing at all rather than a 409 nobody is left to read.
 	return ErrConflictf(
 		"Encore did not get an answer from Spotify, so it cannot tell whether the rename " +
 			"went through. Open the playlist in Spotify to check — renaming it again is safe " +
-			"either way.").WithCause(err)
+			"either way.").WithCause(err), true
 }
 
 // handleListPlaylists answers GET /api/playlists.
@@ -308,11 +336,20 @@ func (s *Server) handleRebuildPlaylist(w http.ResponseWriter, r *http.Request) {
 	stored.TrackCount = len(ids)
 	stored.BuiltAt = now
 
-	// The description names the date of the last build, so a rebuild makes the
-	// stored one stale. Refreshed best-effort: the tracks are already replaced
-	// and recorded, and failing a rebuild that succeeded — over a sentence —
-	// would be a worse outcome than a description that is one build behind.
-	if err := s.spotify.UpdatePlaylistDetails(ctx, token, stored.SpotifyID, stored.Name,
+	// The description names the date of the last build, so a rebuild has just
+	// made the stored one false. Refreshed best-effort: the tracks are already
+	// replaced and recorded, and failing a rebuild that succeeded — over a
+	// sentence — would be a worse outcome than a description that is one build
+	// behind.
+	//
+	// The description and nothing else. Nobody pressing "rebuild" asked for
+	// anything about the name, and a listener who renamed this playlist in the
+	// Spotify app has an edit Encore never recorded and could not restore. The
+	// description is different in kind: it is Encore's own sentence, whose only
+	// factual claim this rebuild has just invalidated. Somebody who rewrote
+	// that in Spotify does lose it here, which is the narrower cost of keeping
+	// the sentence true.
+	if err := s.spotify.UpdatePlaylistDescription(ctx, token, stored.SpotifyID,
 		playlistDescription(stored.Definition, now)); err != nil {
 		logging.FromContext(ctx).Warn("could not refresh a rebuilt playlist's description",
 			"playlist", stored.SpotifyID, logging.Err(err))

@@ -267,6 +267,62 @@ func (c frozenClock) Now() time.Time { return c.at }
 
 func (c frozenClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
+// --- log capture ------------------------------------------------------------
+
+// logSink records what the handlers logged.
+//
+// Enabled deliberately drops anything below Info, which is what a deployment
+// does: a record written at Debug is not a trace of anything, because nobody
+// has that level turned on. That is the whole point of capturing at all here.
+type logSink struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (s *logSink) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelInfo
+}
+
+func (s *logSink) Handle(_ context.Context, r slog.Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = append(s.records, r.Clone())
+	return nil
+}
+
+func (s *logSink) WithAttrs([]slog.Attr) slog.Handler { return s }
+
+func (s *logSink) WithGroup(string) slog.Handler { return s }
+
+// find returns the records written under one message.
+func (s *logSink) find(message string) []slog.Record {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []slog.Record
+	for _, r := range s.records {
+		if r.Message == message {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// attr reads one attribute off a record.
+func attr(r slog.Record, key string) (slog.Value, bool) {
+	var (
+		value slog.Value
+		found bool
+	)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			value, found = a.Value, true
+			return false
+		}
+		return true
+	})
+	return value, found
+}
+
 // --- harness ----------------------------------------------------------------
 
 // renameHarness is a server whose playlist repository and Spotify client are
@@ -277,6 +333,8 @@ type renameHarness struct {
 	stub      *renameStub
 	// clock is what the Spotify client reads, so a paused instant is predictable.
 	clock frozenClock
+	// logs is everything the server wrote at Info or above.
+	logs *logSink
 }
 
 // newRenameHarness wires a signed-in listener who has granted the playlist
@@ -315,13 +373,17 @@ func newRenameHarness(t *testing.T, respond http.HandlerFunc) *renameHarness {
 		SyncState:      domain.SyncStateOK,
 	}
 
+	logs := &logSink{}
+	ts.Server.log = slog.New(logs)
 	ts.Server.playlists = playlists
 	ts.Server.spotify = newRenameClient(stub, clock)
 	ts.Server.userToken = func(context.Context, uuid.UUID) (string, error) {
 		return "user-access-token", nil
 	}
 
-	return &renameHarness{testServer: ts, playlists: playlists, stub: stub, clock: clock}
+	return &renameHarness{
+		testServer: ts, playlists: playlists, stub: stub, clock: clock, logs: logs,
+	}
 }
 
 // newRenameClient points the real Spotify client at the stub.
@@ -523,36 +585,139 @@ func TestRenameKeepsTheOldNameWhenSpotifyRefuses(t *testing.T) {
 // Fails when: the transport branch is merged into the refusal branch, or its
 // message gains the words "has not been renamed" / "nothing has changed".
 func TestRenameSaysItCannotTellWhenSpotifyDoesNotAnswer(t *testing.T) {
-	h := newRenameHarness(t, spotifyDropsTheConnection())
-
-	rec := h.rename(t, "Something else")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("PATCH = %d, want 409 (%s)", rec.Code, rec.Body.String())
+	// Both failures leave the same thing unknown. A dropped connection may have
+	// been dropped after Spotify applied the write, and a 5xx that outlived the
+	// retry budget says nothing about how far the request got inside Spotify.
+	cases := map[string]http.HandlerFunc{
+		"the connection dies":                spotifyDropsTheConnection(),
+		"spotify's own server keeps failing": spotifyStatus(http.StatusInternalServerError, "Server error"),
+		"spotify is briefly unavailable":     spotifyStatus(http.StatusServiceUnavailable, "Unavailable"),
 	}
 
-	// The request did arrive. That is precisely why nothing here may say the
-	// playlist was left alone: what was lost is the answer, not the request.
-	if got := h.stub.puts(); got != 1 {
-		t.Fatalf("Spotify received %d requests, want 1: the fixture is not exercising a "+
-			"lost answer at all", got)
-	}
+	for name, respond := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newRenameHarness(t, respond)
 
-	message := messageOf(t, rec)
-	if !strings.Contains(message, "cannot tell whether the rename went through") {
-		t.Errorf("message does not say Encore cannot tell: %q", message)
+			rec := h.rename(t, "Something else")
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("PATCH = %d, want 409 (%s)", rec.Code, rec.Body.String())
+			}
+
+			// The request did arrive. That is precisely why nothing here may say the
+			// playlist was left alone: what was lost is the answer, not the request.
+			if got := h.stub.puts(); got != 1 {
+				t.Fatalf("Spotify received %d requests, want 1: the fixture is not "+
+					"exercising a lost answer at all", got)
+			}
+
+			message := messageOf(t, rec)
+			if !strings.Contains(message, "cannot tell whether the rename went through") {
+				t.Errorf("message does not say Encore cannot tell: %q", message)
+			}
+			for _, claim := range []string{
+				"nothing has changed",
+				"has not been renamed",
+				"still has the name it had before",
+			} {
+				if strings.Contains(strings.ToLower(message), claim) {
+					t.Errorf("message claims %q, which Encore has not confirmed: %q",
+						claim, message)
+				}
+			}
+			if len(h.playlists.renames) != 0 {
+				t.Errorf("Encore recorded a rename it cannot confirm: %+v", h.playlists.renames)
+			}
+		})
 	}
-	for _, claim := range []string{
-		"nothing has changed",
-		"has not been renamed",
-		"still has the name it had before",
+}
+
+// TestRenameDoesNotClaimIgnoranceOfARefusalItRead is the other half of the same
+// rule, and the easier half to miss.
+//
+// "Encore did not get an answer from Spotify" is a positive assertion about
+// Encore's own state. For a status Encore read and branched on it is false, in
+// exactly the way "nothing has changed" is false for a lost answer — it only
+// fails in the flattering direction. It would also send somebody to check a
+// playlist Encore already knows was not renamed, and invite a retry that will
+// fail identically for ever on a 400.
+//
+// Fails when: an answered 4xx falls through to the no-answer branch, which is
+// what happens the moment this case is deleted.
+func TestRenameDoesNotClaimIgnoranceOfARefusalItRead(t *testing.T) {
+	const want = "Spotify would not accept the rename and did not say why. The playlist " +
+		"still has the name it had before. If it keeps happening, signing in again from " +
+		"Settings is the usual fix."
+
+	for _, status := range []int{
+		http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusPaymentRequired,
+		http.StatusConflict,
+		http.StatusUnprocessableEntity,
 	} {
-		if strings.Contains(strings.ToLower(message), claim) {
-			t.Errorf("message claims %q, which Encore has not confirmed: %q", claim, message)
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			h := newRenameHarness(t, spotifyStatus(status, "Refused"))
+
+			rec := h.rename(t, "Something else")
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("PATCH = %d, want 409 (%s)", rec.Code, rec.Body.String())
+			}
+			message := messageOf(t, rec)
+			if strings.Contains(message, "did not get an answer") {
+				t.Errorf("Encore read a %d and then told the caller it got no answer: %q",
+					status, message)
+			}
+			if message != want {
+				t.Errorf("message =\n  %q\nwant\n  %q", message, want)
+			}
+			if len(h.playlists.renames) != 0 {
+				t.Errorf("Encore recorded a rename Spotify refused: %+v", h.playlists.renames)
+			}
+		})
+	}
+}
+
+// TestRenameLogsOnlyTheOutcomeNobodyCanReconstruct keeps the one branch that
+// admits ignorance from being the one branch that leaves no trace.
+//
+// The listener is told nobody knows what happened to their playlist. An
+// operator asked "why is my playlist called something I did not choose" needs
+// to find that Encore tried, which playlist it was, and what came back —
+// writeError logs a sub-500 at Debug, and no deployment runs at Debug.
+//
+// The refusals are deliberately not logged: they are ordinary answers, fully
+// described by the sentence the caller already has.
+//
+// Fails when: the warning is dropped, written below Info, or loses the id.
+func TestRenameLogsOnlyTheOutcomeNobodyCanReconstruct(t *testing.T) {
+	const message = "could not tell whether a rename reached spotify"
+
+	t.Run("no answer", func(t *testing.T) {
+		h := newRenameHarness(t, spotifyDropsTheConnection())
+		h.rename(t, "Something else")
+
+		records := h.logs.find(message)
+		if len(records) != 1 {
+			t.Fatalf("%d records under %q, want 1: the only outcome Encore cannot "+
+				"reconstruct afterwards left no trace at Info or above", len(records), message)
 		}
-	}
-	if len(h.playlists.renames) != 0 {
-		t.Errorf("Encore recorded a rename it cannot confirm: %+v", h.playlists.renames)
-	}
+		if records[0].Level < slog.LevelWarn {
+			t.Errorf("logged at %s, want Warn or above", records[0].Level)
+		}
+		id, ok := attr(records[0], "playlist")
+		if !ok || id.String() != storedSpotifyID {
+			t.Errorf("the record names playlist %v, want %q", id, storedSpotifyID)
+		}
+	})
+
+	t.Run("an answered refusal", func(t *testing.T) {
+		h := newRenameHarness(t, spotifyStatus(http.StatusForbidden, "Insufficient client scope"))
+		h.rename(t, "Something else")
+
+		if records := h.logs.find(message); len(records) != 0 {
+			t.Errorf("%d records under %q for a refusal Spotify explained", len(records), message)
+		}
+	})
 }
 
 // TestRenameReportsASpotifySuccessEncoreCouldNotRecord pins the fourth
@@ -637,6 +802,14 @@ func TestRenameOutcomesDoNotCollapseIntoOneAnother(t *testing.T) {
 			want: "Spotify is rate limiting this instance until 2026-07-26T12:01:00Z, so it " +
 				"would not accept the rename. Your listening data is unaffected and the " +
 				"playlist still has the name it had before; try again after that.",
+		},
+		{
+			name:       "spotify refused without saying why",
+			respond:    spotifyStatus(http.StatusBadRequest, "Bad request"),
+			wantStatus: http.StatusConflict,
+			want: "Spotify would not accept the rename and did not say why. The playlist " +
+				"still has the name it had before. If it keeps happening, signing in again " +
+				"from Settings is the usual fix.",
 		},
 		{
 			name:       "spotify did not answer",

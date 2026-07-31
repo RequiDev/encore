@@ -670,7 +670,7 @@ else.
 | Mode | Selects |
 |---|---|
 | `top` | The `limit` most-played tracks in the range. |
-| `min_plays` | Every track played at least `minPlays` times in the range — not a top-N. |
+| `min_plays` | Tracks played at least `minPlays` times in the range — a threshold rather than a ranking, but `limit` still caps how many are taken, so a playlist can hold fewer tracks than qualify. `matched` is how many did. |
 | `discoveries` | Tracks whose **first ever** listen falls in the range. |
 | `forgotten` | Tracks played heavily *before* the range and not during it. Requires a range. |
 

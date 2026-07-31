@@ -203,8 +203,8 @@ export interface RenamePlaylistRequest {
  */
 export interface PlaylistCover {
   state: 'none' | 'ready' | 'failed' | 'unauthorised'
-  /** `mosaic` or `pattern`. Empty unless `state` is `ready`. */
-  kind: string
+  /** `mosaic` or `pattern`, and empty unless `state` is `ready`. */
+  kind: '' | 'mosaic' | 'pattern'
   /** How many of `total` tiles came from real album artwork. */
   covered: number
   total: number
