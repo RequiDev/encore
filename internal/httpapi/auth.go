@@ -69,17 +69,24 @@ func (s *Server) handleRelink(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthorizePlaylists answers GET /api/auth/spotify/playlists.
 //
-// The same journey as a relink, asking for one extra scope. Encore's default
+// The same journey as a relink, asking for two extra scopes. Encore's default
 // grant is read-only and stays that way for anybody who never uses playlists:
 // demanding write access from every listener on every instance, for a feature
 // most will not touch, would be a poor trade for a statistics application.
+//
+// Both are asked for at once rather than one now and one later. ugc-image-upload
+// can only ever be used on a playlist Encore made, which means it can only ever
+// be used by an account that has already granted playlist-modify-private, so
+// splitting them would buy a second consent screen and no additional safety.
+// Spotify issues a token carrying the union of what was granted, so an account
+// that already holds the first keeps it.
 func (s *Server) handleAuthorizePlaylists(w http.ResponseWriter, r *http.Request) {
 	user, err := requireUser(r)
 	if err != nil {
 		s.redirectWithError(w, r, oauthErrUnauthenticated)
 		return
 	}
-	s.startOAuth(w, r, &user.ID, []string{spotify.ScopePlaylistPrivate})
+	s.startOAuth(w, r, &user.ID, []string{spotify.ScopePlaylistPrivate, spotify.ScopeImageUpload})
 }
 
 // startOAuth mints the state and PKCE verifier, records them, and sends the

@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RequiDev/encore/internal/config"
 )
 
 func TestAuthorizeURL(t *testing.T) {
@@ -44,6 +48,37 @@ func TestAuthorizeURL(t *testing.T) {
 	}
 	if q.Has("client_secret") {
 		t.Error("authorize url carries the client secret")
+	}
+}
+
+// TestAuthorizeURLAddsBothPlaylistWriteScopes pins the consent moment.
+//
+// Fails when: either scope is dropped from handleAuthorizePlaylists' list, or
+// AuthorizeURLWithScopes stops appending extras (the eight read scopes would
+// still be present and a substring check on one of them would still pass).
+func TestAuthorizeURLAddsBothPlaylistWriteScopes(t *testing.T) {
+	c := NewClient(config.Spotify{
+		ClientID: "client-id", RedirectURL: "https://encore.example.com/cb",
+		Scopes: config.DefaultScopes(), AuthBaseURL: "https://accounts.example.com",
+	}, discardLogger())
+
+	got := c.AuthorizeURLWithScopes("state", "challenge",
+		[]string{ScopePlaylistPrivate, ScopeImageUpload})
+
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	scopes := strings.Fields(u.Query().Get("scope"))
+	for _, want := range []string{ScopePlaylistPrivate, ScopeImageUpload} {
+		if !slices.Contains(scopes, want) {
+			t.Errorf("scope %q missing from %v", want, scopes)
+		}
+	}
+	// And it must not have leaked into the sign-in set.
+	if slices.Contains(config.DefaultScopes(), ScopeImageUpload) {
+		t.Error("ugc-image-upload is in DefaultScopes(); the sign-in grant must stay read-only " +
+			"and the reconsent banner must never be able to show a write scope")
 	}
 }
 

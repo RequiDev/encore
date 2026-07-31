@@ -312,3 +312,49 @@ func TestErrorMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestRequestPrefersRawOverJSON pins what happens if a caller ever sets both
+// raw and json on the same request — a state no current caller reaches
+// (UpdatePlaylistDetails sets only json, SetPlaylistCover sets only raw), but
+// one the struct no longer prevents now that it carries three body shapes
+// instead of two. Leaving that combination undefined would let a future
+// caller silently pick whichever shape happened to win, depending on the
+// order of cases inside attempt().
+//
+// raw wins, matching the order it is checked in attempt()'s body and
+// content-type switches: r.form, then r.raw, then r.json. json is entirely
+// ignored, byte for byte and header for header.
+//
+// Fails when: the switches in attempt() are reordered so json is checked
+// before raw, which would make this test observe the JSON body and the
+// application/json content type instead.
+func TestRequestPrefersRawOverJSON(t *testing.T) {
+	var gotType string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	err := c.do(context.Background(), request{
+		method:      http.MethodPut,
+		url:         srv.URL + "/v1/example",
+		label:       "test request with both raw and json set",
+		bearer:      "user-token",
+		raw:         []byte("raw-body"),
+		contentType: "image/jpeg",
+		json:        map[string]any{"this": "must not be sent"},
+	})
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if gotType != "image/jpeg" {
+		t.Errorf("content-type = %q, want image/jpeg (raw must win over json)", gotType)
+	}
+	if string(gotBody) != "raw-body" {
+		t.Errorf("body = %q, want %q (raw must win over json)", gotBody, "raw-body")
+	}
+}

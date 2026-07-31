@@ -235,7 +235,18 @@ type request struct {
 	// bodies only at the accounts service; everything under /v1 that writes takes
 	// JSON.
 	json any
-	out  any
+	// raw is a body sent verbatim under contentType. The playlist cover upload
+	// is the only caller: PUT /v1/playlists/{id}/images takes base64 of a JPEG
+	// under Content-Type: image/jpeg, which is neither of the two shapes above.
+	//
+	// It is []byte rather than an io.Reader on purpose. attempt() runs once per
+	// retry and must build a fresh reader each time; a Reader stored here would
+	// be drained by the first attempt and the second would send an empty body,
+	// which for an endpoint that *replaces* a cover means replacing it with
+	// nothing.
+	raw         []byte
+	contentType string
+	out         any
 	// interactive marks a request a person is waiting on. Those draw on the
 	// sign-in budget rather than the application's catalogue quota, and they
 	// refuse to queue indefinitely.
@@ -313,6 +324,8 @@ func (c *Client) attempt(ctx context.Context, r request) error {
 	switch {
 	case r.form != nil:
 		body = strings.NewReader(r.form.Encode())
+	case r.raw != nil:
+		body = bytes.NewReader(r.raw)
 	case r.json != nil:
 		raw, err := json.Marshal(r.json)
 		if err != nil {
@@ -328,6 +341,8 @@ func (c *Client) attempt(ctx context.Context, r request) error {
 	switch {
 	case r.form != nil:
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	case r.raw != nil:
+		req.Header.Set("Content-Type", r.contentType)
 	case r.json != nil:
 		req.Header.Set("Content-Type", "application/json")
 	}
