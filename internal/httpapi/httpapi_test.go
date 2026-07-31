@@ -268,12 +268,10 @@ type testDeps struct {
 	row domain.NowPlaying
 	// spotifyBase, when set, points the server's Spotify client at a test
 	// server instead of the real API, so a handler that started making
-	// requests of its own would have somewhere for them to land.
+	// requests of its own would have somewhere for them to land. The test
+	// itself owns and reads the counter that server increments; nothing here
+	// needs a second reference to it.
 	spotifyBase string
-	// countSpotify is the counter the test at spotifyBase increments. Kept here
-	// so the intent of the two fields reads together; the test itself reads
-	// the counter directly.
-	countSpotify *int32
 }
 
 // newTestServer builds a server with no database behind it. New itself insists
