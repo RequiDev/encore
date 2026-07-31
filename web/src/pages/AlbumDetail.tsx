@@ -382,7 +382,10 @@ function CompletionFigure({
           ? 'Every track'
           : `${formatCount(completion.heard)} of ${formatCount(completion.total)}`
       }
-      suffix={complete ? undefined : 'tracks'}
+      // Singular when the total is exactly one: "0 of 1 tracks" is wrong in
+      // exactly the way "1 of 1 tracks" would be, and a one-track album is an
+      // ordinary release (a single), not a corner worth ignoring.
+      suffix={complete ? undefined : completion.total === 1 ? 'track' : 'tracks'}
       hint="all time"
     />
   )
