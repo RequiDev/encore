@@ -37,6 +37,51 @@ const (
 	SortByTime PlaylistSort = "time"
 )
 
+// CoverState is what happened the last time Encore tried to give a playlist a
+// cover image.
+type CoverState string
+
+const (
+	// CoverNone means no attempt has been made. Every playlist made before
+	// covers existed is in this state, and stays in it until somebody asks.
+	CoverNone CoverState = "none"
+	// CoverReady means Spotify accepted an uploaded cover.
+	CoverReady CoverState = "ready"
+	// CoverFailed means an attempt was made and did not finish.
+	CoverFailed CoverState = "failed"
+	// CoverUnauthorised means the account has not granted ugc-image-upload.
+	//
+	// Deliberately not CoverFailed. The fix is a trip through Spotify's
+	// consent screen, not a retry, and offering a retry button for it would
+	// invite somebody to press a thing that cannot work.
+	CoverUnauthorised CoverState = "unauthorised"
+)
+
+// CoverTileTotal is how many tiles the mosaic asks for, and so the denominator
+// of every sentence about a cover's coverage.
+//
+// A constant rather than the number of distinct albums in the playlist: "built
+// from 2 of 4 album covers" is the honest report of a grid that wanted four and
+// got two, whereas "2 of 2" would describe a full mosaic that was never built.
+const CoverTileTotal = 4
+
+// PlaylistCover records the outcome of the last cover attempt.
+type PlaylistCover struct {
+	State CoverState
+	// Tiles is how many of CoverTileTotal came from real album artwork. Zero
+	// means the cover is the generated pattern.
+	Tiles int
+	// Error is why the last attempt failed, in the listener's own terms. Empty
+	// in every state but CoverFailed.
+	Error string
+	// At is when State was last written. Zero while State is CoverNone.
+	At time.Time
+}
+
+// Mosaic reports whether the stored cover is built from real artwork rather
+// than being the generated pattern.
+func (c PlaylistCover) Mosaic() bool { return c.State == CoverReady && c.Tiles > 0 }
+
 // Playlist bounds. Spotify's own ceiling is 10,000 items; the lower cap here is
 // about what a playlist stays useful at, and keeps a rebuild to a handful of
 // requests rather than a hundred.
@@ -78,7 +123,12 @@ type Playlist struct {
 	Definition PlaylistDefinition
 	TrackCount int
 	BuiltAt    time.Time
-	CreatedAt  time.Time
+	// Cover is the outcome of the last attempt to give this playlist a picture.
+	// It is not part of the definition: two playlists with the same recipe can
+	// have different covers, because one of them was made when the catalogue
+	// had less artwork in it.
+	Cover     PlaylistCover
+	CreatedAt time.Time
 }
 
 // Valid reports whether m is a mode Encore implements.

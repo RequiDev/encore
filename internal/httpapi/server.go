@@ -131,6 +131,8 @@ type playlistStore interface {
 	Get(ctx context.Context, q store.Querier, userID, id uuid.UUID) (domain.Playlist, error)
 	RecordBuild(ctx context.Context, q store.Querier, id uuid.UUID, trackCount int, at time.Time) error
 	Forget(ctx context.Context, q store.Querier, userID, id uuid.UUID) error
+	Rename(ctx context.Context, q store.Querier, userID, id uuid.UUID, name string) (domain.Playlist, error)
+	SetCover(ctx context.Context, q store.Querier, userID, id uuid.UUID, cover domain.PlaylistCover) error
 }
 
 // shareStore is the sharing repository as this package needs it.
