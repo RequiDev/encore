@@ -359,18 +359,32 @@ func (c *Client) getClass(
 
 // budget picks the limiter a request draws on, and how long it may queue.
 //
-// Total over requestClass by construction: a class added without a case here
-// falls to the catalogue budget, which is the loudest possible failure and
-// therefore the right default for something nobody thought about.
+// Every class is named, and an unnamed one panics rather than falling through to
+// a default. A default is what this function had first, and it was wrong twice
+// over. It handed an unknown class the *shared catalogue* limiter, so one 429 on
+// it paused enrichment, the recently-played poller and all five library
+// enumerations for the whole Retry-After — silently, because instanceWide() is
+// false for it, so nothing was recorded and nothing was logged. And the wait it
+// handed over was unbounded, which directly contradicts that same false: the
+// class refuses to wait a pause out in classify, then blocks in Wait for the
+// whole hour on its next request. It queues behind a decision it just declined
+// to queue behind.
+//
+// Panicking is safe here precisely because requestClass is unexported: only this
+// package can construct one, every request routes through this function, and the
+// package has a test per endpoint. A fourth class that reaches the wire without a
+// budget fails on the first `go test`, which is where that mistake belongs —
+// long before it can quietly adopt the quota that carries everybody else's work.
 func (c *Client) budget(r request) (*Limiter, time.Duration) {
 	switch r.class {
+	case classCatalogue:
+		return c.limiter, 0
 	case classInteractive:
 		return c.signin, signinWait
 	case classNowPlaying:
 		return c.nowPlaying, nowPlayingWait
-	default:
-		return c.limiter, 0
 	}
+	panic(fmt.Sprintf("spotify: request class %d has no budget", r.class))
 }
 
 // do runs a request under the retry policy.

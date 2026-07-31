@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,8 +20,16 @@ import (
 // enrichment, the recently-played poller and all five library enumerations.
 // Exactly one class of request is allowed to cause that.
 //
-// Fails when: instanceWide() is widened to any second class, or classify stops
-// consulting it and goes back to testing a boolean.
+// Fails when: instanceWide() is widened to any second class, narrowed to none,
+// or the onPause guard in classify stops consulting it.
+//
+// Scope, deliberately stated: this pins the *recording* half of instanceWide
+// only — the guard around onPause. classify consults the same predicate a second
+// time at its tail, to decide whether the caller waits the pause out, and that
+// site is invisible here: a class wrongly made to wait still reaches onPause
+// exactly as often. TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt
+// pins that one, via the clock. Neither test covers both, which is why both
+// exist.
 func TestOnlyACatalogueRateLimitPausesTheInstance(t *testing.T) {
 	for name, tc := range map[string]struct {
 		class     requestClass
@@ -64,6 +73,50 @@ func TestOnlyACatalogueRateLimitPausesTheInstance(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAClassWithNoBudgetIsRefusedRatherThanGivenTheSharedOne pins that the
+// fourth request class somebody adds cannot quietly spend everybody else's
+// quota.
+//
+// budget() used to end in `default: return c.limiter, 0`, which read as a
+// conservative fallback and was the opposite. An unnamed class got the *shared
+// catalogue* limiter, so a 429 on it paused enrichment, the recently-played
+// poller and all five library enumerations for the whole Retry-After — while
+// instanceWide() returned false for it, so nothing was recorded, nothing was
+// logged, and no test could see it. The same false also makes classify answer
+// immediately rather than wait, yet the fallback handed out an unbounded wait:
+// the class declined to queue behind its own pause and then queued behind it for
+// an hour.
+//
+// A panic is affordable here in a way it would not be for a caller-supplied
+// value: requestClass is unexported, so only this package can produce one.
+//
+// Fails when: the switch grows a default arm again, whatever it returns.
+func TestAClassWithNoBudgetIsRefusedRatherThanGivenTheSharedOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("budget() answered for a class it does not know; a class with " +
+				"no case must not be handed the catalogue budget every other " +
+				"background request depends on")
+		}
+		if msg, ok := r.(string); !ok || !strings.Contains(msg, "has no budget") {
+			t.Fatalf("panicked with %v, want a message naming the class with no budget", r)
+		}
+	}()
+
+	// 99 stands in for a class added to the const block and forgotten here. It
+	// stays unhandled however many real classes are added later, so this test
+	// does not decay into asserting something about classNowPlaying.
+	c.budget(request{class: requestClass(99)})
 }
 
 // TestNowPlayingRateLimitTouchesNoOtherBudget pins which limiter a 429 on the
@@ -114,10 +167,25 @@ func TestNowPlayingRateLimitTouchesNoOtherBudget(t *testing.T) {
 // The server answers 429 once and 204 for ever after, so a second request that
 // reached it would succeed. It must not reach it.
 //
-// Fails when: classNowPlaying stops getting a bounded wait — the second call
-// then sleeps out the hour instead of answering and the deadline below fires;
-// or the pause lands on a limiter the second call does not consult, in which
-// case the request count is 2.
+// The sleep assertion is what pins the *second* consequence of instanceWide, the
+// one at classify's tail. Both consequences are meant to hang off that single
+// predicate, and until this assertion existed only the onPause half was pinned:
+// reverting the tail to `if r.class == classInteractive` — a literal undo of
+// this task — left the whole suite green. Nothing could see it, because a
+// classNowPlaying retry sleeps on the fake clock (which advances instantly, so
+// no wall-clock deadline notices) and is then stopped by WaitMax before reaching
+// the wire, returning a byte-identical *PausedError. In production that same
+// regression costs a real thirty-second clock.Sleep inside the poller's own
+// goroutine on every 429: across N accounts on a thirty-second tick it parks ~N
+// goroutines in Sleep for the whole rate-limited window, each holding its poll
+// slot into the next tick, with "last checked" permanently half a minute stale.
+//
+// Fails when: the tail of classify stops asking instanceWide and names a class
+// instead — the retry loop then sleeps before answering and slept is non-empty;
+// or classNowPlaying stops getting a bounded wait in budget(), in which case the
+// second call reaches the server, succeeds, and returns nil instead of a
+// *PausedError; or the pause lands on a limiter the second call does not
+// consult, in which case the request count is 2.
 func TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -130,13 +198,18 @@ func TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newTestClient(t, srv, newFakeClock())
+	clock := newFakeClock()
+	c := newTestClient(t, srv, clock)
 
 	if _, err := c.CurrentlyPlaying(context.Background(), "user-token"); err == nil {
 		t.Fatal("the first call: want an error on a 429")
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("the first call made %d requests, want 1", got)
+	}
+	if slept := clock.sleeps(); len(slept) != 0 {
+		t.Fatalf("the first call slept %v before answering; a 429 on a class that "+
+			"does not record an instance-wide pause must answer at once", slept)
 	}
 
 	done := make(chan error, 1)
