@@ -122,6 +122,9 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	// Read-only, and deliberately not behind the write scope: seeing what a
 	// definition selects is how somebody decides whether to grant it.
 	s.route(mux, "POST /api/playlists/preview", s.handlePreviewPlaylist)
+	// A rename writes to the listener's own Spotify account. The id in the path
+	// is Encore's; the Spotify id is read from the stored row, never sent.
+	s.route(mux, "PATCH /api/playlists/{id}", s.handleRenamePlaylist)
 	s.route(mux, "POST /api/playlists/{id}/rebuild", s.handleRebuildPlaylist)
 	s.route(mux, "DELETE /api/playlists/{id}", s.handleForgetPlaylist)
 

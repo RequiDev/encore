@@ -1489,6 +1489,19 @@ func (b CreatePlaylistRequest) definition() (domain.PlaylistDefinition, error) {
 	return def, nil
 }
 
+// RenamePlaylistRequest is the body of PATCH /api/playlists/{id}.
+//
+// Name is a pointer so that an absent field and an empty string are different
+// requests: the first is a malformed call, the second is somebody trying to
+// clear the name, and both must be refused with their own message.
+//
+// There is deliberately no id of any kind here. The Spotify playlist a rename
+// writes to comes from the stored row, looked up by the path id and scoped to
+// the caller, so no field of this body can widen what the endpoint touches.
+type RenamePlaylistRequest struct {
+	Name *string `json:"name"`
+}
+
 // PlaylistTrack is one track a definition selected, and why.
 type PlaylistTrack struct {
 	Rank     int      `json:"rank"`
@@ -1509,6 +1522,28 @@ type PlaylistPreview struct {
 	Limit   int   `json:"limit"`
 }
 
+// PlaylistCover is what happened the last time Encore tried to give this
+// playlist a picture.
+type PlaylistCover struct {
+	// State is "none", "ready", "failed" or "unauthorised". "unauthorised" is
+	// separate from "failed" because the fix is a consent journey rather than a
+	// retry, and a client must not offer the same button for both.
+	State string `json:"state"`
+	// Kind is "mosaic" or "pattern", derived from Covered rather than stored,
+	// so the two can never disagree. Empty unless State is "ready".
+	Kind string `json:"kind"`
+	// Covered and Total are the denominator every partial figure in Encore
+	// carries. Total is always 4: the grid asks for four tiles however many
+	// distinct albums the playlist happens to contain.
+	Covered int `json:"covered"`
+	Total   int `json:"total"`
+	// Reason is why the last attempt failed, in the listener's own terms.
+	// Empty unless State is "failed".
+	Reason string `json:"reason"`
+	// At is when State was last written. Null while State is "none".
+	At *time.Time `json:"at"`
+}
+
 // Playlist is one managed playlist as its owner sees it.
 type Playlist struct {
 	ID         string     `json:"id"`
@@ -1525,9 +1560,14 @@ type Playlist struct {
 	// Matched is how many tracks met the criteria before the limit applied.
 	// Present only on the response that built the playlist, since it is a fact
 	// about that build rather than about the definition.
-	Matched   int64      `json:"matched,omitempty"`
-	BuiltAt   *time.Time `json:"builtAt"`
-	CreatedAt time.Time  `json:"createdAt"`
+	Matched int64      `json:"matched,omitempty"`
+	BuiltAt *time.Time `json:"builtAt"`
+	// Cover is the outcome of the last attempt to give this playlist a picture.
+	// Always present: "none" is a real answer, and an absent block would leave a
+	// client unable to tell a playlist nobody has asked about from one whose
+	// state failed to serialise.
+	Cover     PlaylistCover `json:"cover"`
+	CreatedAt time.Time     `json:"createdAt"`
 }
 
 func toPlaylist(p domain.Playlist) Playlist {
@@ -1554,6 +1594,22 @@ func toPlaylist(p domain.Playlist) Playlist {
 	if !p.BuiltAt.IsZero() {
 		built := p.BuiltAt.UTC()
 		out.BuiltAt = &built
+	}
+	out.Cover = PlaylistCover{
+		State:   string(p.Cover.State),
+		Covered: p.Cover.Tiles,
+		Total:   domain.CoverTileTotal,
+		Reason:  p.Cover.Error,
+	}
+	if p.Cover.State == domain.CoverReady {
+		out.Cover.Kind = "pattern"
+		if p.Cover.Mosaic() {
+			out.Cover.Kind = "mosaic"
+		}
+	}
+	if !p.Cover.At.IsZero() {
+		at := p.Cover.At.UTC()
+		out.Cover.At = &at
 	}
 	return out
 }

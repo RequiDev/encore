@@ -59,6 +59,14 @@ type spotifyStub struct {
 	// on the tracks rather than only on the response.
 	playlistItems map[string][]string
 	playlistCalls int
+	// playlistDetails is the name and description Spotify holds for each
+	// playlist. A rename is the one thing Encore changes about an object the
+	// listener already had, so a test needs to see what actually reached the
+	// account rather than only what Encore said afterwards.
+	playlistDetails map[string]playlistDetail
+	// refusePlaylistDetails, when non-zero, is the status PUT /v1/playlists/{id}
+	// answers with instead of accepting the change.
+	refusePlaylistDetails int
 
 	// albumTracks is what GET /v1/albums/{id}/tracks answers for one album,
 	// keyed by id. A test sets it directly rather than driving pagination,
@@ -83,14 +91,21 @@ type spotifyStub struct {
 	artistAlbumReqs atomic.Int64
 }
 
+// playlistDetail is what Spotify holds under a playlist's name.
+type playlistDetail struct {
+	name        string
+	description string
+}
+
 func newSpotifyStub(t *testing.T) *spotifyStub {
 	t.Helper()
 	s := &spotifyStub{
-		profile:       meProfile("listener-one", "Listener One"),
-		grantedScopes: config.DefaultScopes(),
-		playlistItems: map[string][]string{},
-		albumTracks:   map[string][]map[string]any{},
-		artistAlbums:  map[string][]map[string]any{},
+		profile:         meProfile("listener-one", "Listener One"),
+		grantedScopes:   config.DefaultScopes(),
+		playlistItems:   map[string][]string{},
+		playlistDetails: map[string]playlistDetail{},
+		albumTracks:     map[string][]map[string]any{},
+		artistAlbums:    map[string][]map[string]any{},
 	}
 	mux := http.NewServeMux()
 
@@ -156,6 +171,29 @@ func newSpotifyStub(t *testing.T) *spotifyStub {
 	}
 	mux.HandleFunc("PUT /v1/playlists/{id}/tracks", playlistTracks)
 	mux.HandleFunc("POST /v1/playlists/{id}/tracks", playlistTracks)
+
+	// The name and the description, set in one request. A refusal is recorded
+	// before it is answered, so a test can prove Encore asked and was told no
+	// rather than never asking at all.
+	mux.HandleFunc("PUT /v1/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if s.refusePlaylistDetails != 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(s.refusePlaylistDetails)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"status": s.refusePlaylistDetails, "message": "Refused",
+			}})
+			return
+		}
+		s.playlistDetails[r.PathValue("id")] = playlistDetail{
+			name: body.Name, description: body.Description,
+		}
+		writeJSON(w, map[string]any{"snapshot_id": "snap"})
+	})
 
 	mux.HandleFunc("/v1/me/player/recently-played", func(w http.ResponseWriter, r *http.Request) {
 		items := s.plays
@@ -1790,6 +1828,12 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 		t.Fatalf("after a rebuild the playlist holds %d uris, want 2 — the replace did not "+
 			"clear the previous contents", len(inst.stub.playlistItems[spotifyID]))
 	}
+	// The description names the date of the last build, so a rebuild that left it
+	// alone would leave a sentence in somebody's Spotify account claiming the
+	// playlist was built on a day it was not.
+	if desc := inst.stub.playlistDetails[spotifyID].description; !strings.Contains(desc, "Built by Encore on") {
+		t.Fatalf("a rebuild did not refresh the description; Spotify holds %q", desc)
+	}
 
 	// Listed, and forgetting it leaves Spotify alone.
 	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
@@ -1803,6 +1847,81 @@ func TestPlaylistIsCreatedAndRebuiltInPlace(t *testing.T) {
 	}
 	if _, gone := inst.stub.playlistItems[spotifyID]; !gone {
 		t.Fatal("forgetting a playlist deleted it from Spotify; it belongs to the listener")
+	}
+}
+
+// TestPlaylistRenameGoesToSpotifyFirst is the ordering, end to end and against
+// a real row.
+//
+// This is the only thing Encore changes about an object a listener already had,
+// and the unit tests for it run against a fake repository. Here the row is real,
+// so "the local row was not written" is read back out of Postgres through the
+// API rather than asserted against a double.
+func TestPlaylistRenameGoesToSpotifyFirst(t *testing.T) {
+	inst := newInstance(t)
+	inst.stub.grantedScopes = append(config.DefaultScopes(), "playlist-modify-private")
+	b := inst.browser()
+	inst.signIn(b)
+
+	seedPlays(t, inst, b, map[string]int{
+		"pl000000000000000011a": 5,
+		"pl000000000000000012b": 3,
+	})
+
+	created := decode[map[string]any](t, b.postJSON("/api/playlists", map[string]any{
+		"name": "Heavy rotation", "mode": "top", "limit": 10,
+	}), http.StatusCreated)
+	id, _ := created["id"].(string)
+	spotifyID, _ := created["spotifyId"].(string)
+	if id == "" || spotifyID == "" {
+		t.Fatalf("the playlist has no ids to rename: %v", created)
+	}
+
+	renamed := decode[map[string]any](t, b.patchJSON("/api/playlists/"+id, map[string]any{
+		"name": "Quiet hours",
+	}), http.StatusOK)
+	if renamed["name"] != "Quiet hours" {
+		t.Fatalf("the response is still called %v, want the new name", renamed["name"])
+	}
+	if renamed["spotifyId"] != spotifyID {
+		t.Fatalf("a rename changed the Spotify playlist to %v, want the same one",
+			renamed["spotifyId"])
+	}
+
+	held := inst.stub.playlistDetails[spotifyID]
+	if held.name != "Quiet hours" {
+		t.Fatalf("Spotify holds the name %q, want %q: Encore recorded a rename the "+
+			"account never got", held.name, "Quiet hours")
+	}
+	if !strings.Contains(held.description, "Built by Encore on") {
+		t.Fatalf("the description was not rewritten alongside the name: %q", held.description)
+	}
+
+	// Now Spotify refuses. The answer must say the old name still stands, and
+	// the stored row must not have moved — read back through the API, out of the
+	// database rather than out of a fake.
+	inst.stub.refusePlaylistDetails = http.StatusForbidden
+	resp := b.patchJSON("/api/playlists/"+id, map[string]any{"name": "Something else"})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a refused rename returned %d, want 403: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "still has the name it had before") {
+		t.Fatalf("the refusal does not say what the playlist is called now: %s", body)
+	}
+
+	list := decode[[]map[string]any](t, b.get("/api/playlists"), http.StatusOK)
+	if len(list) != 1 {
+		t.Fatalf("%d playlists listed, want 1", len(list))
+	}
+	if list[0]["name"] != "Quiet hours" {
+		t.Fatalf("the stored name is now %v, want %q: Encore recorded a rename Spotify "+
+			"refused", list[0]["name"], "Quiet hours")
+	}
+	if inst.stub.playlistDetails[spotifyID].name != "Quiet hours" {
+		t.Fatalf("Spotify's own name changed to %q despite refusing the request",
+			inst.stub.playlistDetails[spotifyID].name)
 	}
 }
 

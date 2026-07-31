@@ -649,15 +649,18 @@ Responses carry `X-Robots-Tag: noindex, nofollow, noarchive`.
 
 ## Playlists
 
-Builds a Spotify playlist from the caller's own listening. Requires the
-`playlist-modify-private` scope, which Encore asks for **only when somebody uses
-this feature** — the sign-in grant stays read-only for everyone else.
+Builds a Spotify playlist from the caller's own listening, and keeps its name,
+description and cover in step. Requires `playlist-modify-private`, and
+`ugc-image-upload` for the cover — Encore asks for both at once and **only when
+somebody uses this feature**, so the sign-in grant stays read-only for everyone
+else.
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/auth/spotify/playlists` | Starts an OAuth journey asking for one extra scope. A browser redirect, like relink. |
 | `GET` | `/api/playlists` | The caller's managed playlists. |
 | `POST` | `/api/playlists` | `{ "name", "mode", "sort", "limit", "minPlays", "from", "to" }`. Creates it on Spotify and fills it in one request. `403` when the scope has not been granted, with a message naming the fix; `400` when the definition matches nothing. |
+| `PATCH` | `/api/playlists/{id}` | `{ "name" }`. Renames it **on Spotify first**, then records it here, and rewrites the description from the stored definition in the same request. `403` when the scope has been revoked; `404` when Spotify no longer has the playlist; `409` when Spotify is rate limiting, when Encore got no answer at all, or when Spotify accepted the rename and Encore could not record it — each with its own message saying what is true of the playlist afterwards. A rename is idempotent, so retrying is always safe. |
 | `POST` | `/api/playlists/preview` | The same body. Returns the tracks a definition **would** select — ranked, named, with the plays that qualified each — plus `matched` and `limit`. Touches Spotify not at all and **does not require the write scope**: seeing the selection is how somebody decides whether to grant it. |
 | `POST` | `/api/playlists/{id}/rebuild` | Re-runs the stored definition and replaces the contents in place, keeping the same Spotify playlist. |
 | `DELETE` | `/api/playlists/{id}` | Encore stops managing it. **The playlist stays in the listener's Spotify library.** |
@@ -675,6 +678,14 @@ this feature** — the sign-in grant stays read-only for everyone else.
 history, except for `forgotten`, which has nothing to be absent from without one.
 
 The blacklist applies: a hidden artist's tracks never reach a playlist.
+
+Every playlist carries a `cover` block: `state` is `none`, `ready`, `failed` or
+`unauthorised`; `kind` is `mosaic` or `pattern` and is empty unless the state is
+`ready`; `covered` of `total` says how many of the four tiles came from real
+album artwork; `reason` is why the last attempt failed; `at` is when the state
+was last written, and is null while it is `none`. `unauthorised` is deliberately
+not `failed` — the fix is a consent journey rather than a retry, so a client must
+not offer the same button for both.
 
 ### Entity statistics
 
