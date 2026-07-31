@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RequiDev/encore/internal/logging"
 )
 
 const (
@@ -144,8 +146,15 @@ func (f *Fetcher) Fetch(ctx context.Context, urls [Tiles]string) [Tiles]image.Im
 			defer wg.Done()
 			// A decoder panicking on a hostile image must cost this tile, not
 			// the process: this goroutine has no caller to recover on its
-			// behalf, and the default is to take the whole server down.
-			defer func() { _ = recover() }()
+			// behalf, and the default is to take the whole server down. Logged
+			// rather than swallowed bare — an operator seeing a mosaic with a
+			// tile silently missing has nothing else to tell them why.
+			defer func() {
+				if p := recover(); p != nil {
+					logging.FromContext(ctx).Error("recovered from a panic decoding playlist cover artwork",
+						"panic", fmt.Sprint(p))
+				}
+			}()
 			// Written to its own index, never appended, so a neighbour's
 			// failure cannot shift the mosaic and put a different picture on
 			// the same playlist at the next rebuild.

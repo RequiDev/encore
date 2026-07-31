@@ -739,8 +739,8 @@ func TestRenameReportsASpotifySuccessEncoreCouldNotRecord(t *testing.T) {
 	// Read before the status, because the sentence is the specific defect: a bare
 	// return answers 500 with the vague internal message, which names neither
 	// system and leaves a listener believing the rename did not happen.
-	const want = "Spotify has the new name, but Encore could not record it. " +
-		"The playlist itself is correct; reload this page to see the current state."
+	const want = "Spotify has the new name, but Encore could not record it, so this page " +
+		"still shows the old one. Renaming it again to the same name is safe and will fix that."
 	got := messageOf(t, rec)
 	if got == vagueInternalMessage {
 		t.Fatal("the store failure was returned bare: the answer names neither system, " +
@@ -826,8 +826,8 @@ func TestRenameOutcomesDoNotCollapseIntoOneAnother(t *testing.T) {
 			name:       "spotify accepted and encore could not record it",
 			storeFails: true,
 			wantStatus: http.StatusConflict,
-			want: "Spotify has the new name, but Encore could not record it. The playlist " +
-				"itself is correct; reload this page to see the current state.",
+			want: "Spotify has the new name, but Encore could not record it, so this page " +
+				"still shows the old one. Renaming it again to the same name is safe and will fix that.",
 		},
 	}
 

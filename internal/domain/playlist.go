@@ -208,8 +208,7 @@ func (d PlaylistDefinition) Range(now, firstListen time.Time) TimeRange {
 // It is meant to be regenerated on every rename and every rebuild, and never
 // on a schedule — the same rule migrations/00009_playlists.sql states for the
 // tracks. A playlist that changed under its owner would be worse than one that
-// is merely out of date. Today only creation calls it; wiring rebuild and
-// rename to do the same is a later task in this phase.
+// is merely out of date. Creation, rebuild and rename all call it now.
 //
 // Every branch is written out rather than assembled from interchangeable
 // fragments. This is the only prose Encore writes into somebody else's Spotify

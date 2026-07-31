@@ -209,8 +209,8 @@ func (s *Server) handleRenamePlaylist(w http.ResponseWriter, r *http.Request) {
 		logging.FromContext(ctx).Error("spotify accepted a rename that could not be recorded",
 			"playlist", stored.SpotifyID, logging.Err(err))
 		writeError(w, r, ErrConflictf(
-			"Spotify has the new name, but Encore could not record it. "+
-				"The playlist itself is correct; reload this page to see the current state."))
+			"Spotify has the new name, but Encore could not record it, so this page still "+
+				"shows the old one. Renaming it again to the same name is safe and will fix that."))
 		return
 	}
 	writeJSON(w, r, http.StatusOK, toPlaylist(updated))
