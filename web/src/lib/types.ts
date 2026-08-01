@@ -538,6 +538,14 @@ export interface PlaylistContextEntry {
  * exception to that lineage — `context_type`/`context_id` are written only by
  * live sync, never by any Spotify export — so that coverage is independent of,
  * and typically disjoint from, the other six figures here.
+ *
+ * `devices` and `deviceCoverage` have the opposite lineage from the export-only
+ * figures beside them: `listens.device_type` is filled by the now-playing
+ * poller's backfill and by nothing else, so an import-only instance reads zero
+ * there for ever while `platforms` reads normally. They are separate figures on
+ * purpose — `platform` is an export's free text, `device_type` is Spotify
+ * Connect's own vocabulary, and merging them would count two incompatible
+ * answers as one.
  */
 export interface PlaybackContextResponse {
   endReasons: ContextSlice[]
@@ -546,6 +554,8 @@ export interface PlaybackContextResponse {
   shuffleRate: Rate
   platforms: ContextSlice[]
   platformCoverage: Coverage
+  devices: ContextSlice[]
+  deviceCoverage: Coverage
   countries: ContextSlice[]
   countryCoverage: Coverage
   offlineRate: Rate

@@ -68,6 +68,8 @@ function contextPayload(overrides: Partial<PlaybackContextResponse> = {}): Playb
     shuffleRate: zeroRate,
     platforms: [],
     platformCoverage: zeroCoverage,
+    devices: [],
+    deviceCoverage: zeroCoverage,
     countries: [],
     countryCoverage: zeroCoverage,
     offlineRate: zeroRate,

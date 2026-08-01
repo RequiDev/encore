@@ -1051,6 +1051,13 @@ type PlaylistContextEntryResponse struct {
 // to that rule: context_type and context_id are written only by live sync, so
 // their coverage is independent of — and typically disjoint from — the six
 // export-derived figures above.
+//
+// Devices and DeviceCoverage are the second exception, and have the opposite
+// lineage from Playlists: device_type is written by the now-playing poller's
+// backfill, never by any export. It is deliberately a separate figure from
+// Platforms rather than folded into it — platform holds an export's free text
+// and device_type holds Spotify Connect's own vocabulary, and a client that
+// merged them would be counting two incompatible answers as one.
 type PlaybackContextResponse struct {
 	EndReasons        []ContextSliceEntry `json:"endReasons"`
 	EndReasonCoverage CoverageResponse    `json:"endReasonCoverage"`
@@ -1058,6 +1065,8 @@ type PlaybackContextResponse struct {
 	ShuffleRate       RateResponse        `json:"shuffleRate"`
 	Platforms         []ContextSliceEntry `json:"platforms"`
 	PlatformCoverage  CoverageResponse    `json:"platformCoverage"`
+	Devices           []ContextSliceEntry `json:"devices"`
+	DeviceCoverage    CoverageResponse    `json:"deviceCoverage"`
 	Countries         []ContextSliceEntry `json:"countries"`
 	CountryCoverage   CoverageResponse    `json:"countryCoverage"`
 	OfflineRate       RateResponse        `json:"offlineRate"`
@@ -1116,6 +1125,8 @@ func toPlaybackContext(c stats.PlaybackContext) PlaybackContextResponse {
 		ShuffleRate:       toRate(c.ShuffleRate, c.ShuffleCoverage),
 		Platforms:         toContextSlices(c.Platforms),
 		PlatformCoverage:  toCoverage(c.PlatformCoverage),
+		Devices:           toContextSlices(c.Devices),
+		DeviceCoverage:    toCoverage(c.DeviceCoverage),
 		Countries:         toContextSlices(c.Countries),
 		CountryCoverage:   toCoverage(c.CountryCoverage),
 		OfflineRate:       toRate(c.OfflineRate, c.OfflineCoverage),
