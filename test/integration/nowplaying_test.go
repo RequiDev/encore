@@ -349,18 +349,21 @@ func forbiddenResponse() *fakeNowPlayingAPI {
 // newWatcher builds a watcher over the harness's real repositories and the
 // supplied fake Spotify.
 //
-// NowPlaying is e.Accounts.NowPlaying and nothing else is passed: the Deps this
-// takes have no field that could reach listens, the catalogue or the credentials
-// repository, which is the same guarantee internal/nowplaying's import-graph
-// test states from the other direction.
+// NowPlaying composes e.Accounts.NowPlaying and e.Accounts.PlaybackObservations
+// and nothing else: the Deps this takes have no field that could reach listens,
+// the catalogue or the credentials repository, which is the same guarantee
+// internal/nowplaying's import-graph test states from the other direction.
 func newWatcher(t *testing.T, e *harness.Env, api nowplaying.SpotifyAPI) *nowplaying.Watcher {
 	t.Helper()
 	w, err := nowplaying.New(config.NowPlaying{Interval: 30 * time.Second}, nowplaying.Deps{
-		Store:      e.Store,
-		NowPlaying: e.Accounts.NowPlaying,
-		Spotify:    api,
-		Tokens:     fakeNowPlayingTokens{},
-		Logger:     harness.Discard(),
+		Store: e.Store,
+		NowPlaying: nowplaying.Store{
+			NowPlaying:   e.Accounts.NowPlaying,
+			Observations: e.Accounts.PlaybackObservations,
+		},
+		Spotify: api,
+		Tokens:  fakeNowPlayingTokens{},
+		Logger:  harness.Discard(),
 	})
 	if err != nil {
 		t.Fatalf("build now-playing watcher: %v", err)
@@ -782,5 +785,132 @@ func TestListDueRespectsItsLimit(t *testing.T) {
 	}
 	if len(due) != 2 {
 		t.Fatalf("due = %d accounts, want 2", len(due))
+	}
+}
+
+// TestAPollLogsAnObservationTheBackfillCanRead is the end-to-end half: what the
+// poller writes must be exactly what the join later probes for.
+//
+// The device name fixture is "x" followed by four hundred repeats of "é"
+// (two bytes each in UTF-8), not four hundred repeats alone. observationTextLimit
+// is 100, an even number, and "é" is exactly two bytes; cutting an
+// unprefixed run of them at byte 100 always lands on a rune boundary, so a
+// naive byte slice and store.Truncate's rune-safe one would produce the exact
+// same bytes and this test would pass either way. The single leading ASCII
+// byte shifts every later boundary by one, so byte offset 100 falls inside the
+// second byte of a rune instead of before it — the same fix
+// TestNowPlayingTextIsTruncatedRuneSafely above uses against the same class of
+// coincidence.
+//
+// Fails when: Log stops truncating and a long device name overflows the column;
+// the observation's instant stops being the check's instant, so the window in
+// backfill.go can no longer contain it; or shuffle is written as a value rather
+// than a pointer, at which point the unknown case below reads false.
+func TestAPollLogsAnObservationTheBackfillCanRead(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("np-log")
+	at := time.Date(2026, time.August, 1, 20, 0, 0, 0, time.UTC)
+	yes := true
+	longName := "x" + strings.Repeat("é", 400)
+
+	if err := e.Accounts.PlaybackObservations.Log(e.Ctx(), e.Store.DB(), user.ID,
+		domain.PlaybackObservation{
+			TrackID: "spotifytrack00000001", ObservedAt: at, Shuffle: &yes,
+			DeviceType: "Speaker", DeviceName: longName,
+		}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+
+	var (
+		gotShuffle *bool
+		gotType    string
+		gotName    string
+	)
+	if err := e.Store.DB().QueryRow(e.Ctx(),
+		`SELECT shuffle, device_type, device_name FROM playback_observations
+          WHERE user_id = $1 AND track_id = $2 AND observed_at = $3`,
+		user.ID.String(), "spotifytrack00000001", at,
+	).Scan(&gotShuffle, &gotType, &gotName); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if gotShuffle == nil || !*gotShuffle {
+		t.Errorf("shuffle = %v, want true", gotShuffle)
+	}
+	if gotType != "Speaker" {
+		t.Errorf("device_type = %q, want Speaker", gotType)
+	}
+	if !utf8.ValidString(gotName) {
+		t.Error("device_name is not valid UTF-8; store.Truncate cut through a rune")
+	}
+	if len([]rune(gotName)) >= len([]rune(longName)) {
+		t.Errorf("device_name kept %d of %d runes; it was not truncated at all",
+			len([]rune(gotName)), len([]rune(longName)))
+	}
+
+	// Logging the same instant twice is a duplicate, not a second observation.
+	if err := e.Accounts.PlaybackObservations.Log(e.Ctx(), e.Store.DB(), user.ID,
+		domain.PlaybackObservation{
+			TrackID: "spotifytrack00000001", ObservedAt: at, Shuffle: &yes, DeviceType: "Speaker",
+		}); err != nil {
+		t.Fatalf("Log again: %v", err)
+	}
+	if n := e.ScalarInt(`SELECT count(*) FROM playback_observations WHERE user_id = $1`,
+		user.ID.String()); n != 1 {
+		t.Errorf("%d observations after logging the same instant twice, want 1", n)
+	}
+}
+
+// TestAnUnreportedShuffleStateStaysNullNotFalse pins the column's whole reason
+// for existing: NULL and false are different facts, and the write path must
+// keep them apart the same way listens.shuffle does (see 00005).
+//
+// Fails when: Log dereferences o.Shuffle to a plain bool instead of passing the
+// pointer through — the column then reads false for every unreported shuffle
+// state, and Task 3's backfill would teach every one of those listens that
+// shuffle was off when Encore never actually knew.
+func TestAnUnreportedShuffleStateStaysNullNotFalse(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("np-log-noshuffle")
+	at := time.Date(2026, time.August, 1, 20, 5, 0, 0, time.UTC)
+
+	if err := e.Accounts.PlaybackObservations.Log(e.Ctx(), e.Store.DB(), user.ID,
+		domain.PlaybackObservation{
+			TrackID: "spotifytrack00000002", ObservedAt: at, DeviceType: "Speaker",
+		}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+
+	var gotShuffle *bool
+	if err := e.Store.DB().QueryRow(e.Ctx(),
+		`SELECT shuffle FROM playback_observations WHERE user_id = $1 AND track_id = $2 AND observed_at = $3`,
+		user.ID.String(), "spotifytrack00000002", at,
+	).Scan(&gotShuffle); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if gotShuffle != nil {
+		t.Errorf("shuffle = %v, want NULL: an unreported toggle must never be recorded as false", *gotShuffle)
+	}
+}
+
+// TestAnObservationThatKnowsNothingIsRefusedByTheDatabase pins the backstop
+// behind logEntry's own guard.
+//
+// logEntry declines to build one; this proves the storage layer would refuse it
+// anyway, so removing that guard is a loud failure rather than a table quietly
+// filling with rows that teach nothing.
+//
+// Fails when: playback_observations_says_something is dropped from 00018 — the
+// insert then succeeds and the error below is nil.
+func TestAnObservationThatKnowsNothingIsRefusedByTheDatabase(t *testing.T) {
+	e := harness.New(t)
+	user := e.NewUser("np-silent")
+
+	err := e.Accounts.PlaybackObservations.Log(e.Ctx(), e.Store.DB(), user.ID,
+		domain.PlaybackObservation{
+			TrackID:    "spotifytrack00000001",
+			ObservedAt: time.Date(2026, time.August, 1, 20, 0, 0, 0, time.UTC),
+		})
+	if err == nil {
+		t.Fatal("an observation with neither a shuffle state nor a device type was stored")
 	}
 }
