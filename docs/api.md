@@ -193,7 +193,7 @@ history are never opened, and enumerating them all would spend the instance's qu
 nobody asked.
 
 It is one of two Spotify requests `encore-api` makes that nobody clicked for — the other is the
-discography walk below (`GET /api/artists/{id}/discography`) — it fires as a side effect of
+discography walk below (`GET /api/artists/{id}/discography`) — and it fires as a side effect of
 *viewing* a page, so an operator can switch it off with `ENCORE_ALBUM_TRACKS_ENABLED=false`. This
 endpoint still answers when they have.
 

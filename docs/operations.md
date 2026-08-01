@@ -218,21 +218,24 @@ complete. It is worth pointing people there before they go restarting containers
 
 **Signing in keeps working throughout.** Authentication draws on a rate budget of its own, and the
 token exchange does not even use the same Spotify service — it is `accounts.spotify.com`, which never
-rate limited anything. A quota exhausted by enrichment on `api.spotify.com` has no bearing on it — so
-does the optional now-playing poller, for the same reason and in both directions: nothing a
-background loop does may take authentication offline, and the least important request Encore makes
-must not be able to stop the rest. Only these are held back by a pause:
+rate limited anything. A quota exhausted by enrichment on `api.spotify.com` has no bearing on it. The
+optional now-playing poller has a budget of its own for the same reason, and the reasoning runs both
+ways: nothing a background loop does may take authentication offline, and the least important request
+Encore makes must not be able to stop everything else. Only these are held back by a pause:
 
 | Held back | Unaffected |
 |---|---|
 | Metadata enrichment: names, artwork, genres | Signing in and existing sessions |
 | Background recently-played polling | Imports, and every statistic, chart and export |
 | A manual **Sync now**, which is refused with an explanation rather than left to hang | Everything already in the database |
-| Now-playing checks | Everything else, including signing in, syncing and enrichment |
+| The daily library enumeration: saved tracks, saved albums, followed artists, top items, playlists | Now-playing checks, and the token refreshes behind them |
 
-And the reverse holds too: a catalogue 429 (enrichment, an album page, an artist page) leaves the
-now-playing poller running. The two draw on separate budgets, so a pause on either lists the other
-under **Unaffected** — an isolation that is only worth as much as stating it both ways.
+The two columns are two independent lists, not pairs. Now-playing checks appear on the right because
+a catalogue 429 (enrichment, an album page, an artist page) leaves that poller running, and the
+reverse holds too: a 429 on a now-playing check pauses that loop alone, records nothing, and never
+409s **Sync now** for anybody. Both of its requests are on that budget — the poll, and the token
+refresh in front of it — which is what makes the isolation hold in both directions rather than in
+one.
 
 Listening data is never affected; only the names, artwork and genres are. What to do:
 
