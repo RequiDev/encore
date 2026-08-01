@@ -311,15 +311,17 @@ func run() error {
 	return nil
 }
 
-// reapInterval is how often expired sessions and OAuth states are deleted.
+// reapInterval is how often expired sessions, OAuth states and playback
+// observations are deleted.
 //
-// Neither is a security boundary: both carry an expiry column and every read
-// filters on it, so an expired row is already unusable. This is disk hygiene,
-// and a few minutes is far more often than it needs to be for two indexed
-// deletes.
+// None is a security boundary: each carries an expiry or an age column and
+// every read filters on it, so an expired row is already unusable. This is
+// disk hygiene, and a few minutes is far more often than it needs to be for
+// three indexed deletes.
 const reapInterval = 5 * time.Minute
 
-// reaper deletes expired sessions and OAuth states until ctx is cancelled.
+// reaper deletes expired sessions, OAuth states and playback observations
+// until ctx is cancelled.
 func reaper(db *store.Store, repo *accounts.Repo, lg *slog.Logger) func(context.Context) error {
 	log := lg.With("component", "reaper")
 

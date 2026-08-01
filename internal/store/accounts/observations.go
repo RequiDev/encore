@@ -33,8 +33,8 @@ const observationTextLimit = 100
 // and read by the backfill in internal/store/listens.
 //
 // It holds nothing that can create a listen. That is not incidental — the
-// poller reaches this type through a three-method interface precisely so that
-// its dependency closure never acquires anything that writes to listens.
+// poller reaches this type through a narrow interface precisely so that its
+// dependency closure never acquires anything that writes to listens.
 type PlaybackObservations struct{ db *store.Store }
 
 // NewPlaybackObservations builds the repository.
