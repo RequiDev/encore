@@ -1046,11 +1046,16 @@ type PlaylistContextEntryResponse struct {
 // PlaybackContextResponse is the whole "how you listen" payload.
 //
 // Every rate carries its own denominator because the underlying columns are
-// written only by the extended-export importer, and an export may omit any one
-// of them independently. Playlists and PlaylistCoverage are the one exception
-// to that rule: context_type and context_id are written only by live sync, so
-// their coverage is independent of — and typically disjoint from — the six
-// export-derived figures above.
+// partial, and an export may omit any one of them independently. Most of them
+// are written only by the extended-export importer; ShuffleRate is not, and has
+// not been since Phase 3c — the now-playing poller observes the shuffle state
+// while somebody is listening and the sync path attaches it afterwards, so that
+// one figure can be real on an instance that has never imported anything.
+//
+// Playlists and PlaylistCoverage are one exception to the export lineage:
+// context_type and context_id are written only by live sync, so their coverage
+// is independent of — and typically disjoint from — the export-derived figures
+// above.
 //
 // Devices and DeviceCoverage are the second exception, and have the opposite
 // lineage from Playlists: device_type is written by the now-playing poller's

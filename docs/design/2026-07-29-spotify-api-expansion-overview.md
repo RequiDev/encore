@@ -14,7 +14,7 @@ implementable specifications; this one holds the decisions all three share, so t
 
 ## 1. Where Encore stands
 
-Spotify's published OpenAPI schema describes **70 paths and 96 operations**. As of Phase 3b, Encore
+Spotify's published OpenAPI schema describes **70 paths and 96 operations**. As of Phase 3c, Encore
 calls **19 operations across 18 paths** — stale counts get corrected here rather than left as a
 snapshot of the day this document was written, for the same reason the ordinals in `docs/api.md`
 don't survive a second unattended request:
@@ -38,7 +38,7 @@ don't survive a second unattended request:
 | `GET /v1/me/playlists` | `spotify/playlists.go` | Playlist listening-context naming (Phase 2) |
 | `GET /v1/albums/{id}/tracks` | `spotify/albumtracks.go` | Album completion (Phase 2) |
 | `GET /v1/artists/{id}/albums` | `spotify/artistalbums.go` | Discography completion (Phase 2) |
-| `GET /v1/me/player/currently-playing` | `spotify/nowplaying.go` | Now playing card (Phase 3b) |
+| `GET /v1/me/player` | `spotify/nowplaying.go` | Now playing card (Phase 3b), and the shuffle/device observations the backfill uses (Phase 3c) |
 
 Eighteen rows, nineteen operations: the one path with two methods (`PUT`/`POST
 /v1/playlists/{id}/tracks`) is the only row counted twice.
@@ -80,8 +80,7 @@ deletes it.
 | 5 | Playlist listening context | `GET /me/playlists` | `playlist-read-private` | 2 |
 | 6 | Album and discography completion | `GET /albums/{id}/tracks`, `/artists/{id}/albums` | — (app token) | 2 |
 | 7 | Playlist rename and cover art | `PUT /playlists/{id}`, `PUT /playlists/{id}/images` | `ugc-image-upload` | 3 |
-| 8a | Now playing, the live card | `GET /me/player/currently-playing` | `user-read-playback-state` | 3b — shipped |
-| 8b | Shuffle and platform backfill | `GET /me/player` | `user-read-playback-state` | 3c — deferred, see the 3b plan |
+| 8 | Now playing, and the shuffle/device backfill | `GET /me/player` | `user-read-playback-state` | 3b (card) and 3c (backfill) — shipped |
 
 Podcast and audiobook support — `GET /episodes`, `/shows/{id}`, `/audiobooks/{id}`, `/chapters/{id}`
 — is deliberately **excluded from this plan**. It remains the largest single gap in Encore's
@@ -167,6 +166,7 @@ is decided once, here:
 | Library and follows counts | **Yes**\* |
 | Shuffle share, skip rate | No |
 | Platform, country, offline, incognito | No |
+| Device breakdown | No |
 | Playlist listening context | No |
 | Now playing | No |
 

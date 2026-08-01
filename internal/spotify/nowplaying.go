@@ -9,10 +9,12 @@ import (
 
 // Device is the player a listener is using.
 //
-// A pointer everywhere it appears: GET /v1/me/player/currently-playing is
-// documented with the same response object as GET /v1/me/player (the one this
-// package now polls) but is observed to omit this, so a caller must be able to
-// say "no device reported" rather than "a device with no name".
+// A pointer everywhere it appears, so a caller can say "no device reported"
+// rather than "a device with no name". GET /v1/me/player, which this package
+// polls, carries a device far more reliably than the narrower endpoint Encore
+// used before Phase 3c — but it still answers with none when nothing is active,
+// and a zero-valued struct would be indistinguishable from a real player whose
+// name and type happened to be empty.
 type Device struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`

@@ -101,7 +101,7 @@ accept a plain number or a suffix (`512kb`, `64mb`, `4gb`). Booleans accept `tru
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENCORE_NOWPLAYING_INTERVAL` | *unset* | How often Encore asks Spotify what each connected account is playing right now, which is what fills the dashboard's now-playing card. **Unset means the poller never runs and the card does not appear** — this is opt-in rather than a default with a tuning knob, because the cost is recurring and per account. Minimum `10s`. Accounts that have not granted `user-read-playback-state`, and accounts parked as `needs_reauth`, are skipped without a request. The poller **never writes to your listening history**: `GET /me/player/recently-played` remains the only path that creates a listen, and the now-playing poll is a read-only observer. It draws on a **rate budget of its own**, so unlike every other background request a 429 on it pauses this loop alone — it does not 409 "sync now" for other users, does not stop enrichment, and does not stop the recently-played poller or the library enumerations. `GET /api/nowplaying` reads the stored observation and never calls Spotify, so an open dashboard costs no quota however many tabs are on it. |
+| `ENCORE_NOWPLAYING_INTERVAL` | *unset* | How often Encore asks Spotify what each connected account is playing right now, which is what fills the dashboard's now-playing card. **Unset means the poller never runs and the card does not appear** — this is opt-in rather than a default with a tuning knob, because the cost is recurring and per account. Minimum `10s`. Accounts that have not granted `user-read-playback-state`, and accounts parked as `needs_reauth`, are skipped without a request. The poller **never creates a listen**: `GET /me/player/recently-played` remains the only path that adds a row to your history. It does now **annotate** plays that already exist — since Phase 3c it records the shuffle state and the Spotify Connect device it sees, and the sync path attaches them afterwards to the plays they belong to, which is what fills the shuffle share and the "what you played on" breakdown on Habits for listening that was never exported. That annotation is a two-column `UPDATE`: it cannot create a row, cannot move one, cannot duplicate one, and cannot overwrite a value an import supplied. Running it twice changes nothing. Listening from before the poller was switched on is never annotated, because nobody was watching, and stays NULL rather than being reported as un-shuffled. The observations themselves are deleted after 24 hours. It draws on a **rate budget of its own**, so unlike every other background request a 429 on it pauses this loop alone — it does not 409 "sync now" for other users, does not stop enrichment, and does not stop the recently-played poller or the library enumerations. `GET /api/nowplaying` reads the stored observation and never calls Spotify, so an open dashboard costs no quota however many tabs are on it. |
 
 What it costs per day, which is the number to weigh before turning it on:
 
@@ -110,6 +110,11 @@ What it costs per day, which is the number to weigh before turning it on:
 | 1 | 30 s | ≈ 2,880 |
 | 5 | 30 s | ≈ 14,400 |
 | 5 | 60 s | ≈ 7,200 |
+
+Turning this on costs no additional Spotify requests beyond the table above.
+The poller reads `GET /v1/me/player`, one request per account per tick, which
+carries the playing item, the device and the shuffle state together; there is no
+second call for the annotation.
 
 A development-mode Spotify application already exhausts its daily quota during a large import.
 A poller that silently doubled baseline consumption would make that worse for everyone on the

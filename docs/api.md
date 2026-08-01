@@ -129,7 +129,7 @@ All accept `from` and `to`.
 | `GET` | `/api/stats/genres` | `?limit=&offset=`. Ranked genres of the artists behind the range's listening, with each genre's `plays` and `msPlayed`. Genre plays sum to more than the range's total plays, because a track counts toward every genre of every credited artist. Carries `coverage`: how many of the range's listens resolved to at least one genred artist. |
 | `GET` | `/api/stats/genres/timeline` | `?interval=&genre=`, with `genre` **repeated** (`?genre=rock&genre=jazz`), never comma-joined. Buckets the named genres across the range — one point per bucket per genre, zeroes included. Omitting `genre` charts the range's current top eight; at most **eight** genres may be requested in one call, matching what a stacked area chart can still show as distinct series. |
 | `GET` | `/api/stats/taste` | `{ "obscurity": <rate>, "releaseLag": <rate> }`. Obscurity is the play-weighted mean of Spotify's own artist popularity, 0–100, where **higher means more mainstream**. `releaseLag` is the play-weighted mean gap, in years, between an album's release and the play. |
-| `GET` | `/api/stats/context` | How the range was listened to, not what. `endReasons` (why a track stopped), `skipRate` (`reason_end = 'fwdbtn'` — going back is deliberately not counted as a skip), `shuffleRate`, `platforms`, `countries`, `offlineRate`, `incognitoRate`, and `playlists`/`playlistCoverage` — what the range was listened **from**. See "Playback context: what you were playing from" below. |
+| `GET` | `/api/stats/context` | How the range was listened to, not what. `endReasons` (why a track stopped), `skipRate` (`reason_end = 'fwdbtn'` — going back is deliberately not counted as a skip), `shuffleRate`, `platforms`, `countries`, `offlineRate`, `incognitoRate`, and `playlists`/`playlistCoverage` — what the range was listened **from**. `devices` and `deviceCoverage` break the range down by Spotify Connect device type — `speaker`, `smartphone`, `computer` — and are **not** `platforms`, which holds an export's own free-text platform string. The two have opposite lineages: `platforms` is written only by an extended-export import, `devices` only by the now-playing poller's backfill. See "Playback context: what you were playing from" below. |
 | `GET` | `/api/stats/library` | `?limit=`, default 10. The last enumeration's snapshot of the account's saved and followed Spotify library, crossed against what has actually been played. See "Library" below — its three lists are deliberately scoped three different ways, and the endpoint is a snapshot, not a live query. |
 | `GET` | `/api/stats/top-diff` | `?kind=track\|artist&range=short_term\|medium_term\|long_term`, both required. Spotify's own top ranking against Encore's, for the same window. See "Top diff" below — it takes no `from`/`to` at all. |
 
@@ -381,6 +381,23 @@ came from at all.** A fresh instance with nothing synced live yet reports `playl
 slice that grows only as live sync accumulates more history alongside the import. This is expected,
 not a bug to chase, and the single most common question this feature will raise: **imported history
 can never contribute to this statistic, no matter which export format or how much of it there is.**
+
+`shuffleRate` and the new `devices` / `deviceCoverage` pair are the exception to
+that lineage, and the only one. When `ENCORE_NOWPLAYING_INTERVAL` is set, the
+now-playing poller records the shuffle state and the Spotify Connect device it
+sees while somebody is listening, and the sync path attaches them to the plays
+they belong to afterwards. So a sync-only instance can report a real shuffle
+share and a real device breakdown with every other figure here at zero, and an
+import-only instance reports the reverse. **No match leaves both columns NULL**
+— never `false`, and never a device of "unknown". A listen Encore did not
+observe is absent from `covered`, not counted as un-shuffled.
+
+The match is a temporal one and is honest about being fuzzy: an observation is
+attributed to a play when it falls between the play's start and its end plus a
+sixty-second tolerance, and the most recent match wins. Two plays of the same
+track back to back can therefore hand the first one evidence gathered during the
+second; they share a device and a shuffle setting unless the listener changed one
+inside that minute.
 
 Each entry's `name` is resolved against the listener's own enumerated playlists
 (`user_playlists`, populated by the daily library-sync worker — see
@@ -860,16 +877,20 @@ until enrichment catches up.
 `progressMs` is progress at `observedAt` and is never extrapolated. A client should state the
 observation's age beside it rather than animating a bar from a fact up to one interval old.
 
-`deviceName` is empty when Spotify reported no device — `GET /v1/me/player/currently-playing` is
-documented with the same object as `GET /v1/me/player` but is observed to omit it — and a client
-should then render no device clause rather than an unknown one.
+`deviceName` is empty when Spotify reported no device — `GET /v1/me/player`, which the poller
+reads, carries one whenever a player is active, but answers with none when nothing is — and a
+client should then render no device clause rather than an unknown one.
 
 **Never on a share link.** `GET /api/share/{token}` carries none of this. Real-time presence is
 exactly the concern the share design was written around: a share exposes what somebody listens to,
 never when they are awake.
 
-**The poller never writes a listen.** `GET /me/player/recently-played` remains the only path that
-creates one; the now-playing poll is a read-only observer. See
+**The poller never *creates* a listen, and now annotates existing ones.** `GET
+/me/player/recently-played` remains the only path that creates a row in
+`listens`. What the poller sees is written to a separate short-lived log and
+attached afterwards by a statement that is an `UPDATE` with a two-column `SET`
+list: it cannot create a row, cannot move one, and cannot overwrite a value an
+import already supplied. Running it twice changes nothing. See
 [configuration.md](configuration.md#now-playing) for what it costs and how to turn it on.
 
 ## Operational endpoints

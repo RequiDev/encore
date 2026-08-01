@@ -330,6 +330,15 @@ Measured results, and the hardware they were measured on, are in
   period covered by an import is exact. The `source` column records which is which, and re-importing
   an export over a period that was synced live corrects it, because the duplicate rules keep one row
   and the import is the one with the better data.
+- **Live sync only knows how a play happened while the now-playing poller is
+  running.** The recently-played endpoint reports what was played and when, and
+  nothing about shuffle, device, country or how the play ended. If you set
+  `ENCORE_NOWPLAYING_INTERVAL`, Encore watches your player and fills shuffle and
+  the device in afterwards, for plays that happen from then on. Everything
+  before that — and everything on an instance that leaves the poller off —
+  stays unknown, and the statistics say so rather than reporting it as "not
+  shuffled". Country, incognito, offline and the end reason are not readable
+  from any Spotify endpoint at all and still need an extended export.
 - **Account-data imports need alias resolution to merge with extended imports.** That export contains
   no track URIs, so Encore resolves each artist/title pair through Spotify's search API in the
   background. Until a pair resolves, its listens are counted under a names-only identity and may

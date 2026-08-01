@@ -178,22 +178,28 @@ sign in.
 
 ## Background work
 
-`encore-worker` supervises eight independent loops, each restartable and each with its own failure
+`encore-worker` supervises seven independent loops, each restartable and each with its own failure
 isolation:
 
 - **Import runner** — claims jobs under a lease, heartbeats, and stops immediately if the lease is
   stolen. See [`docs/import.md`](import.md).
 - **Enrichment** — fills in catalogue metadata from the `pending` queues using a client-credentials
-  token, plus the alias resolver and the relink pass.
+  token, plus the alias resolver and the relink pass. It also drives the rollup loop, which
+  recomputes `listen_daily_rollup` for days ingestion marked dirty; that runs even with
+  `ENCORE_ENRICH_ENABLED` off, because recomputing statistics is a database concern with nothing
+  to do with Spotify.
 - **Sync** — polls `/me/player/recently-played` for each connected account, advancing the cursor only
-  after the batch commits.
+  after the batch commits. After each successful poll it also attaches what the now-playing poller
+  observed to the plays that have just arrived — an `UPDATE` of two columns that cannot create,
+  move or duplicate a row.
 - **Library** — enumerates saved tracks, saved albums, followed artists, the listener's own playlists
   and Spotify's own top rankings, once a day.
 - **Now playing** — checks each connected account's player every `ENCORE_NOWPLAYING_INTERVAL`, and
-  does not run at all unless that is set.
-- **Reaper** — clears expired sessions and OAuth states.
+  does not run at all unless that is set — reading `GET /v1/me/player`, recording what it sees for
+  the dashboard card and appending it to a short-lived log the sync path uses to fill in shuffle and
+  device on the plays it belongs to.
+- **Reaper** — clears expired sessions, OAuth states, and playback observations older than a day.
 - **Telemetry** — publishes pool statistics.
-- **Rollups** — recomputes `listen_daily_rollup` for days marked dirty by ingestion.
 
 A failure in any one of them does not stop the others, and none of them can lose a listening record.
 

@@ -86,6 +86,9 @@ rewrite.
 
 ## 2. Feature 8 — now playing
 
+> **Status:** §2.1–§2.3 shipped as Phase 3b (merged `2cca3a9`). §2.4 and §2.5
+> shipped as Phase 3c, on the authorisation §2.5 records in advance.
+
 `GET /v1/me/player` returns the active device, `shuffle_state`, `repeat_state`, `progress_ms`,
 `is_playing`, the item and the context. **It answers `204 No Content` when nothing is playing**,
 which is the common case and is not an error.
@@ -140,7 +143,13 @@ shuffled or what device it played on, because `/me/player/recently-played` repor
 extended export fills those columns, so a synced listen is permanently lower-fidelity than an
 imported one covering the same moment.
 
-The poller sees precisely what is missing. A short-lived observation log bridges them:
+The poller sees precisely what is missing. A short-lived observation log bridges them.
+
+**The block below is the design's shape; `migrations/00018_playback_observations.sql`
+is what shipped.** It adds two CHECK constraints — `track_id <> ''`, and "a row
+must say something" (`shuffle IS NOT NULL OR device_type IS NOT NULL`) — and the
+`listens.device_type` column the paragraph above describes. It adds no index
+beyond the primary key, which is also the join's access path.
 
 ```sql
 CREATE TABLE playback_observations (
@@ -160,6 +169,16 @@ small and never becomes a second history nobody meant to keep.
 When sync ingests a listen, it looks for an observation of the same track whose `observed_at` falls
 within `[played_at, played_at + duration_ms + tolerance]`, takes the most recent match, and fills
 `shuffle` and `platform` from it. No match leaves both NULL, exactly as today.
+
+**As built, it fills `shuffle` and a new `device_type` column — not `platform`.**
+`listens.platform` holds an export's free text (`"Android OS 10 API 29 (samsung,
+SM-G970F)"`, `"web_player"`) and `PlatformFamily` is a substring classifier built
+for those shapes; Spotify Connect's `device.type` is a different vocabulary
+(`"Computer"`, `"Smartphone"`, `"Speaker"`). Writing the second into the first
+would have made every historical platform figure change meaning without changing
+shape, which is the same error as letting "unknown" and "false" share a column.
+`device_name` is kept in the observation log for a day and never copied onto
+`listens`.
 
 ### 2.5 Why this is sequenced last, and is droppable
 
@@ -200,10 +219,12 @@ constant with its reasoning in a comment, not a literal buried in a query.
 - `docs/configuration.md` — `ENCORE_NOWPLAYING_INTERVAL` and `ENCORE_LIBRARY_SYNC_INTERVAL`, with
   the quota table from §2.1.
 - `.env.example` — both, commented, defaulted off.
-- `docs/feature-parity.md` — the live-sync fidelity limitation moves from "known gap" to
-  "addressed when the poller is enabled", and playback **control** stays declined, which is a
-  different thing and should not be conflated by the edit.
-- `README.md` — the limitations section, same correction.
+- `docs/feature-parity.md` — **done (Phase 3c).** Note the premise was wrong: this limitation was
+  not a "known gap" anywhere. Neither `README.md`'s limitations nor `docs/feature-parity.md`'s known
+  gaps carried a bullet for it, so Phase 3c *added* the statement rather than moving one — and said
+  which half the poller closes and which half no endpoint can ever close. Playback **control** stays
+  declined, which is a different thing and was not conflated by the edit.
+- `README.md` — **done (Phase 3c).** Same correction, added rather than moved, for the same reason.
 
 ---
 
