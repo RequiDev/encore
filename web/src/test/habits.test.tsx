@@ -406,3 +406,136 @@ describe('the playlist/album context section of the Habits page', () => {
     expect(screen.queryByText(/playlist-read-private/)).not.toBeInTheDocument()
   })
 })
+
+/**
+ * The device breakdown, and the sentences that stopped being true when the
+ * now-playing poller started filling shuffle and device_type.
+ */
+describe('what you played on', () => {
+  // Fails when: the ChartCard's description stops naming its denominator, or
+  // stops naming the source — a listener seeing 3.1% has to be told that is a
+  // property of the data rather than a bug, and that only listening Encore
+  // watched live can ever be counted.
+  it('states its denominator and where the fact comes from', async () => {
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload({
+        shuffleRate: { value: 0.62, covered: 31, total: 1000 },
+        deviceCoverage: { covered: 31, total: 1000 },
+        devices: [
+          { key: 'speaker', plays: 20 },
+          { key: 'smartphone', plays: 11 },
+        ],
+      }),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    expect(
+      await screen.findByText(
+        'Known for 3.1% of your listening in this range — 31 plays of 1,000. Encore learns this by watching your player, so only listening it saw live can be counted.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  // Fails when: formatPlural is replaced by a bare `${n} plays` — the singular
+  // case then reads "1 plays", which is the defect this project has shipped in
+  // four separate phases.
+  it('says one play, not one plays', async () => {
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload({
+        shuffleRate: { value: 1, covered: 1, total: 1000 },
+        deviceCoverage: { covered: 1, total: 1000 },
+        devices: [{ key: 'speaker', plays: 1 }],
+      }),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    expect(
+      await screen.findByText(
+        'Known for 0.1% of your listening in this range — 1 play of 1,000. Encore learns this by watching your player, so only listening it saw live can be counted.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  // Fails when: the zero-coverage description is dropped and the card falls back
+  // to the generic "nothing to rank in this range" — which says the range is
+  // empty rather than that Encore was not watching.
+  it('says nothing was watched, rather than nothing was played, at zero coverage', async () => {
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload({
+        skipRate: { value: 0.1, covered: 800, total: 800 },
+        endReasonCoverage: { covered: 800, total: 800 },
+        deviceCoverage: { covered: 0, total: 800 },
+        devices: [],
+      }),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    expect(
+      await screen.findByText(
+        'Encore was not watching your player during this range, so it does not know what any of it played on.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  // The gate. A sync-only instance with the poller enabled has zero coverage on
+  // all six export columns and real coverage on device_type — the exact case
+  // `noContext` would have hidden, taking the new chart down with it.
+  //
+  // Fails when: deviceCoverage is not added to the noContext expression. The
+  // whole block collapses to the empty state and the assertions below fire.
+  it('does not hide the page when the only thing known came from the poller', async () => {
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload({
+        deviceCoverage: { covered: 400, total: 400 },
+        devices: [{ key: 'smartphone', plays: 400 }],
+      }),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    expect(await screen.findByText('What you played on')).toBeInTheDocument()
+    expect(screen.queryByText('No playback detail yet')).not.toBeInTheDocument()
+  })
+
+  // Fails when: the empty state keeps the old sentence, which named shuffle as
+  // export-only. The poller has filled shuffle since Phase 3c, and telling
+  // somebody to import an export to see it sends them to do work they do not
+  // need to do.
+  it('no longer claims shuffle can only come from an export', async () => {
+    stubRoutes({
+      '/api/me': me([]),
+      '/api/stats/context': contextPayload(),
+      '/api/stats/taste': tastePayload(),
+    })
+
+    render(mountAt('/habits'))
+    await waitForPage()
+
+    expect(await screen.findByText('No playback detail yet')).toBeInTheDocument()
+    expect(
+      screen.getByText(/How a play ended, and whether it was offline or in a private session/),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/Shuffle and the device you played on can also be filled in as you listen/),
+    ).toBeInTheDocument()
+    // Never the old sentence.
+    expect(
+      screen.queryByText(/Skip, shuffle, offline and incognito are recorded only by/),
+    ).not.toBeInTheDocument()
+  })
+})
