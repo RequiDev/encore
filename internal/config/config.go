@@ -40,6 +40,9 @@ type Config struct {
 	ArtistAlbums ArtistAlbums
 	// MetadataFallback is an optional second source of catalogue metadata.
 	MetadataFallback MetadataFallback
+	// NowPlaying is the optional poller that asks Spotify what each listener is
+	// playing right now. Unset means it never runs.
+	NowPlaying NowPlaying
 }
 
 // Instance describes how the deployment presents itself to the outside world.
@@ -348,6 +351,51 @@ type MetadataFallback struct {
 // Enabled reports whether a fallback has been configured.
 func (m MetadataFallback) Enabled() bool { return strings.TrimSpace(m.URL) != "" }
 
+// NowPlayingMinInterval is the shortest polling interval this instance will
+// accept.
+//
+// A floor rather than a clamp, and it exists because the cost is per account per
+// tick and recurring: one account at ten seconds is already 8,640 requests a
+// day, against a development-mode quota that a single import can exhaust on its
+// own. Below that the feature stops being a display and becomes the instance's
+// dominant consumer of Spotify.
+const NowPlayingMinInterval = 10 * time.Second
+
+// NowPlaying configures the poller that reads GET /v1/me/player/currently-playing
+// for each connected account.
+//
+// It is off unless Interval is set, which is a different shape from Sync,
+// Library and Enrich — each of which has an explicit Enabled bool beside its
+// interval — and deliberately so. Those are features an instance is expected to
+// run; this one is not. A separate Enabled flag would mean an instance could be
+// configured with an interval and no flag, or a flag and no interval, and the
+// second of those has no correct behaviour. MetadataFallback.URL already uses
+// this shape for the same reason: ship the mechanism, default it off, document
+// the cost.
+//
+// The cost, per docs/configuration.md:
+//
+//	1 account  @ 30s  ~= 2,880 requests/day
+//	5 accounts @ 30s  ~= 14,400 requests/day
+//	5 accounts @ 60s  ~= 7,200 requests/day
+//
+// which is why this is opt-in rather than a default with a tuning knob: a
+// development-mode Spotify application already exhausts its quota during a large
+// import, and a poller that silently doubled baseline consumption would make
+// that worse for everybody on the instance.
+//
+// The poller draws on a rate budget of its own (internal/spotify's
+// classNowPlaying), so a 429 on it pauses this loop and nothing else. That is
+// the property that makes an opt-in poller safe to offer at all.
+type NowPlaying struct {
+	// Interval is how often each connected account is checked. Zero means the
+	// feature is off and the loop returns before it lists a single account.
+	Interval time.Duration
+}
+
+// Enabled reports whether this instance polls for playback state.
+func (n NowPlaying) Enabled() bool { return n.Interval > 0 }
+
 type Metrics struct {
 	Enabled bool
 	// Username and Password enable basic auth on /metrics. Leave empty to expose
@@ -500,6 +548,10 @@ func parse(get lookup) (*Config, error) {
 			"so no fallback is configured")
 	}
 
+	c.NowPlaying = NowPlaying{
+		Interval: p.optionalDuration("ENCORE_NOWPLAYING_INTERVAL", NowPlayingMinInterval),
+	}
+
 	c.Enrich = Enrich{
 		Enabled:        p.boolean("ENCORE_ENRICH_ENABLED", true),
 		Interval:       p.duration("ENCORE_ENRICH_INTERVAL", 5*time.Second),
@@ -534,14 +586,15 @@ func parse(get lookup) (*Config, error) {
 // DefaultScopes is the grant Encore asks for at sign-in.
 //
 // Every one of these is read-only. Encore never asks, at sign-in, for
-// permission to change anything about a listener's Spotify account: the one
-// write scope it can ever hold — playlist-modify-private — is requested
-// separately, at the moment somebody creates a playlist, and an account that
-// never creates one is never asked.
+// permission to change anything about a listener's Spotify account: the two
+// write scopes it can ever hold — playlist-modify-private and
+// ugc-image-upload — are requested together, separately from sign-in, at the
+// moment somebody creates a playlist, and an account that never creates one
+// is never asked.
 //
-// The read set is granted in one step rather than feature by feature. Five
-// separate consent interruptions, each explaining a statistic the listener has
-// not seen yet, is a worse experience than one; and every one of these is
+// The read set is granted in one step rather than feature by feature. A
+// consent interruption per feature, each explaining a statistic the listener
+// has not seen yet, is a worse experience than one; and every one of these is
 // inert on its own — reading what somebody saved, follows, or ranked highly
 // cannot alter any of it. See docs/security.md.
 func DefaultScopes() []string {
@@ -557,7 +610,9 @@ func DefaultScopes() []string {
 		"user-follow-read",
 		// Playlist names, so a listen's playlist context can be named.
 		"playlist-read-private",
-		// Device and shuffle state for the optional now-playing poller.
+		// Playback state for the optional now-playing poller, which reads
+		// GET /v1/me/player/currently-playing when ENCORE_NOWPLAYING_INTERVAL
+		// is set.
 		"user-read-playback-state",
 	}
 }
@@ -583,6 +638,12 @@ func (c *Config) Redacted() map[string]any {
 		"sync_interval":      c.Sync.Interval.String(),
 		"library_enabled":    c.Library.Enabled,
 		"library_interval":   c.Library.Interval.String(),
+		// The startup log is the one line that says what this process believes
+		// its configuration to be, and "why is there no now-playing card" is
+		// answerable from here or from nowhere — the more so because the answer
+		// is usually "the key is not set", which leaves no other trace.
+		"nowplaying_enabled":  c.NowPlaying.Enabled(),
+		"nowplaying_interval": c.NowPlaying.Interval.String(),
 		// The startup log is the one line that says what this process believes
 		// its configuration to be, and "why is the album page saying it is turned
 		// off" is answerable from here or from nowhere.
@@ -780,6 +841,34 @@ func (p *parser) duration(key string, def time.Duration) time.Duration {
 	if err != nil || d <= 0 {
 		p.errf("%s must be a positive duration such as 30s, 5m or 2h, got %q", key, v)
 		return def
+	}
+	return d
+}
+
+// optionalDuration parses a duration that switches a feature on by existing.
+//
+// Unset returns zero, which the caller reads as "off". This is the only
+// duration in the file with that shape, and it is why p.duration cannot be used
+// directly: every other interval has a default that makes the feature run.
+//
+// A value below min is an error rather than a clamp. Clamping would run a
+// feature at a rate its operator did not choose and gave no sign of accepting,
+// and the whole argument for this key being opt-in is that its cost is the
+// operator's to weigh.
+func (p *parser) optionalDuration(key string, min time.Duration) time.Duration {
+	if _, ok := p.raw(key); !ok {
+		return 0
+	}
+	// Delegated rather than reimplemented, so the bare-integer-means-seconds
+	// spelling and the error wording match every other duration in this file.
+	d := p.duration(key, 0)
+	if d <= 0 {
+		// p.duration has already recorded the problem.
+		return 0
+	}
+	if d < min {
+		p.errf("%s must be at least %s, got %s", key, min, d)
+		return 0
 	}
 	return d
 }

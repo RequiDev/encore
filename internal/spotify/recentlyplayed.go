@@ -26,7 +26,7 @@ const (
 // a browser tab. It must not queue behind a catalogue quota it did not spend.
 func (c *Client) CurrentUser(ctx context.Context, accessToken string) (*UserProfile, error) {
 	var p UserProfile
-	if err := c.getClass(ctx, "/v1/me", "get current user", nil, accessToken, &p, true); err != nil {
+	if err := c.getClass(ctx, "/v1/me", "get current user", nil, accessToken, &p, classInteractive); err != nil {
 		return nil, fmt.Errorf("spotify: current user: %w", err)
 	}
 	if p.ID == "" {

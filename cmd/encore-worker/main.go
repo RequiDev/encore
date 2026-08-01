@@ -1,6 +1,7 @@
 // Command encore-worker runs Encore's background work: import jobs, catalogue
-// enrichment, the recently-played poller, rollup maintenance and the reaper that
-// clears expired sessions and OAuth states.
+// enrichment, the recently-played poller, the daily library enumerations, the
+// optional now-playing poller, rollup maintenance and the reaper that clears
+// expired sessions and OAuth states.
 //
 // It is a separate process from the API on purpose. A one-million-record import
 // saturates a database connection for minutes, and letting that compete with a
@@ -35,6 +36,7 @@ import (
 	"github.com/RequiDev/encore/internal/library"
 	"github.com/RequiDev/encore/internal/logging"
 	"github.com/RequiDev/encore/internal/metrics"
+	"github.com/RequiDev/encore/internal/nowplaying"
 	"github.com/RequiDev/encore/internal/postgres"
 	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/stats"
@@ -226,6 +228,33 @@ func run() error {
 	// Unconditional for the same reason as sync: ENCORE_LIBRARY_SYNC_ENABLED
 	// false makes Run log once and return nil.
 	sup.Add("library", libraryWorker.Run)
+
+	watcher, err := nowplaying.New(cfg.NowPlaying, nowplaying.Deps{
+		Store: db,
+		// The single-table repository, not accountsRepo: with no handle on the
+		// credentials repository this loop cannot park an account, and a 403
+		// from an optional read scope must never stop ingesting a listening
+		// history that reads perfectly.
+		NowPlaying: accountsRepo.NowPlaying,
+		Spotify:    client,
+		// The token refresh dance, including parking an account when Spotify
+		// has revoked the grant outright, belongs to recently-played sync,
+		// which cannot function without its own scope. This loop borrows it
+		// rather than duplicating it — and borrowing it as an interface is
+		// what keeps this package unable to park an account for a reason of
+		// its own. The same poller, but its now-playing entry point: that one
+		// draws its refresh on the now-playing rate budget, so neither loop
+		// can stall or be stalled by the other.
+		Tokens: poller,
+		Logger: lg,
+	})
+	if err != nil {
+		return err
+	}
+	// Unconditional for the same reason as sync and library: with
+	// ENCORE_NOWPLAYING_INTERVAL unset, Run says so once and returns nil, which
+	// the supervisor treats as a loop that has finished.
+	sup.Add("nowplaying", watcher.Run)
 
 	sup.Add("reaper", reaper(db, accountsRepo, lg))
 	sup.Add("telemetry", publishPoolStats(reg, pool))

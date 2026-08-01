@@ -301,3 +301,84 @@ func TestArtistAlbumsTTLRejectsNonPositive(t *testing.T) {
 		t.Errorf("error %q does not mention ENCORE_ARTIST_ALBUMS_TTL", err)
 	}
 }
+
+// TestNowPlayingIsOffWhenTheIntervalIsUnset is the binding half of the feature's
+// contract: absent from the environment means the poller never runs at all, not
+// that it runs on a default.
+//
+// Fails when: the parse switches to p.duration with a non-zero default, which is
+// what every other worker interval in this file uses and is exactly what must
+// not happen here.
+func TestNowPlayingIsOffWhenTheIntervalIsUnset(t *testing.T) {
+	cfg, err := LoadFrom(libraryTestEnv(nil))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.NowPlaying.Interval != 0 {
+		t.Errorf("NowPlaying.Interval = %s, want 0 when the key is unset", cfg.NowPlaying.Interval)
+	}
+	if cfg.NowPlaying.Enabled() {
+		t.Error("NowPlaying.Enabled() = true with no ENCORE_NOWPLAYING_INTERVAL set; " +
+			"an unconfigured instance must never poll Spotify for presence")
+	}
+}
+
+// TestNowPlayingParsesADurationAndBareSeconds pins both spellings the parser
+// accepts everywhere else, so the one opt-in key is not the odd one out.
+//
+// Fails when: optionalDuration stops delegating to p.duration and grows its own
+// parser, which would drop the bare-integer form.
+func TestNowPlayingParsesADurationAndBareSeconds(t *testing.T) {
+	for _, spelling := range []string{"30s", "30"} {
+		cfg, err := LoadFrom(libraryTestEnv(map[string]string{
+			"ENCORE_NOWPLAYING_INTERVAL": spelling,
+		}))
+		if err != nil {
+			t.Fatalf("LoadFrom(%q): %v", spelling, err)
+		}
+		if cfg.NowPlaying.Interval != 30*time.Second {
+			t.Errorf("ENCORE_NOWPLAYING_INTERVAL=%q gave %s, want 30s",
+				spelling, cfg.NowPlaying.Interval)
+		}
+		if !cfg.NowPlaying.Enabled() {
+			t.Errorf("ENCORE_NOWPLAYING_INTERVAL=%q did not enable the poller", spelling)
+		}
+	}
+}
+
+// TestNowPlayingRefusesAnIntervalUnderTheFloor pins that a too-small interval is
+// an error rather than a silent clamp.
+//
+// Clamping would run a poller at a rate its operator did not choose: somebody
+// who typed 1s would get 10s and no indication that the number they set is not
+// the number in force. The quota table in docs/configuration.md is the argument
+// for the floor existing at all — one account at ten seconds is already 8,640
+// requests a day.
+//
+// Fails when: the floor check is replaced by `if d < min { d = min }`, or the
+// floor is removed and any positive value is accepted.
+func TestNowPlayingRefusesAnIntervalUnderTheFloor(t *testing.T) {
+	_, err := LoadFrom(libraryTestEnv(map[string]string{
+		"ENCORE_NOWPLAYING_INTERVAL": "1s",
+	}))
+	if err == nil {
+		t.Fatal("LoadFrom accepted a one-second now-playing interval")
+	}
+	if !strings.Contains(err.Error(), "ENCORE_NOWPLAYING_INTERVAL") {
+		t.Errorf("the error does not name the key: %v", err)
+	}
+}
+
+// TestNowPlayingRejectsNonsense keeps a typo from silently disabling the
+// feature, which is the failure mode an unset-means-off key invites: "30x" must
+// be an error, not a quiet zero.
+//
+// Fails when: optionalDuration swallows p.duration's recorded problem and
+// returns 0 without it having been recorded.
+func TestNowPlayingRejectsNonsense(t *testing.T) {
+	if _, err := LoadFrom(libraryTestEnv(map[string]string{
+		"ENCORE_NOWPLAYING_INTERVAL": "30x",
+	})); err == nil {
+		t.Fatal("LoadFrom accepted ENCORE_NOWPLAYING_INTERVAL=30x")
+	}
+}

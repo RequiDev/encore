@@ -17,12 +17,14 @@ import type { ReactElement, ReactNode } from 'react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import type { UseQueryResult } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { qk } from '../lib/query'
 import { ALL_TIME_START, useRange } from '../lib/range'
 import type { DateRange } from '../lib/range'
 import {
   EMPTY,
+  formatClock,
   formatCount,
   formatDateTime,
   formatDuration,
@@ -30,6 +32,7 @@ import {
   formatRatio,
   formatRelative,
   formatSigned,
+  intervalPhrase,
   rankChange,
 } from '../lib/format'
 import type {
@@ -39,6 +42,9 @@ import type {
   GenresResponse,
   HistoryItem,
   HistoryResponse,
+  NowPlaying,
+  NowPlayingObservation,
+  PlaybackItemKind,
   RepartitionBucket,
   StatsExtras,
   Summary,
@@ -54,6 +60,7 @@ import {
   Chip,
   EmptyState,
   ErrorState,
+  Icon,
   Ledger,
   LedgerBody,
   LedgerCell,
@@ -68,8 +75,10 @@ import {
   RangePicker,
   Skeleton,
   SkeletonLedger,
+  SkeletonText,
   Stat,
   StatGrid,
+  buttonClass,
 } from '../components/ui'
 import {
   BarChart,
@@ -114,6 +123,33 @@ const GENRE_CHART_HEIGHT = TOP_PAGE.limit * 30 + 34
  * a resize there costs far less than one during ordinary enrichment.
  */
 const OBSCURITY_MIN_HEIGHT = 210
+
+/**
+ * The floor on how often the card asks, whatever the instance is configured for.
+ *
+ * The server's interval is what the *poller* runs at, and asking faster than it
+ * polls can only return the same answer again. Five seconds is not a rate this
+ * ever reaches in practice; it exists so a misconfigured instance cannot have
+ * every open tab asking once a second.
+ */
+const NOW_PLAYING_MIN_POLL_MS = 5_000
+
+/**
+ * The next poll delay for the now-playing card, or `false` to stop.
+ *
+ * Exported so it can be tested without driving a real timer through TanStack
+ * Query — the same shape as the album page's `tracklistPollInterval`.
+ *
+ * It stops for the two states whose answer cannot change on its own: an
+ * instance that does not poll at all, and an account that has not granted
+ * `user-read-playback-state`. Polling either is asking a question that has
+ * already been answered for good.
+ */
+export function nowPlayingPollInterval(data: NowPlaying | undefined): number | false {
+  if (!data) return false
+  if (!data.enabled || !data.scopeGranted) return false
+  return Math.max(data.intervalSeconds * 1000, NOW_PLAYING_MIN_POLL_MS)
+}
 
 export default function Dashboard(): ReactElement {
   const { range, label, timeZone } = useRange()
@@ -245,6 +281,14 @@ export default function Dashboard(): ReactElement {
     queryKey: qk.taste(range),
     queryFn: ({ signal }) =>
       api.get<TasteResponse>('/stats/taste', { from: range.from, to: range.to }, signal),
+  })
+
+  // Not keyed by the range: what is playing right now is the one figure on this
+  // page that has nothing to do with the dates in the address bar.
+  const nowPlaying = useQuery({
+    queryKey: qk.nowPlaying(),
+    queryFn: ({ signal }) => api.get<NowPlaying>('/nowplaying', undefined, signal),
+    refetchInterval: (query) => nowPlayingPollInterval(query.state.data),
   })
 
   const buckets = timeline.data?.buckets ?? []
@@ -471,6 +515,22 @@ export default function Dashboard(): ReactElement {
           }
         />
       </StatGrid>
+
+      {/*
+        A live fact belongs above the historical ones, so the card is the first
+        panel of the body.
+
+        The test is `!== false` rather than `=== true` deliberately, and the
+        difference is the whole loading frame. Only an answer that actually said
+        `enabled: false` removes the card: that is an operator's decision, and a
+        panel repeating it on the home screen for ever is a nag about something
+        the listener cannot change. Before an answer arrives, and when the
+        request fails, the card renders and says which of those it is — the same
+        request-in-flight rule the Settings panel and `AlbumDetail.tsx:540-556`
+        follow, and what keeps the loading and failed states reachable at all
+        rather than dead branches nothing can render.
+      */}
+      {nowPlaying.data?.enabled !== false && <NowPlayingCard query={nowPlaying} />}
 
       <ChartCard
         title="Listening over time"
@@ -1092,4 +1152,315 @@ function RecentTitle({
 function artistsOf(item: HistoryItem): string {
   if (item.track) return item.track.artists.map((artist) => artist.name).join(', ')
   return item.aliasArtist ?? ''
+}
+
+// --- now playing -----------------------------------------------------------
+
+/**
+ * What the listener is playing right now, or the reason Encore cannot say.
+ *
+ * Every branch below is a different fact, and the two that are easiest to
+ * conflate are kept furthest apart: a null observation is "Encore has not
+ * managed to look", and an observation whose state is `idle` is "nothing is
+ * playing". They share no sentence and no code path.
+ *
+ * Nothing here is ever extrapolated. The progress figure is as observed and the
+ * line above it says how old that is, because a bar animating from a fact up to
+ * a whole interval old is a moving lie in place of a still truth.
+ */
+function NowPlayingCard({ query }: { query: UseQueryResult<NowPlaying> }): ReactElement {
+  const data = query.data
+
+  // Read so this component re-renders on every attempt, successful or not, and
+  // for no other reason.
+  //
+  // Nothing else this component reads changes between polls. `data` is
+  // structurally shared — two 200s carrying identical bytes hand back the same
+  // reference — `isPending` and `isError` settle after the first answer, and
+  // `error` is never reached while an observation survives. TanStack only
+  // notifies for tracked properties, so without these two the card stops
+  // re-rendering entirely and `Last checked …` freezes on whatever phrase it
+  // held when the row last changed: measured at twenty-four polls over twelve
+  // minutes still reading "just now". A present-tense display frozen under a
+  // stale clock is a worse lie than the error panel it replaced.
+  //
+  // Both timestamps are needed because they mark different things and each
+  // covers a case the other cannot see. `errorUpdatedAt` is the failing server:
+  // encore-api down, the endpoint 404ing. `dataUpdatedAt` is the succeeding one
+  // whose answer has stopped changing, which is the ordinary case rather than
+  // the exotic one — listDueSQL excludes `sync_state = 'needs_reauth'`, so an
+  // account Spotify parks stops being polled and its row is frozen for ever
+  // while /api/nowplaying goes on answering 200 with the same bytes. It happens
+  // too whenever encore-worker is down and encore-api is up.
+  void query.errorUpdatedAt
+  void query.dataUpdatedAt
+
+  return (
+    <Panel
+      title="Now playing"
+      description="What Spotify says you are playing. Nothing here is added to your listening history."
+    >
+      {query.isPending && !data ? (
+        <div role="status" aria-live="polite" aria-busy="true">
+          <span className="sr-only">Loading what you are playing</span>
+          <SkeletonText lines={2} className="max-w-sm" />
+        </div>
+      ) : // A failed request discards nothing it already has. Three layers below
+      // this one spend real effort keeping a good observation alive through a
+      // failure — the store's failure write touches two columns precisely so
+      // this card can say "the last check failed; this is what you were playing
+      // four minutes ago" — and one dropped HTTP request is a weaker failure
+      // than that chain already survives. The error panel is for having nothing
+      // at all.
+      query.isError && !data ? (
+        <ErrorState
+          error={query.error}
+          title="Now playing could not be loaded"
+          onRetry={() => {
+            void query.refetch()
+          }}
+        />
+      ) : !data ? null : !data.scopeGranted ? (
+        <div>
+          <p className="text-sm text-ink">Encore cannot see what you are playing.</p>
+          <p className="mt-1 max-w-prose text-sm text-ink-muted">
+            Your Spotify connection does not include permission to read your playback state.
+            Reconnecting grants it, and nothing else in Encore is affected.
+          </p>
+          {/*
+            A full navigation, not a fetch: the server answers with a redirect to
+            Spotify's authorisation page. A grant that never included the scope is
+            not a check that went wrong, so this is the one control offered — a
+            "try again" here would point at a button that cannot work.
+          */}
+          <a href="/api/auth/spotify/relink" className={`${buttonClass('primary')} mt-3`}>
+            <Icon name="refresh" />
+            Reconnect Spotify
+          </a>
+        </div>
+      ) : (
+        <NowPlayingBody data={data} />
+      )}
+    </Panel>
+  )
+}
+
+/**
+ * Silence, by either signal the payload carries.
+ *
+ * The server sets `state: 'idle'` and `kind: 'none'` together, so this is one
+ * fact read two ways. It is written as an either because the alternative — one
+ * of the two alone — decides whether a payload the server cannot currently send
+ * would render a chip reading "Playing" over an idle player, or a title for a
+ * player holding nothing. Neither is worth risking on a field's spelling.
+ */
+function isSilent(observation: NowPlayingObservation): boolean {
+  return observation.kind === 'none' || observation.state === 'idle'
+}
+
+/** The four families of answer, once the instance polls and the account can be polled. */
+function NowPlayingBody({ data }: { data: NowPlaying }): ReactElement {
+  const { observation, checkedAt } = data
+
+  // A failure and the instant it happened are one fact, so they are read as one
+  // value. The store writes `checked_at` and `failed` in the same statement and
+  // the handler sends both from that single row, so `failed` without a
+  // `checkedAt` is a payload the server cannot produce. Pairing them here is
+  // what lets the two sentences below name a time outright: each used to carry
+  // `: EMPTY`, which could only ever render "The last check failed —." — a
+  // sentence with a dash where its time phrase belongs, for a state nothing can
+  // reach. A fallback that cannot be read aloud is worse than no fallback,
+  // because the second is at least impossible to ship by accident.
+  const failedAt = data.failed ? checkedAt : null
+
+  // How often it looks, when there is a phrase for it. `intervalPhrase` answers
+  // with an empty string for a poller that is off, and this card is not rendered
+  // at all in that case — but the sentence is built from the phrase rather than
+  // around it, so the one thing that cannot happen is "It checks every .".
+  const every = intervalPhrase(data.intervalSeconds)
+
+  // Never looked. Deliberately the first branch and deliberately worded without
+  // the word "nothing": this is the absence of a look, not a silent player.
+  if (!observation) {
+    return failedAt ? (
+      <div>
+        <p className="text-sm text-ink">The last check failed {formatRelative(failedAt)}.</p>
+        <p className="mt-1 text-sm text-ink-muted">
+          Encore has not managed to see what you are playing yet.
+        </p>
+      </div>
+    ) : (
+      <div>
+        <p className="text-sm text-ink">Encore has not checked yet.</p>
+        {every !== '' && (
+          <p className="mt-1 text-sm text-ink-muted">It checks every {every}.</p>
+        )}
+      </div>
+    )
+  }
+
+  // A failed check on top of an observation: say so, say how stale, and drop
+  // every present-tense signal. A chip reading "Playing" above a four-minute-old
+  // observation claims something nobody confirmed, and a progress figure from
+  // four minutes ago is meaningless beside it.
+  if (failedAt) {
+    return (
+      <div>
+        <p className="text-sm text-ink">The last check failed {formatRelative(failedAt)}.</p>
+        <p className="mt-1 text-sm text-ink-muted">
+          {isSilent(observation)
+            ? `Nothing was playing ${formatRelative(observation.observedAt)}.`
+            : `This is what you were playing ${formatRelative(observation.observedAt)}.`}
+        </p>
+        {isSilent(observation) ? null : (
+          <div className="mt-3">
+            <NowPlayingItem observation={observation} stale />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Nothing is playing. A whole check succeeded to establish this, which is why
+  // it is never the same sentence as the branch above.
+  if (isSilent(observation)) {
+    return (
+      <div>
+        <p className="text-sm text-ink">Nothing is playing.</p>
+        <p className="mt-1 text-sm text-ink-muted">
+          Last checked {checkedAt ? formatRelative(checkedAt) : EMPTY}.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <Chip tone={observation.state === 'playing' ? 'lamp' : 'neutral'}>
+        {observation.state === 'playing' ? 'Playing' : 'Paused'}
+      </Chip>
+      <div className="mt-2">
+        <NowPlayingItem observation={observation} stale={false} />
+      </div>
+      <p className="mt-2 text-sm text-ink-muted">
+        Last checked {checkedAt ? formatRelative(checkedAt) : EMPTY}.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * What each kind of item can truthfully be called.
+ *
+ * A category sentence rather than a count, so there is no singular form to get
+ * wrong: it describes podcasts and local files in general, not this one.
+ * `unknown` carries no name at all — Spotify's own label for an advert is not a
+ * title, and putting it where a listener expects their music would attribute
+ * their evening to an advertiser.
+ */
+const KIND_NOTE: Record<PlaybackItemKind, string> = {
+  none: '',
+  track: '',
+  episode: 'Podcasts are not part of your listening history.',
+  local: 'Local files are not part of your listening history.',
+  unknown: 'It will not appear in your listening history.',
+}
+
+/**
+ * What stands in for a name when there is none.
+ *
+ * A noun phrase, not a sentence, and deliberately without a verb. `unknown` is
+ * the only kind that is described rather than named, and an earlier draft
+ * described it in the present tense — which put "Spotify is playing something
+ * Encore cannot identify." directly under a chip reading `Paused`, and directly
+ * under "This is what you were playing 4 minutes ago." in a stale one. Both are
+ * one line contradicting the line above it.
+ *
+ * A verb here can only ever repeat what the chip and the age sentences already
+ * say, so it earns nothing and can disagree with them in four different
+ * combinations of state and staleness. Written this way there is one string, it
+ * sits exactly where every other kind puts its title, and it cannot be wrong in
+ * any of them. That is the same reasoning as the category notes below: describe
+ * the thing, and let the surrounding lines carry tense and state.
+ */
+const UNIDENTIFIED = 'Something Encore cannot identify.'
+
+function NowPlayingItem({
+  observation,
+  stale,
+}: {
+  observation: NowPlayingObservation
+  /** The last check failed, so nothing here may be said in the present tense. */
+  stale: boolean
+}): ReactElement {
+  const { kind, title, artist, trackId, progressMs, durationMs, deviceName } = observation
+
+  return (
+    <div>
+      {kind === 'unknown' ? (
+        <p className="text-sm text-ink">{UNIDENTIFIED}</p>
+      ) : trackId ? (
+        <p className="truncate text-sm font-medium text-ink">
+          <Link to={`/tracks/${encodeURIComponent(trackId)}`} className="hover:text-lamp">
+            {title}
+          </Link>
+        </p>
+      ) : (
+        <p className="truncate text-sm font-medium text-ink">{title}</p>
+      )}
+
+      {/* Whatever the server sent, and no fallback. A kind-dependent
+          "Unknown artist" would be three more strings and three more ways to be
+          wrong; an absent line says the same thing and cannot be. */}
+      {artist !== '' && <p className="mt-0.5 truncate text-xs text-ink-muted">{artist}</p>}
+
+      {KIND_NOTE[kind] !== '' && <p className="mt-1 text-xs text-ink-faint">{KIND_NOTE[kind]}</p>}
+
+      {deviceName !== '' && <p className="mt-1 text-xs text-ink-faint">on {deviceName}</p>}
+
+      {!stale && progressMs !== null && durationMs !== null && durationMs > 0 ? (
+        <NowPlayingProgress progressMs={progressMs} durationMs={durationMs} />
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * How far in the item was when Encore last looked, and no further.
+ *
+ * The figure is as observed and the bar is drawn from it. Neither is advanced by
+ * a clock: the age line above says how old this is, and a bar creeping forward
+ * beside a stale figure would be the one thing on the card that claims to be
+ * live. The accessible label says the same thing where it belongs.
+ */
+function NowPlayingProgress({
+  progressMs,
+  durationMs,
+}: {
+  progressMs: number
+  durationMs: number
+}): ReactElement {
+  const share = Math.min(Math.max(progressMs / durationMs, 0), 1)
+  return (
+    <>
+      <p className="mt-2 text-xs text-ink-faint">
+        {formatClock(progressMs)} of {formatClock(durationMs)}
+      </p>
+      <div
+        className="meter mt-1"
+        role="meter"
+        aria-valuenow={Math.round(share * 100)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Progress when Encore last checked"
+        // Without this a screen reader is read the percentage — "63" — where the
+        // eye is given "2:41 of 4:15". The figure above is the meaningful one,
+        // and every other `.meter` in Encore supplies its own text for the same
+        // reason.
+        aria-valuetext={`${formatClock(progressMs)} of ${formatClock(durationMs)}`}
+      >
+        <span style={{ width: `${share * 100}%` }} />
+      </div>
+    </>
+  )
 }

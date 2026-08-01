@@ -57,7 +57,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Bounded batches | **Implemented** | `ENCORE_IMPORT_BATCH_SIZE`, default 1000. |
 | Database backpressure, no unbounded queue | **Implemented** | The flush is synchronous and the pool is bounded, so a slow database stops the reader rather than growing memory. |
 | Enrichment separated from ingestion | **Implemented** | Ingestion writes `pending` catalogue rows and nothing else. |
-| Respect rate limits and `Retry-After` | **Implemented** | A 429 pauses every background caller for the stated duration rather than each goroutine backing off separately. Signing in draws on a separate budget that no catalogue 429 pauses, because a background import must never be able to lock somebody out of their own instance. |
+| Respect rate limits and `Retry-After` | **Implemented** | A 429 pauses every background caller **except the now-playing poller**, which has a budget of its own, for the stated duration rather than each goroutine backing off separately. Signing in draws on a third, which no catalogue 429 pauses, because a background import must never be able to lock somebody out of their own instance. |
 | Bounded retries, exponential backoff, jitter | **Implemented** | `internal/retry`, full jitter by default. |
 | Transient / permanent / job-level failure classes | **Implemented** | [`docs/import.md`](import.md) §6. |
 | Rejected records recorded with diagnostics | **Implemented** | `import_rejects` holds the record index, a stable reason code, a detail and a truncated excerpt. Capped per file. |
@@ -110,6 +110,7 @@ Encore's target is practical parity with the user-facing capabilities of
 | Data export | **Implemented** | JSON and CSV, streamed. |
 | Catalogue from the export alone | **Implemented** | Not in the reference project. Both export formats name the artist and album of every play and identify neither; Encore mints local catalogue rows keyed by normalised name, so artists, albums and every chart work immediately after an import with no Spotify call. Folded into the Spotify rows when enrichment identifies them. See §10 of [import.md](import.md). |
 | Optional metadata fallback | **Implemented** | Not in the reference project. A second Spotify-shaped endpoint, consulted while Spotify is rate limiting the instance and for ids Spotify will not serve at all — the only way the terminal `unavailable` state can ever be filled. Off unless configured; Encore ships the interface and no source. See [metadata-fallback.md](metadata-fallback.md). |
+| Now playing | **Implemented, opt-in** | A card on the dashboard showing what you are playing right now, polled every `ENCORE_NOWPLAYING_INTERVAL`. Off unless that is set. It is a read-only observer: nothing it sees enters your listening history. |
 | Year in review | **Implemented** | |
 | Listening streaks | **Implemented** | Gaps-and-islands over local days. |
 | Discovery metrics | **Implemented** | First-ever listens per bucket, not first-in-range. |

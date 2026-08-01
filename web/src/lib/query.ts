@@ -138,6 +138,13 @@ export const qk = {
   history: (range: DateRange, limit: number) => ['history', range, limit] as const,
   blacklist: () => ['blacklist'] as const,
 
+  /**
+   * Deliberately its own top-level namespace rather than under `stats`: an
+   * import invalidates `qk.stats()` wholesale, and a live card being churned by
+   * an unrelated import would refetch on a schedule nobody chose.
+   */
+  nowPlaying: () => ['nowplaying'] as const,
+
   imports: () => ['imports'] as const,
   importList: (page: PageKey) => ['imports', 'list', page] as const,
   importJob: (id: string) => ['imports', 'job', id] as const,

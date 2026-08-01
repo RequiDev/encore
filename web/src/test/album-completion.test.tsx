@@ -127,9 +127,18 @@ function mountAt(path: string): ReactElement {
   )
 }
 
-/** The "Heard" panel, found the way a person finds it: by its heading. */
+/**
+ * The "Heard" panel, found the way a person finds it: by its heading.
+ *
+ * The timeout is explicit because the album page is a lazily imported route:
+ * the first assertion in this file waits for a dynamic import as well as for a
+ * render, and vitest runs suites in parallel workers. Under load that first
+ * wait genuinely exceeds findBy's one-second default — this failed three runs
+ * out of three on a busy machine while passing every time serially — so the
+ * default reads as a flaky page rather than as a loaded machine.
+ */
 async function heardPanel(): Promise<HTMLElement> {
-  const heading = await screen.findByRole('heading', { name: 'Heard' })
+  const heading = await screen.findByRole('heading', { name: 'Heard' }, { timeout: 10_000 })
   const section = heading.closest('section')
   if (!section) throw new Error('the Heard heading is not inside a panel')
   return section

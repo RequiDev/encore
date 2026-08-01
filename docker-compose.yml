@@ -88,6 +88,10 @@ x-encore-env: &encore-env
   ENCORE_LIBRARY_SYNC_CONCURRENCY: ${ENCORE_LIBRARY_SYNC_CONCURRENCY:-}
   ENCORE_LIBRARY_SYNC_MAX_PAGES: ${ENCORE_LIBRARY_SYNC_MAX_PAGES:-}
 
+  # The now-playing poller. Unset means it never runs; see docs/configuration.md
+  # for what it costs per account per day before turning it on.
+  ENCORE_NOWPLAYING_INTERVAL: ${ENCORE_NOWPLAYING_INTERVAL:-}
+
   ENCORE_ALBUM_TRACKS_ENABLED: ${ENCORE_ALBUM_TRACKS_ENABLED:-}
   ENCORE_ALBUM_TRACKS_TTL: ${ENCORE_ALBUM_TRACKS_TTL:-}
 

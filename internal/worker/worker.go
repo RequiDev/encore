@@ -1,12 +1,13 @@
 // Package worker supervises the long-lived loops that make up encore-worker.
 //
 // The worker process runs several independent loops at once — one import runner
-// per configured slot, the enrichment worker, the recently-played poller and the
-// session reaper — and the reason they sit behind a supervisor is failure
-// isolation. An enrichment loop that cannot reach Spotify, or a poller whose
-// account listing failed, must not take down an import that is halfway through a
-// four-gigabyte file. Each loop therefore runs in its own goroutine, and a loop
-// that fails is restarted rather than allowed to end the process.
+// per configured slot, the enrichment worker, the recently-played poller, the
+// library worker, the now-playing poller and the session reaper — and the
+// reason they sit behind a supervisor is failure isolation. An enrichment loop
+// that cannot reach Spotify, or a poller whose account listing failed, must not
+// take down an import that is halfway through a four-gigabyte file. Each loop
+// therefore runs in its own goroutine, and a loop that fails is restarted
+// rather than allowed to end the process.
 //
 // Three rules describe the whole of the behaviour:
 //
@@ -15,9 +16,11 @@
 //     costs a minute of retries rather than a crash loop;
 //   - a loop that panics is recovered, logged with its stack, and restarted the
 //     same way, because a nil map in one loop is not a reason to stop importing;
-//   - a loop that returns nil has decided it is finished — the poller does
-//     exactly that when ENCORE_SYNC_ENABLED is false — and is left stopped,
-//     because restarting it would only repeat the decision.
+//   - a loop that returns nil has decided it is finished — the recently-played
+//     poller does exactly that when ENCORE_SYNC_ENABLED is false, and the
+//     now-playing poller whenever ENCORE_NOWPLAYING_INTERVAL is unset, which is
+//     most instances — and is left stopped, because restarting it would only
+//     repeat the decision.
 //
 // Shutdown is bounded rather than indefinite. Once ctx is cancelled Run waits a
 // grace period for every loop to return, then gives up and names the ones still

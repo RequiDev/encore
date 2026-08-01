@@ -516,8 +516,8 @@ func TestSetPlaylistCoverRebuildsTheBodyOnRetry(t *testing.T) {
 // a 429 on either pauses only the sign-in budget and never reaches the pause
 // observer at all.
 //
-// Fails when: interactive: true is dropped from either request — the pause
-// observer then fires and the assertion below catches it.
+// Fails when: class: classInteractive is dropped from either request — the
+// pause observer then fires and the assertion below catches it.
 func TestPlaylistWritesDrawOnTheSignInBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "3600")

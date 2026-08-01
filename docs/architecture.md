@@ -20,8 +20,8 @@ Encore is three processes and a database.
 
 | Process | Responsibility |
 |---|---|
-| `encore-api` | HTTP API, OAuth, sessions, uploads, statistics queries. Never calls Spotify except during the OAuth exchange. |
-| `encore-worker` | Import jobs, metadata enrichment, recently-played synchronisation, rollup maintenance. |
+| `encore-api` | HTTP API, OAuth, sessions, uploads, statistics queries. Calls Spotify during the OAuth exchange, when somebody creates or renames a playlist, and — unless an operator has turned them off — when somebody opens an album or artist page. It never calls Spotify to serve `/api/nowplaying`, which reads the observation the worker stored. |
+| `encore-worker` | Import jobs, metadata enrichment, recently-played synchronisation, library enumeration, the optional now-playing poller, rollup maintenance and session reaping. |
 | `encore-migrate` | Applies schema migrations, then exits. Runs before either of the others. |
 | `encore-bench` | Generates a synthetic history and benchmarks the real import pipeline. |
 
@@ -178,7 +178,7 @@ sign in.
 
 ## Background work
 
-`encore-worker` supervises four independent loops, each restartable and each with its own failure
+`encore-worker` supervises eight independent loops, each restartable and each with its own failure
 isolation:
 
 - **Import runner** — claims jobs under a lease, heartbeats, and stops immediately if the lease is
@@ -187,6 +187,12 @@ isolation:
   token, plus the alias resolver and the relink pass.
 - **Sync** — polls `/me/player/recently-played` for each connected account, advancing the cursor only
   after the batch commits.
+- **Library** — enumerates saved tracks, saved albums, followed artists, the listener's own playlists
+  and Spotify's own top rankings, once a day.
+- **Now playing** — checks each connected account's player every `ENCORE_NOWPLAYING_INTERVAL`, and
+  does not run at all unless that is set.
+- **Reaper** — clears expired sessions and OAuth states.
+- **Telemetry** — publishes pool statistics.
 - **Rollups** — recomputes `listen_daily_rollup` for days marked dirty by ingestion.
 
 A failure in any one of them does not stop the others, and none of them can lose a listening record.

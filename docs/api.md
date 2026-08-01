@@ -192,9 +192,10 @@ That list is read **the first time somebody opens the album's page** and then ca
 history are never opened, and enumerating them all would spend the instance's quota on questions
 nobody asked.
 
-It is the first Spotify request `encore-api` makes that nobody clicked for — it fires as a side
-effect of *viewing* a page — so an operator can switch it off with
-`ENCORE_ALBUM_TRACKS_ENABLED=false`. This endpoint still answers when they have.
+It is one of two Spotify requests `encore-api` makes that nobody clicked for — the other is the
+discography walk below (`GET /api/artists/{id}/discography`) — and it fires as a side effect of
+*viewing* a page, so an operator can switch it off with `ENCORE_ALBUM_TRACKS_ENABLED=false`. This
+endpoint still answers when they have.
 
 **This endpoint never waits for Spotify.** It answers from the database and starts the fetch behind
 it, so `state` says which of four situations you are in:
@@ -272,13 +273,15 @@ That list is read **the first time somebody opens the artist's page** and then c
 discography grows). There is no background sweep, for the reason §5.2 gives: most artists in a large
 history are never opened.
 
-It is the second Spotify request `encore-api` makes that nobody clicked for, so an operator can
-switch it off with `ENCORE_ARTIST_ALBUMS_ENABLED=false` — a **separate** switch from
+It is the other of the two Spotify requests `encore-api` makes that nobody clicked for, so an
+operator can switch it off with `ENCORE_ARTIST_ALBUMS_ENABLED=false` — a **separate** switch from
 `ENCORE_ALBUM_TRACKS_ENABLED`, because a discography walk costs one request for most artists and up
 to forty — a hard cap, not a typical case — for an unusually prolific one (a compilation-heavy legacy
 act, a prolific remixer, a classical composer catalogued as one Spotify artist), against roughly one
 request for an album's track list. **A rate-limit response to either pauses Spotify access
 instance-wide** for the window Spotify asks for, which 409s "sync now" for every user until it lifts.
+The now-playing poller is the one background caller this does not describe: it draws on a rate
+budget of its own, so a 429 on it pauses that loop alone.
 
 **This endpoint never waits for Spotify.** It answers from the database and starts the walk behind
 it, so `state` says which of four situations you are in — the same four words, with the same
@@ -794,6 +797,80 @@ that the worker has reached it.
 Backs the metadata panel on the Settings page. The command-line equivalent,
 which additionally reports listens, users, per-user sync state and import job
 counts, is `encore-worker status`.
+
+## Now playing
+
+`GET /api/nowplaying`
+
+What the caller is playing right now, as far as this instance has been able to tell. Backs the
+dashboard's now-playing card.
+
+**This endpoint never calls Spotify.** It reads the observation the worker's poller stored, so an
+open dashboard costs no quota however many tabs are on it.
+
+```json
+{
+  "enabled": true,
+  "intervalSeconds": 30,
+  "scopeGranted": true,
+  "checkedAt": "2026-07-31T09:30:12Z",
+  "failed": false,
+  "observation": {
+    "observedAt": "2026-07-31T09:30:12Z",
+    "state": "playing",
+    "kind": "track",
+    "title": "The Wheel",
+    "artist": "SOHN",
+    "trackId": "spotifytrack00000001",
+    "progressMs": 161000,
+    "durationMs": 255000,
+    "deviceName": "Kitchen speaker"
+  }
+}
+```
+
+Three gates, answered separately because they are routinely conflated:
+
+- `enabled` is whether this instance polls at all. `ENCORE_NOWPLAYING_INTERVAL` unset means `false`,
+  and a client should render no card rather than an empty one.
+- `scopeGranted` is whether *this* account's grant carries `user-read-playback-state`. Computed
+  server-side against the stored grant, like `/api/me`'s `missingScopes` and for the same reason.
+- `observation` being `null` is **"Encore has not managed to look"**. An `observation` whose `state`
+  is `"idle"` is **"nothing is playing"**. These are different facts and a client must not render
+  them with the same sentence.
+
+`failed` reports that the check at `checkedAt` did not succeed. `observation`, if present, is then
+the last one that did, so a client can say how stale the display is rather than discarding a true
+thing because a later request went wrong.
+
+`kind` decides what can truthfully be said about the item:
+
+| `kind` | Meaning |
+|---|---|
+| `none` | Nothing in the player. Only ever paired with `state: "idle"`. |
+| `track` | A Spotify catalogue track. The only kind that ever becomes a listen. |
+| `episode` | A podcast episode. `artist` holds the show. Never enters a listening history. |
+| `local` | A file on the listener's own machine. Named, never linked, never a listen. |
+| `unknown` | An advert, or a type Encore does not know. Carries no title and no artist by design. |
+
+`trackId` is present only for a track **Encore's own catalogue already holds**, so a client can link
+to `/tracks/{id}` without checking. A track Spotify has just started playing is named but not linked
+until enrichment catches up.
+
+`progressMs` is progress at `observedAt` and is never extrapolated. A client should state the
+observation's age beside it rather than animating a bar from a fact up to one interval old.
+
+`deviceName` is empty when Spotify reported no device — `GET /v1/me/player/currently-playing` is
+documented with the same object as `GET /v1/me/player` but is observed to omit it — and a client
+should then render no device clause rather than an unknown one.
+
+**Never on a share link.** `GET /api/share/{token}` carries none of this. Real-time presence is
+exactly the concern the share design was written around: a share exposes what somebody listens to,
+never when they are awake.
+
+**The poller never writes a listen.** `GET /me/player/recently-played` remains the only path that
+creates one; the now-playing poll is a read-only observer. See
+[configuration.md](configuration.md#now-playing) for what it costs and how to turn it on.
 
 ## Operational endpoints
 

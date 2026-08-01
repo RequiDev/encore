@@ -288,6 +288,53 @@ export interface StatusResponse {
   metadata: MetadataStatus
 }
 
+// --- now playing -----------------------------------------------------------
+
+/** `unknown` never crosses the wire: it is the absence of an observation. */
+export type PlaybackState = 'idle' | 'playing' | 'paused'
+
+export type PlaybackItemKind = 'none' | 'track' | 'episode' | 'local' | 'unknown'
+
+export interface NowPlayingObservation {
+  observedAt: Timestamp
+  state: PlaybackState
+  kind: PlaybackItemKind
+  title: string
+  artist: string
+  /**
+   * A track in Encore's own catalogue, so `/tracks/{id}` will resolve. Empty
+   * when the item is not a track, or is a track Encore has never seen — the
+   * name is still shown, only the link is withheld.
+   */
+  trackId: string
+  /** Progress at `observedAt`. Never extrapolate it: say how old it is instead. */
+  progressMs: number | null
+  durationMs: number | null
+  /** Empty when Spotify reported no device. Render no clause rather than an unknown one. */
+  deviceName: string
+}
+
+export interface NowPlaying {
+  /** Whether this instance polls at all. False means render no card. */
+  enabled: boolean
+  /** How often the poller checks, and so how often to ask again. Zero when off. */
+  intervalSeconds: number
+  /** Whether this account granted `user-read-playback-state`. */
+  scopeGranted: boolean
+  /** When the poller last tried, successfully or not. Null when it never has. */
+  checkedAt: Timestamp | null
+  /** The attempt at `checkedAt` failed. `observation` is then the last one that did not. */
+  failed: boolean
+  /**
+   * The last successful observation, or null.
+   *
+   * Null means **Encore has not managed to look**. An observation whose `state`
+   * is `idle` means **nothing is playing**. These are different facts and must
+   * never share a sentence.
+   */
+  observation: NowPlayingObservation | null
+}
+
 /** A user other than the caller, for the comparison page. Deliberately minimal. */
 export interface PublicUser {
   id: string

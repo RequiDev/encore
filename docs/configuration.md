@@ -97,6 +97,24 @@ accept a plain number or a suffix (`512kb`, `64mb`, `4gb`). Booleans accept `tru
 | `ENCORE_ARTIST_ALBUMS_ENABLED` | `true` | Whether this instance asks Spotify what an artist has released, which is what lets the artist page say "you have heard 4 of this artist's 11 albums". Like `ENCORE_ALBUM_TRACKS_ENABLED` above it fires as a side effect of *viewing* a page rather than of a click, so unattended egress stays the operator's decision — and it is a **separate** switch on purpose, because the two cost very different amounts and because renaming a key an operator may already have set would fail open. A walk costs one request per fifty releases per artist *viewed* per TTL, counting every single, compilation and appearance, not only albums: one request for most artists, and up to forty — a hard cap, not a typical case — for an unusually prolific one (a compilation-heavy legacy act, a prolific remixer, a classical composer catalogued as one Spotify artist), against roughly one request for an album's track list. Set to `false` and `encore-api` makes no discography request. **Turning it off does not hide discographies already cached** — those are still shown, with the date they were read; only fetching stops, and the artist page says so plainly rather than reporting a Spotify failure that did not happen. **A rate-limit response to this request pauses Spotify access instance-wide** and 409s "sync now" for every user until it lifts — not routine, but this request is unusual in firing from a page view rather than a schedule or a click, and its own worst case costs far more of the quota than the album track listing's, which is reason enough for an operator with a tight quota to turn it off. |
 | `ENCORE_ARTIST_ALBUMS_TTL` | `168h` (7 days) | How long a cached discography is trusted before the next view of that artist's page refreshes it. Deliberately shorter than `ENCORE_ALBUM_TRACKS_TTL`: a released album's track list does not change, but a discography *grows*, and a record released today should be counted within a week rather than within a month. A failed fetch is retried after fifteen minutes rather than after this interval. Ignored when `ENCORE_ARTIST_ALBUMS_ENABLED` is `false`: nothing refreshes, so nothing expires. Must be positive. |
 
+## Now playing
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENCORE_NOWPLAYING_INTERVAL` | *unset* | How often Encore asks Spotify what each connected account is playing right now, which is what fills the dashboard's now-playing card. **Unset means the poller never runs and the card does not appear** — this is opt-in rather than a default with a tuning knob, because the cost is recurring and per account. Minimum `10s`. Accounts that have not granted `user-read-playback-state`, and accounts parked as `needs_reauth`, are skipped without a request. The poller **never writes to your listening history**: `GET /me/player/recently-played` remains the only path that creates a listen, and the now-playing poll is a read-only observer. It draws on a **rate budget of its own**, so unlike every other background request a 429 on it pauses this loop alone — it does not 409 "sync now" for other users, does not stop enrichment, and does not stop the recently-played poller or the library enumerations. `GET /api/nowplaying` reads the stored observation and never calls Spotify, so an open dashboard costs no quota however many tabs are on it. |
+
+What it costs per day, which is the number to weigh before turning it on:
+
+| Accounts | Interval | Requests/day |
+|---|---|---|
+| 1 | 30 s | ≈ 2,880 |
+| 5 | 30 s | ≈ 14,400 |
+| 5 | 60 s | ≈ 7,200 |
+
+A development-mode Spotify application already exhausts its daily quota during a large import.
+A poller that silently doubled baseline consumption would make that worse for everyone on the
+instance, which is why this is off unless somebody asks for it.
+
 ## Import
 
 | Variable | Default | Description |

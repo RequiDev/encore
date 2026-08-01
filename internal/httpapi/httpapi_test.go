@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 	"github.com/RequiDev/encore/internal/config"
 	"github.com/RequiDev/encore/internal/domain"
+	"github.com/RequiDev/encore/internal/spotify"
 	"github.com/RequiDev/encore/internal/store"
 	"github.com/RequiDev/encore/internal/store/accounts"
 )
@@ -216,6 +218,24 @@ func (f *fakeSettings) SpotifyPausedUntil(context.Context, store.Querier) (time.
 	return f.pausedUntil, nil
 }
 
+// fakeNowPlaying stands in for accounts.NowPlaying, answering from a single row.
+//
+// Presence is decided by row.CheckedAt rather than by a separate flag: the real
+// repository only ever has a row once at least one check has landed, and both
+// of its write paths (Record and RecordFailure) always set checked_at, so a
+// zero CheckedAt is exactly the "never reached this account" case the real Get
+// reports as domain.ErrNotFound.
+type fakeNowPlaying struct {
+	row domain.NowPlaying
+}
+
+func (f *fakeNowPlaying) Get(context.Context, store.Querier, uuid.UUID) (domain.NowPlaying, error) {
+	if f.row.CheckedAt.IsZero() {
+		return domain.NowPlaying{}, domain.ErrNotFound
+	}
+	return f.row, nil
+}
+
 // --- server harness --------------------------------------------------------
 
 // testServer is a Server wired to fakes, with the fakes kept to hand so a test
@@ -227,14 +247,45 @@ type testServer struct {
 	credentials *fakeCredentials
 	settings    *fakeSettings
 	listens     *fakeListens
+	nowPlaying  *fakeNowPlaying
 	clock       time.Time
+}
+
+// testDeps configures the extra now-playing-specific pieces newTestServer
+// wires in, beyond the zero-value harness every other handler test uses.
+type testDeps struct {
+	// interval is ENCORE_NOWPLAYING_INTERVAL as this instance parsed it. Zero
+	// (the default) means the poller is off, matching an instance that never
+	// set the variable at all.
+	interval time.Duration
+	// scopes is the caller's stored Spotify grant. Nil (the default) means no
+	// grant at all, the same as the base harness's fakeCredentials{err:
+	// domain.ErrNotFound}.
+	scopes []string
+	// row is what the now-playing repository holds for the caller. See
+	// fakeNowPlaying for how its zero value ("never reached this account") is
+	// told apart from a row that is genuinely present.
+	row domain.NowPlaying
+	// spotifyBase, when set, points the server's Spotify client at a test
+	// server instead of the real API, so a handler that started making
+	// requests of its own would have somewhere for them to land. The test
+	// itself owns and reads the counter that server increments; nothing here
+	// needs a second reference to it.
+	spotifyBase string
 }
 
 // newTestServer builds a server with no database behind it. New itself insists
 // on real repositories, so the struct is assembled directly; the middleware and
 // the handlers under test reach only for what is filled in here.
-func newTestServer(t *testing.T) *testServer {
+//
+// deps is variadic so every existing call site keeps reading newTestServer(t):
+// only the now-playing tests need anything beyond the zero-value harness.
+func newTestServer(t *testing.T, deps ...testDeps) *testServer {
 	t.Helper()
+	var d testDeps
+	if len(deps) > 0 {
+		d = deps[0]
+	}
 
 	user := domain.User{
 		ID:            uuid.New(),
@@ -252,16 +303,27 @@ func newTestServer(t *testing.T) *testServer {
 		ExpiresAt: time.Date(2026, time.December, 1, 0, 0, 0, 0, time.UTC),
 	}
 
+	credentials := &fakeCredentials{err: domain.ErrNotFound}
+	if len(d.scopes) > 0 {
+		credentials = &fakeCredentials{creds: domain.SpotifyCredentials{
+			UserID: user.ID, Scopes: d.scopes,
+		}}
+	}
+
 	ts := &testServer{
 		sessions:    &fakeSessions{session: session, user: user},
 		users:       newFakeUsers(user),
-		credentials: &fakeCredentials{err: domain.ErrNotFound},
+		credentials: credentials,
 		settings:    &fakeSettings{registrations: true},
 		listens:     &fakeListens{},
+		nowPlaying:  &fakeNowPlaying{row: d.row},
 		clock:       time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC),
 	}
+	cfg := testConfig(t)
+	cfg.NowPlaying.Interval = d.interval
+
 	s := &Server{
-		cfg:         testConfig(t),
+		cfg:         cfg,
 		log:         slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
 		version:     "test",
 		now:         func() time.Time { return ts.clock },
@@ -270,14 +332,43 @@ func newTestServer(t *testing.T) *testServer {
 		credentials: ts.credentials,
 		settings:    ts.settings,
 		listens:     ts.listens,
+		nowPlaying:  ts.nowPlaying,
 		syncing:     newInFlight(),
 		touched:     newTouchTracker(),
 		ready:       &readyCache{},
+	}
+	if d.spotifyBase != "" {
+		// A real client pointed at a test server, so a handler that started
+		// making a Spotify request of its own has somewhere to send it rather
+		// than panicking on a nil client — which would fail the test for the
+		// wrong reason and prove nothing about the request count.
+		s.spotify = spotify.NewClient(config.Spotify{APIBaseURL: d.spotifyBase}, s.log)
 	}
 	s.handler = s.buildHandler()
 	ts.Server = s
 	return ts
 }
+
+// getNowPlaying builds a server from deps, signs in as its one caller and
+// decodes GET /api/nowplaying.
+func getNowPlaying(t *testing.T, deps testDeps) NowPlayingResponse {
+	t.Helper()
+	ts := newTestServer(t, deps)
+	rec := ts.do(ts.signedIn(httptest.NewRequest(http.MethodGet, "/api/nowplaying", nil)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/nowplaying = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var body NowPlayingResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not a now-playing payload: %v (%s)", err, rec.Body.String())
+	}
+	return body
+}
+
+// atomicAdd is sync/atomic.AddInt32 under a name that reads plainly at the one
+// call site that needs it: a fake Spotify server incrementing a shared counter
+// from whatever goroutine net/http hands the request to.
+func atomicAdd(addr *int32, delta int32) { atomic.AddInt32(addr, delta) }
 
 // signedIn adds the cookies a signed-in browser would send.
 func (ts *testServer) signedIn(r *http.Request) *http.Request {

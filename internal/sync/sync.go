@@ -112,7 +112,12 @@ func (NopMetrics) SyncLastSuccess(time.Time) {}
 // without a network.
 type SpotifyAPI interface {
 	RecentlyPlayed(ctx context.Context, accessToken string, after time.Time, limit, maxPages int) ([]spotify.PlayHistory, error)
-	RefreshToken(ctx context.Context, refreshToken string) (*spotify.Token, error)
+	// RefreshToken names the budget its grant is drawn from, because this
+	// poller refreshes tokens for callers other than itself. Everything that is
+	// part of the instance's ordinary work passes spotify.RefreshShared, which
+	// is what every caller has always had; the now-playing poller passes
+	// spotify.RefreshNowPlaying so that neither loop can stall the other.
+	RefreshToken(ctx context.Context, refreshToken string, budget spotify.RefreshBudget) (*spotify.Token, error)
 }
 
 // Deps are the collaborators a Poller needs.

@@ -112,7 +112,57 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 	if codeVerifier != "" {
 		form.Set("code_verifier", codeVerifier)
 	}
-	return c.token(ctx, "exchange authorization code", form, true)
+	return c.token(ctx, "exchange authorization code", form, classInteractive)
+}
+
+// RefreshBudget names whose rate budget a token refresh is drawn from.
+//
+// It exists because requestClass must stay unexported — budget()'s exhaustive
+// panic is only affordable while no other package can construct a class — and
+// yet which budget a refresh spends is the one decision this package cannot make
+// on the caller's behalf. So this type carries exactly that decision. It wraps a
+// class rather than mirroring the enumeration, which is what makes it total:
+// every value of it is a class budget() already handles, and there is no third
+// value a caller could invent and no unhandled case to panic on.
+//
+// The set is two because a refresh is one of two things. Either it is part of
+// the instance's ordinary background work, whose 429s are a fact about the whole
+// instance, or it belongs to the now-playing poller, which by design can neither
+// stop anything else nor be stopped by it.
+type RefreshBudget struct{ class requestClass }
+
+var (
+	// RefreshShared is the shared catalogue budget, with the unbounded wait
+	// every background caller has always had: the recently-played poller, the
+	// library enumerations, and the token the API needs behind a playlist
+	// write. It is the zero value, so a refresh that says nothing keeps the
+	// behaviour every caller had before this type existed.
+	RefreshShared = RefreshBudget{classCatalogue}
+	// RefreshNowPlaying is the now-playing poller's own budget, and nothing
+	// else.
+	//
+	// Without it that poller's isolation held in neither direction, because the
+	// poll was private and the refresh in front of every poll was not. A
+	// catalogue 429 from enrichment pauses the shared limiter for whatever
+	// Retry-After Spotify names — most of a day for an exhausted quota — and
+	// within the hour every access token expires, so every check blocked in the
+	// shared limiter's unbounded Wait: four goroutines, a WaitGroup that never
+	// returns, and a card reading "Playing" over a day-old observation with
+	// nothing recorded as failed. And in the other direction a 429 on the
+	// refresh itself was instance-wide, so the least important request Encore
+	// makes wrote spotify_paused_until, 409d "sync now" for every user and
+	// stopped enrichment, sync and the library enumerations — the exact
+	// coupling classNowPlaying exists to prevent.
+	RefreshNowPlaying = RefreshBudget{classNowPlaying}
+)
+
+// String names the budget, so a test that catches a caller on the wrong one says
+// which one rather than printing the class number behind it.
+func (b RefreshBudget) String() string {
+	if b == RefreshNowPlaying {
+		return "now-playing"
+	}
+	return "shared"
 }
 
 // RefreshToken exchanges a refresh token for a fresh access token.
@@ -122,10 +172,13 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 // A rejected grant comes back wrapped in ErrInvalidGrant so the account can be
 // marked needs_reauth instead of being polled for ever.
 //
-// Background: this runs inside the sync poller, which has all day. The one path
-// where a person waits on it — a manual sync — is refused up front by the API
-// while a pause is in force, rather than queueing here.
-func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token, error) {
+// budget says whose quota the grant is drawn from, and every caller must say.
+// RefreshShared is what the sync poller, the library worker and the API have
+// always used: a background caller with all day, whose one impatient path — a
+// manual sync — is refused up front by the API while a pause is in force rather
+// than queueing here. RefreshNowPlaying is the now-playing poller alone, which
+// waits only nowPlayingWait and whose 429 stops nothing but itself.
+func (c *Client) RefreshToken(ctx context.Context, refreshToken string, budget RefreshBudget) (*Token, error) {
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, errors.New("spotify: refresh token is empty")
 	}
@@ -133,7 +186,7 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", c.cfg.ClientID)
-	return c.token(ctx, "refresh access token", form, false)
+	return c.token(ctx, "refresh access token", form, budget.class)
 }
 
 // ClientCredentialsToken obtains an application token, which carries no user
@@ -141,25 +194,29 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 func (c *Client) ClientCredentialsToken(ctx context.Context) (*Token, error) {
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
-	return c.token(ctx, "obtain application token", form, false)
+	return c.token(ctx, "obtain application token", form, classCatalogue)
 }
 
 // token posts a grant to the accounts service and normalises the response.
 //
-// interactive says whether a person is waiting. It matters here more than
-// anywhere: this is accounts.spotify.com, a different service from the API, and
-// a catalogue quota exhausted on api.spotify.com is no reason at all to refuse
-// somebody a token.
-func (c *Client) token(ctx context.Context, label string, form url.Values, interactive bool) (*Token, error) {
+// class says whose budget the grant is drawn from, and it matters here more
+// than anywhere: this is accounts.spotify.com, a different service from the
+// API, and a catalogue quota exhausted on api.spotify.com is no reason at all
+// to refuse somebody a token. Only the code exchange is classInteractive. The
+// application token runs on a worker tick with nobody watching, and a refresh
+// is whichever budget its caller named — see RefreshBudget, and note that the
+// grant is the same request on the same service either way: the class decides
+// only whose quota pays for it and whose work a 429 on it stops.
+func (c *Client) token(ctx context.Context, label string, form url.Values, class requestClass) (*Token, error) {
 	var tr tokenResponse
 	err := c.do(ctx, request{
-		method:      http.MethodPost,
-		url:         c.tokenURL(),
-		label:       label,
-		basic:       true,
-		form:        form,
-		out:         &tr,
-		interactive: interactive,
+		method: http.MethodPost,
+		url:    c.tokenURL(),
+		label:  label,
+		basic:  true,
+		form:   form,
+		out:    &tr,
+		class:  class,
 	})
 	if err != nil {
 		if apiErr, ok := AsAPIError(err); ok && oauthErrorCode(apiErr.Body) == "invalid_grant" {
