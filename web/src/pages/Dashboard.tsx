@@ -1171,19 +1171,29 @@ function artistsOf(item: HistoryItem): string {
 function NowPlayingCard({ query }: { query: UseQueryResult<NowPlaying> }): ReactElement {
   const data = query.data
 
-  // Read so this component re-renders on every failed attempt, and for no other
-  // reason.
+  // Read so this component re-renders on every attempt, successful or not, and
+  // for no other reason.
   //
-  // With an observation retained through a failure, nothing this component reads
-  // changes any more: `data` is structurally shared, `isPending` and `isError`
-  // settle after the first failure, and `error` is never reached on this path.
-  // TanStack only notifies for tracked properties, so without this the card
-  // stops re-rendering entirely and `Last checked …` freezes on whatever phrase
-  // it held when the request first failed — measured at twenty-four failed polls
-  // over eleven and a half minutes still reading "just now". A present-tense
-  // display frozen under a stale clock is a worse lie than the error panel it
-  // replaced.
+  // Nothing else this component reads changes between polls. `data` is
+  // structurally shared — two 200s carrying identical bytes hand back the same
+  // reference — `isPending` and `isError` settle after the first answer, and
+  // `error` is never reached while an observation survives. TanStack only
+  // notifies for tracked properties, so without these two the card stops
+  // re-rendering entirely and `Last checked …` freezes on whatever phrase it
+  // held when the row last changed: measured at twenty-four polls over twelve
+  // minutes still reading "just now". A present-tense display frozen under a
+  // stale clock is a worse lie than the error panel it replaced.
+  //
+  // Both timestamps are needed because they mark different things and each
+  // covers a case the other cannot see. `errorUpdatedAt` is the failing server:
+  // encore-api down, the endpoint 404ing. `dataUpdatedAt` is the succeeding one
+  // whose answer has stopped changing, which is the ordinary case rather than
+  // the exotic one — listDueSQL excludes `sync_state = 'needs_reauth'`, so an
+  // account Spotify parks stops being polled and its row is frozen for ever
+  // while /api/nowplaying goes on answering 200 with the same bytes. It happens
+  // too whenever encore-worker is down and encore-api is up.
   void query.errorUpdatedAt
+  void query.dataUpdatedAt
 
   return (
     <Panel
@@ -1250,16 +1260,31 @@ function isSilent(observation: NowPlayingObservation): boolean {
 
 /** The four families of answer, once the instance polls and the account can be polled. */
 function NowPlayingBody({ data }: { data: NowPlaying }): ReactElement {
-  const { observation, failed, checkedAt } = data
+  const { observation, checkedAt } = data
+
+  // A failure and the instant it happened are one fact, so they are read as one
+  // value. The store writes `checked_at` and `failed` in the same statement and
+  // the handler sends both from that single row, so `failed` without a
+  // `checkedAt` is a payload the server cannot produce. Pairing them here is
+  // what lets the two sentences below name a time outright: each used to carry
+  // `: EMPTY`, which could only ever render "The last check failed —." — a
+  // sentence with a dash where its time phrase belongs, for a state nothing can
+  // reach. A fallback that cannot be read aloud is worse than no fallback,
+  // because the second is at least impossible to ship by accident.
+  const failedAt = data.failed ? checkedAt : null
+
+  // How often it looks, when there is a phrase for it. `intervalPhrase` answers
+  // with an empty string for a poller that is off, and this card is not rendered
+  // at all in that case — but the sentence is built from the phrase rather than
+  // around it, so the one thing that cannot happen is "It checks every .".
+  const every = intervalPhrase(data.intervalSeconds)
 
   // Never looked. Deliberately the first branch and deliberately worded without
   // the word "nothing": this is the absence of a look, not a silent player.
   if (!observation) {
-    return failed ? (
+    return failedAt ? (
       <div>
-        <p className="text-sm text-ink">
-          The last check failed {checkedAt ? formatRelative(checkedAt) : EMPTY}.
-        </p>
+        <p className="text-sm text-ink">The last check failed {formatRelative(failedAt)}.</p>
         <p className="mt-1 text-sm text-ink-muted">
           Encore has not managed to see what you are playing yet.
         </p>
@@ -1267,9 +1292,9 @@ function NowPlayingBody({ data }: { data: NowPlaying }): ReactElement {
     ) : (
       <div>
         <p className="text-sm text-ink">Encore has not checked yet.</p>
-        <p className="mt-1 text-sm text-ink-muted">
-          It checks every {intervalPhrase(data.intervalSeconds)}.
-        </p>
+        {every !== '' && (
+          <p className="mt-1 text-sm text-ink-muted">It checks every {every}.</p>
+        )}
       </div>
     )
   }
@@ -1278,12 +1303,10 @@ function NowPlayingBody({ data }: { data: NowPlaying }): ReactElement {
   // every present-tense signal. A chip reading "Playing" above a four-minute-old
   // observation claims something nobody confirmed, and a progress figure from
   // four minutes ago is meaningless beside it.
-  if (failed) {
+  if (failedAt) {
     return (
       <div>
-        <p className="text-sm text-ink">
-          The last check failed {checkedAt ? formatRelative(checkedAt) : EMPTY}.
-        </p>
+        <p className="text-sm text-ink">The last check failed {formatRelative(failedAt)}.</p>
         <p className="mt-1 text-sm text-ink-muted">
           {isSilent(observation)
             ? `Nothing was playing ${formatRelative(observation.observedAt)}.`

@@ -430,6 +430,79 @@ describe('the now-playing card', () => {
     expect(within(section).getByText(/^Last checked \d+ minutes ago\.$/)).toBeInTheDocument()
   })
 
+  // The same freeze, reached by polls that all *succeed*.
+  //
+  // The test above covers the failing server. This one covers the succeeding one
+  // whose answer has stopped changing, which is the ordinary case rather than the
+  // exotic one: `listDueSQL` excludes `sync_state = 'needs_reauth'`, so an
+  // account Spotify parks stops being polled and its row is frozen for ever while
+  // `/api/nowplaying` goes on answering 200 with byte-identical bytes. It happens
+  // too whenever `encore-worker` is down and `encore-api` is up.
+  //
+  // TanStack's structural sharing hands back the *same* `data` reference for
+  // identical bytes, so nothing tracked changes, the component never re-renders,
+  // and `formatRelative` is never recomputed. `errorUpdatedAt` cannot see it —
+  // no request failed. The card reads "Last checked just now." over a row that
+  // has not moved in twelve minutes: the present-tense claim rule 1 drops the
+  // chip for, under a stopped clock.
+  //
+  // One body, serialised once and returned verbatim, is what makes this a test of
+  // structural sharing rather than of the fixture: rebuilding it per response
+  // would change `checkedAt` each time and re-render for that reason instead.
+  //
+  // Fails when: the `dataUpdatedAt` read is dropped — the card stops
+  // re-rendering and "Last checked just now." is still on screen twelve minutes
+  // later.
+  it('keeps saying how old a successful check is when the answer stops changing', async () => {
+    vi.useFakeTimers()
+    let attempts = 0
+    const frozen = JSON.stringify(payload({ checkedAt: ago(0), observation: observation() }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const path = new URL(url, 'http://encore.test').pathname
+        if (path === '/api/nowplaying') {
+          attempts += 1
+          return new Response(frozen, {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        const body = DASHBOARD_BODIES[path]
+        if (body === undefined) {
+          return new Response(JSON.stringify({ error: { code: 'not_found', message: 'No.' } }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }),
+    )
+    render(mountAt('/'))
+
+    const section = await settledCardWhileTicking()
+    expect(within(section).getByText('Last checked just now.')).toBeInTheDocument()
+
+    // Twenty-four polls, every one of them a success, every one of them the same
+    // bytes.
+    for (let i = 0; i < 24; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_100)
+      })
+    }
+    expect(attempts).toBeGreaterThan(20)
+
+    // The observation is unchanged, because nothing about it changed.
+    expect(within(section).getByText('The Wheel')).toBeInTheDocument()
+    // The age is not, because twelve minutes passed.
+    expect(within(section).queryByText('Last checked just now.')).not.toBeInTheDocument()
+    expect(within(section).getByText('Last checked 12 minutes ago.')).toBeInTheDocument()
+  })
+
   // Fails when: the scope branch is dropped, or is worded as a failure — a grant
   // that never included the scope is not a check that went wrong, and offering a
   // retry for it points somebody at a button that cannot work.
