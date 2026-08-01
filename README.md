@@ -62,6 +62,9 @@ Spotify.*
 - **Shares a read-only link** to your statistics with somebody who has no account here. Aggregates
   only: totals, charts and rankings, never individual plays or when they happened. Revocable, and
   optionally a rolling window that stays current.
+- **Now playing.** With `ENCORE_NOWPLAYING_INTERVAL` set, the dashboard shows what you are listening
+  to right now. It is off by default because it costs a Spotify request per account per interval, and
+  it never writes to your listening history — that still comes only from the recently-played feed.
 - **Keeps working when Spotify stops answering.** A development-mode Spotify application exhausts its
   daily quota during a large import; Encore records the pause, waits it out across restarts, says so
   in the interface, and never lets it interfere with signing in. You can also point it at your own
@@ -337,6 +340,8 @@ Measured results, and the hardware they were measured on, are in
 - **Playback control is not implemented.** It would need `user-modify-playback-state` and an active
   device, and it is the one write scope with no read-only equivalent. Intentionally deferred; see the
   parity checklist.
+- **Now playing cannot be shared.** A share link shows what somebody listens to, never when they are
+  awake.
 - **`listens` is a single unpartitioned table.** It handles tens of millions of rows comfortably with
   the indexes provided. Beyond that, range partitioning by year would be the next step; it is not
   implemented because no self-hosted instance is close to needing it.

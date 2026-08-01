@@ -3683,7 +3683,7 @@ Panel description, constant in every rendered state so it can never contradict t
 | 12 | Paused a track | `state==='paused' && kind==='track' && !failed` | Chip `Paused` (tone `neutral`); otherwise exactly as 11 |
 | 13 | Podcast | `kind==='episode' && !failed` | Chip `Playing`/`Paused`<br>Title = episode name (never a link)<br>Show name (only when non-empty)<br>`Podcasts are not part of your listening history.`<br>device, progress and age as above |
 | 14 | Local file | `kind==='local' && !failed` | Chip `Playing`/`Paused`<br>Title = file name (never a link)<br>Artist (only when non-empty)<br>`Local files are not part of your listening history.` |
-| 15 | Unidentifiable | `kind==='unknown' && !failed` | Chip `Playing`/`Paused`<br>`Spotify is playing something Encore cannot identify.`<br>`It will not appear in your listening history.`<br>*no title, no artist* |
+| 15 | Unidentifiable | `kind==='unknown' && !failed` | Chip `Playing`/`Paused`<br>`Something Encore cannot identify.`<br>`It will not appear in your listening history.`<br>*no title, no artist* |
 | 16 | Stale, something was playing | `failed && observation.kind !== 'none'` | `The last check failed 3 minutes ago.`<br>`This is what you were playing 4 minutes ago.`<br>then the title, the artist and the kind note — **no chip, no progress figure, no meter, no "Last checked" line** |
 
 Six rules that hold across the table, each of which is a defect avoided:

@@ -218,14 +218,21 @@ complete. It is worth pointing people there before they go restarting containers
 
 **Signing in keeps working throughout.** Authentication draws on a rate budget of its own, and the
 token exchange does not even use the same Spotify service — it is `accounts.spotify.com`, which never
-rate limited anything. A quota exhausted by enrichment on `api.spotify.com` has no bearing on it.
-Only these are held back by a pause:
+rate limited anything. A quota exhausted by enrichment on `api.spotify.com` has no bearing on it — so
+does the optional now-playing poller, for the same reason and in both directions: nothing a
+background loop does may take authentication offline, and the least important request Encore makes
+must not be able to stop the rest. Only these are held back by a pause:
 
 | Held back | Unaffected |
 |---|---|
 | Metadata enrichment: names, artwork, genres | Signing in and existing sessions |
 | Background recently-played polling | Imports, and every statistic, chart and export |
 | A manual **Sync now**, which is refused with an explanation rather than left to hang | Everything already in the database |
+| Now-playing checks | Everything else, including signing in, syncing and enrichment |
+
+And the reverse holds too: a catalogue 429 (enrichment, an album page, an artist page) leaves the
+now-playing poller running. The two draw on separate budgets, so a pause on either lists the other
+under **Unaffected** — an isolation that is only worth as much as stating it both ways.
 
 Listening data is never affected; only the names, artwork and genres are. What to do:
 

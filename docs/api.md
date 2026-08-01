@@ -192,9 +192,10 @@ That list is read **the first time somebody opens the album's page** and then ca
 history are never opened, and enumerating them all would spend the instance's quota on questions
 nobody asked.
 
-It is the first Spotify request `encore-api` makes that nobody clicked for — it fires as a side
-effect of *viewing* a page — so an operator can switch it off with
-`ENCORE_ALBUM_TRACKS_ENABLED=false`. This endpoint still answers when they have.
+It is one of two Spotify requests `encore-api` makes that nobody clicked for — the other is the
+discography walk below (`GET /api/artists/{id}/discography`) — it fires as a side effect of
+*viewing* a page, so an operator can switch it off with `ENCORE_ALBUM_TRACKS_ENABLED=false`. This
+endpoint still answers when they have.
 
 **This endpoint never waits for Spotify.** It answers from the database and starts the fetch behind
 it, so `state` says which of four situations you are in:
@@ -272,13 +273,15 @@ That list is read **the first time somebody opens the artist's page** and then c
 discography grows). There is no background sweep, for the reason §5.2 gives: most artists in a large
 history are never opened.
 
-It is the second Spotify request `encore-api` makes that nobody clicked for, so an operator can
-switch it off with `ENCORE_ARTIST_ALBUMS_ENABLED=false` — a **separate** switch from
+It is the other of the two Spotify requests `encore-api` makes that nobody clicked for, so an
+operator can switch it off with `ENCORE_ARTIST_ALBUMS_ENABLED=false` — a **separate** switch from
 `ENCORE_ALBUM_TRACKS_ENABLED`, because a discography walk costs one request for most artists and up
 to forty — a hard cap, not a typical case — for an unusually prolific one (a compilation-heavy legacy
 act, a prolific remixer, a classical composer catalogued as one Spotify artist), against roughly one
 request for an album's track list. **A rate-limit response to either pauses Spotify access
 instance-wide** for the window Spotify asks for, which 409s "sync now" for every user until it lifts.
+The now-playing poller is the one background caller this does not describe: it draws on a rate
+budget of its own, so a 429 on it pauses that loop alone.
 
 **This endpoint never waits for Spotify.** It answers from the database and starts the walk behind
 it, so `state` says which of four situations you are in — the same four words, with the same
