@@ -14,6 +14,29 @@
 
 ---
 
+## Where this stands — read this first
+
+**Tasks 1 and 2 are done, reviewed and committed on `phase-3c-playback-context-backfill`. Tasks 3 to 6 are not started.** Work stopped for a session limit, not for a problem: everything on the branch is green and the tree is clean.
+
+| | |
+|---|---|
+| `ea1e1e6` | this plan |
+| `5a97743` | **Task 1** — the poll moved to `/v1/me/player`. Reviewed: spec ✅, quality approved, all bands empty. |
+| `3bcc72f` | **Task 2** — `playback_observations`, migration `00018`, the reaper's third delete. Reviewed: no Critical, no blocking Important. |
+| `102efcd` | two doc comments Task 2's review found stale |
+
+What is live on the branch: the poller reads the whole player object for the same one request, and appends what it sees to a 24-hour log. **Nothing reads that log yet** — Task 3 is what makes it useful. Merging as-is would ship a table that collects data nobody consumes.
+
+**Three things a later session needs that are not obvious from the tasks below.**
+
+1. **Task 2's review left one open question for Task 3, and it is a real one.** The 24-hour reap is a pure age predicate with no signal from any consumer — deliberate, because reconciliation-style deletes have cost this project data three times and age-only avoids that class entirely. Its failure mode is benign: a missed observation leaves the columns NULL, which is indistinguishable from never having observed. **But "24 hours always outlasts the backfill" is an assumption about Task 3's read cadence, and nothing tests it.** Decide when the backfill runs, state whether the assumption survives the worker having been down, and test observations ageing out before a first catch-up pass. Do not treat the figure as proven.
+
+2. **Task 3's Step 6 ships with a deliberate `t.Skip`**, where the correct fixture is an existing rig that has to be read first. The step names the file, spells out every assertion, and carries a verification command that fails on `SKIP`. It must not reach a review still skipped — if the fixture genuinely cannot carry the test, say so rather than shipping the marker.
+
+3. **The truncation-fixture trap has now caught this project three times**, most recently in Task 2 of this very phase: a byte limit that divides evenly by the fixture's rune width makes a naive slice land on a character boundary, so the *unsafe* implementation passes. Any test of `store.Truncate` needs a fixture whose arithmetic genuinely misaligns — check it, do not assume it.
+
+---
+
 ## The property this phase inverts, and how the old one survives
 
 **Phase 3b's poller structurally cannot write a listen.** `internal/store/listens`, `internal/sync` and `internal/importer` are absent from `internal/nowplaying`'s dependency closure at any depth, and `TestThePollerCannotReachAnythingThatWritesAListen` (`internal/nowplaying/nowplaying_test.go:49`) reads `go list -deps` to say so. That was not decoration: the sync poller's correctness rests on its cursor advancing in the same transaction that commits the listens it covers, and a second writer with a different view of what has been played would produce duplicates the dedupe key catches by accident.
