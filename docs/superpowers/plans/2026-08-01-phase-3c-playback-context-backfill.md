@@ -16,7 +16,9 @@
 
 ## Where this stands — read this first
 
-**Tasks 1, 2 and 3 are done and committed on `phase-3c-playback-context-backfill`. Tasks 4 to 6 are not started.** Everything on the branch is green and the tree is clean. Tasks 1 and 2 were reviewed; **Task 3 has not been reviewed yet.**
+**All six tasks are done and committed on `phase-3c-playback-context-backfill`.** Everything on the branch is green locally and the tree is clean. Tasks 1, 2 and 3 were reviewed; **Tasks 4, 5 and 6 have not been.**
+
+**What is left is Task 6's Step 9, and it is not optional.** `go test -race` does not run locally (no gcc) and CI does not run it on branch pushes. Nothing here is done until the PR is open and all nine jobs are green — this phase adds a second write inside `check`'s goroutine and a new statement inside the sync poller's per-account path, and neither has been through the race detector.
 
 | | |
 |---|---|
@@ -24,9 +26,14 @@
 | `5a97743` | **Task 1** — the poll moved to `/v1/me/player`. Reviewed: spec ✅, quality approved, all bands empty. |
 | `3bcc72f` | **Task 2** — `playback_observations`, migration `00018`, the reaper's third delete. Reviewed: no Critical, no blocking Important. |
 | `102efcd` | two doc comments Task 2's review found stale |
-| `1a22d49` | **Task 3** — the backfill `UPDATE`, the post-commit call in `poll`, ten integration cases. **Not yet reviewed.** |
+| `1a22d49` | **Task 3** — the backfill `UPDATE`, the post-commit call in `poll`, integration cases. |
+| `e9252cd` | plan state after task 3 |
+| `c3e3d88` | **Task 3's review** — 0 Critical, 0 Important, 3 Minor, all fixed. Query plan checked against a seeded 300k-row history. |
+| `66bae31` | **Task 4** — `DeviceFamily`, the fourth `UNION ALL`, the DTO across three files. Not yet reviewed. |
+| `da76b91` | **Task 5** — the device chart and the four sentences that stopped being true. Not yet reviewed. |
+| `1c1f4eb` | **Task 6** — the document sweep, plus two stale Go comments and a wrong loop count in `architecture.md`. Not yet reviewed. |
 
-What is live on the branch: the poller reads the whole player object for the same one request, appends what it sees to a 24-hour log, and the sync loop now attaches that to the plays it belongs to after every successful poll. **Nothing surfaces it yet** — a listen carries `shuffle` and `device_type`, and no statistic and no page reads either. Task 4 is the statistic; Task 5 is the page.
+What is live on the branch: the poller reads the whole player object for the same one request, appends what it sees to a 24-hour log, the sync loop attaches that to the plays it belongs to after every successful poll, `/api/stats/context` reports a device breakdown with its own denominator, and Habits draws it and no longer claims shuffle can only come from an export.
 
 **What a later session needs that is not obvious from the tasks below.**
 
