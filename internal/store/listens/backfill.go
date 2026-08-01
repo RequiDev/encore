@@ -31,6 +31,15 @@ import (
 // between Spotify's timestamp and Encore's own, and for a listener who paused for
 // a moment mid-track.
 //
+// It is also not the dominant term, which matters if this is ever tuned to cut
+// false positives. The window is played_at + ms_played + this, and ms_played on
+// a source = 0 row is the track's *full duration* rather than how much of it was
+// heard (internal/sync/ingest.go's msPlayed) — recently-played does not report
+// the latter. A track skipped after ten seconds therefore gets a window minutes
+// wide, of which this constant is one minute. Shrinking the tolerance narrows
+// the window by seconds; nothing here can narrow it by the length of a track,
+// and no endpoint Spotify offers would let it.
+//
 // Widening it is not free. The tail is where this rule's one false-positive mode
 // lives: two plays of the same track back to back — repeat-one, or a replay —
 // have overlapping windows, and the most-recent observation inside the first

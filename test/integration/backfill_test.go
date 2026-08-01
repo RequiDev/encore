@@ -601,9 +601,7 @@ func TestASyncPollAnnotatesWhatThePollerSaw(t *testing.T) {
 		t.Fatalf("the poll imported %d plays, want 1", res.Imported)
 	}
 
-	var shuffle *bool
-	var deviceType *string
-	read := func(t *testing.T) (*bool, *string) {
+	read := func(t *testing.T) (shuffle *bool, deviceType *string) {
 		t.Helper()
 		if err := env.Pool.QueryRow(env.Ctx(),
 			`SELECT shuffle, device_type FROM listens WHERE user_id = $1`,
@@ -613,23 +611,13 @@ func TestASyncPollAnnotatesWhatThePollerSaw(t *testing.T) {
 		return shuffle, deviceType
 	}
 
-	shuffle, deviceType = read(t)
+	shuffle, deviceType := read(t)
 	if shuffle == nil || !*shuffle {
 		t.Fatalf("shuffle = %v, want true: the poll ingested the play but never attached "+
 			"what the now-playing poller saw during it", shuffle)
 	}
 	if deviceType == nil || *deviceType != "Speaker" {
 		t.Fatalf("device_type = %v, want Speaker", deviceType)
-	}
-
-	// device_name stays in the log. It is the one field that never becomes
-	// durable on the fact table, and a column added to listens for it would be
-	// the easiest thing in this phase to add by accident.
-	if n := env.ScalarInt(
-		`SELECT count(*) FROM information_schema.columns
-          WHERE table_name = 'listens' AND column_name LIKE 'device_name%'`); n != 0 {
-		t.Errorf("listens grew %d device_name column(s); the player's human name is "+
-			"deliberately confined to playback_observations, which expires within a day", n)
 	}
 
 	res, err = poller.SyncUser(env.Ctx(), user.ID)
@@ -646,5 +634,45 @@ func TestASyncPollAnnotatesWhatThePollerSaw(t *testing.T) {
 	if secondShuffle == nil || !*secondShuffle || secondDevice == nil || *secondDevice != "Speaker" {
 		t.Fatalf("a second poll changed the annotation to (%v, %v), want (true, Speaker)",
 			secondShuffle, secondDevice)
+	}
+}
+
+// TestTheDeviceNameNeverReachesTheFactTable pins the one field of an observation
+// that is deliberately not durable.
+//
+// device_name is "Requi's iPhone". It exists so an operator can tell two
+// identical device types apart while a label still looks wrong, and it expires
+// with the rest of the log inside a day. Copying it onto listens would turn a
+// debugging aid into a permanent record of what a person names their devices,
+// on the table every statistic and every export reads — and docs/api.md already
+// records that device information is absent from every share payload.
+//
+// A schema assertion rather than a behavioural one, because the mistake it
+// guards against is a column being added, not a value being written. Nothing
+// else in this phase would fail if listens grew a device_name.
+//
+// Fails when: a migration adds device_name (or anything prefixed with it) to
+// listens.
+func TestTheDeviceNameNeverReachesTheFactTable(t *testing.T) {
+	env := harness.New(t)
+
+	if n := env.ScalarInt(
+		`SELECT count(*) FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'listens'
+            AND column_name LIKE 'device_name%'`); n != 0 {
+		t.Errorf("listens grew %d device_name column(s); the player's human name is "+
+			"deliberately confined to playback_observations, which expires within a day", n)
+	}
+
+	// The log does carry it, so the assertion above is about where it lives
+	// rather than about the column having been dropped everywhere.
+	if n := env.ScalarInt(
+		`SELECT count(*) FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'playback_observations'
+            AND column_name = 'device_name'`); n != 1 {
+		t.Errorf("playback_observations has %d device_name columns, want 1: without it "+
+			"the assertion above passes for the wrong reason", n)
 	}
 }
