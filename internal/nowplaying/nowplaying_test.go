@@ -374,7 +374,7 @@ func samePtr(a, b *int) bool {
 // answer a paused budget returns immediately, and the only correct response to
 // "no request will reach Spotify for the next while" is to stop asking.
 //
-// Fails when: check() grows a retry around CurrentlyPlaying — the request count
+// Fails when: check() grows a retry around Player — the request count
 // below stops being one; or the failure path calls Record instead of
 // RecordFailure, which would replace a true observation with an empty one.
 func TestARateLimitedPollIsNotRetriedAndKeepsWhatWasAlreadyKnown(t *testing.T) {
@@ -973,8 +973,8 @@ func playing(id, title string) *spotify.Playback {
 }
 
 // tokenFor is the token fakeTokens mints for one account. Tokens are per-account
-// so a fake Spotify can tell its callers apart: CurrentlyPlaying is handed a
-// token and nothing else, exactly as the real client is.
+// so a fake Spotify can tell its callers apart: Player is handed a token and
+// nothing else, exactly as the real client is.
 func tokenFor(id uuid.UUID) string { return "token-" + id.String() }
 
 // fakeSpotify satisfies SpotifyAPI without a network, and counts what was
@@ -996,7 +996,7 @@ type fakeSpotify struct {
 	err      error
 }
 
-func (f *fakeSpotify) CurrentlyPlaying(ctx context.Context, token string) (*spotify.Playback, error) {
+func (f *fakeSpotify) Player(ctx context.Context, token string) (*spotify.Playback, error) {
 	f.calls.Add(1)
 	if f.mirror != nil {
 		f.mirror.Add(1)

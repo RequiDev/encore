@@ -77,8 +77,13 @@ const tickJitter = 0.2
 //
 // One method, and that is the whole of this package's reach into Spotify. A nil
 // result with a nil error means nothing is playing.
+//
+// It is GET /v1/me/player rather than the narrower /currently-playing this
+// package first shipped against, for one request rather than two: the wider
+// endpoint carries shuffle_state and a reliable device, which is what the
+// playback-context backfill reads, at the same cost and on the same budget.
 type SpotifyAPI interface {
-	CurrentlyPlaying(ctx context.Context, accessToken string) (*spotify.Playback, error)
+	Player(ctx context.Context, accessToken string) (*spotify.Playback, error)
 }
 
 // Tokens supplies a usable Spotify access token for one account, refreshing and
@@ -301,7 +306,7 @@ func (w *Watcher) check(ctx context.Context, account accounts.DueAccount) bool {
 		return false
 	}
 
-	pb, err := w.dep.Spotify.CurrentlyPlaying(ctx, token)
+	pb, err := w.dep.Spotify.Player(ctx, token)
 	if err != nil {
 		if ctx.Err() != nil {
 			// Shutting down. The next tick picks the account up and nothing is

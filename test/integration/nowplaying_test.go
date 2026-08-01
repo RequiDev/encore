@@ -313,7 +313,7 @@ type fakeNowPlayingAPI struct {
 	calls    atomic.Int32
 }
 
-func (f *fakeNowPlayingAPI) CurrentlyPlaying(context.Context, string) (*spotify.Playback, error) {
+func (f *fakeNowPlayingAPI) Player(context.Context, string) (*spotify.Playback, error) {
 	f.calls.Add(1)
 	return f.playback, f.err
 }
