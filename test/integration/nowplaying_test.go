@@ -323,7 +323,7 @@ func (f *fakeNowPlayingAPI) CurrentlyPlaying(context.Context, string) (*spotify.
 // watcher only ever calls this one method.
 type fakeNowPlayingTokens struct{}
 
-func (fakeNowPlayingTokens) AccessToken(context.Context, uuid.UUID) (string, error) {
+func (fakeNowPlayingTokens) NowPlayingAccessToken(context.Context, uuid.UUID) (string, error) {
 	return "now-playing-access-token", nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,6 +40,13 @@ type fakeRecentlyPlayed struct {
 	refreshCalls  atomic.Int32
 	refreshResult *spotify.Token
 	refreshErr    error
+
+	// budgetMu guards refreshBudgets, which records whose rate budget each
+	// refresh named. That choice is the poller's alone — it refreshes tokens for
+	// callers other than itself — so it is the one thing about a refresh these
+	// tests have to watch rather than infer.
+	budgetMu       sync.Mutex
+	refreshBudgets []spotify.RefreshBudget
 }
 
 func (f *fakeRecentlyPlayed) RecentlyPlayed(_ context.Context, _ string, after time.Time, _, _ int) ([]spotify.PlayHistory, error) {
@@ -59,8 +67,13 @@ func (f *fakeRecentlyPlayed) RecentlyPlayed(_ context.Context, _ string, after t
 	return f.pages[idx], nil
 }
 
-func (f *fakeRecentlyPlayed) RefreshToken(context.Context, string) (*spotify.Token, error) {
+func (f *fakeRecentlyPlayed) RefreshToken(
+	_ context.Context, _ string, budget spotify.RefreshBudget,
+) (*spotify.Token, error) {
 	f.refreshCalls.Add(1)
+	f.budgetMu.Lock()
+	f.refreshBudgets = append(f.refreshBudgets, budget)
+	f.budgetMu.Unlock()
 	if f.refreshErr != nil {
 		return nil, f.refreshErr
 	}
@@ -386,6 +399,101 @@ func TestSyncRefreshesAnExpiredTokenAndKeepsTheRefreshToken(t *testing.T) {
 	// the user noticed and re-authorised.
 	if creds.RefreshToken != "the-refresh-token" {
 		t.Fatal("the stored refresh token was cleared by a refresh that omitted one")
+	}
+}
+
+// TestEveryRefreshCallerDrawsOnItsOwnBudget pins which rate budget each entry
+// point into the refresh dance spends, from the outside, against a real
+// database.
+//
+// This poller refreshes tokens for three callers other than itself — the API
+// behind a playlist write, the library worker, and the now-playing poller — and
+// only one of them may leave the shared catalogue budget. That is not a
+// preference:
+//
+//   - On the shared budget the wait is unbounded. A catalogue 429 from
+//     enrichment pauses it for whatever Retry-After Spotify names, most of a day
+//     for an exhausted quota, and within the hour every access token has expired.
+//     Every now-playing check then *blocks* rather than failing — four
+//     goroutines, a WaitGroup that never returns, no further tick — with nothing
+//     recorded as failed, so the card goes on rendering "Playing" over an
+//     observation a day old.
+//   - And a 429 on the shared budget is instance-wide: it writes
+//     spotify_paused_until, 409s "sync now" for every user, and stops
+//     enrichment, sync and the library enumerations at the worker's next
+//     construction.
+//
+// Which is why the assertion runs in both directions. Moving now-playing off the
+// shared budget is only half the property; the other half is that nothing else
+// moved with it, because a quota ban that stopped being recorded would be
+// forgotten across a restart and the next process would spend requests against a
+// quota that has not reset.
+//
+// Fails when: NowPlayingAccessToken is folded back into AccessToken, or any of
+// the shared callers is switched to the poller's budget.
+func TestEveryRefreshCallerDrawsOnItsOwnBudget(t *testing.T) {
+	env := harness.New(t)
+	user := env.NewUser("refreshbudget")
+
+	for _, tc := range []struct {
+		name string
+		// call is one caller's entry into the refresh dance.
+		call func(t *testing.T, p *encoresync.Poller) error
+		want spotify.RefreshBudget
+	}{
+		{
+			name: "the recently-played poll",
+			call: func(_ *testing.T, p *encoresync.Poller) error {
+				_, err := p.SyncUser(env.Ctx(), user.ID)
+				return err
+			},
+			want: spotify.RefreshShared,
+		},
+		{
+			// The API's playlist writes and the library worker both hold this
+			// method — cmd/encore-api passes it as UserToken, cmd/encore-worker
+			// as the library worker's Tokens — so one case covers both.
+			name: "AccessToken, which the API and the library worker share",
+			call: func(_ *testing.T, p *encoresync.Poller) error {
+				_, err := p.AccessToken(env.Ctx(), user.ID)
+				return err
+			},
+			want: spotify.RefreshShared,
+		},
+		{
+			name: "the now-playing poller",
+			call: func(_ *testing.T, p *encoresync.Poller) error {
+				_, err := p.NowPlayingAccessToken(env.Ctx(), user.ID)
+				return err
+			},
+			want: spotify.RefreshNowPlaying,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Expired an hour ago, so every case above reaches the refresh
+			// rather than handing back what is stored. Re-connected per case
+			// because a successful refresh persists a token that is valid again.
+			connect(t, env, user.ID, time.Now().Add(-time.Hour))
+
+			api := &fakeRecentlyPlayed{}
+			if err := tc.call(t, newPoller(t, env, api)); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+
+			api.budgetMu.Lock()
+			got := append([]spotify.RefreshBudget(nil), api.refreshBudgets...)
+			api.budgetMu.Unlock()
+
+			if len(got) == 0 {
+				t.Fatal("an expired access token did not trigger a refresh, so this " +
+					"case asserts nothing")
+			}
+			for i, b := range got {
+				if b != tc.want {
+					t.Fatalf("refresh %d drew on the %s budget, want %s", i+1, b, tc.want)
+				}
+			}
+		})
 	}
 }
 

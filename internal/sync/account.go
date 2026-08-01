@@ -91,7 +91,7 @@ func (p *Poller) syncUser(ctx context.Context, userID uuid.UUID) (SyncResult, er
 func (p *Poller) poll(ctx context.Context, userID uuid.UUID, creds domain.SpotifyCredentials) (SyncResult, error) {
 	var res SyncResult
 
-	token, err := p.accessToken(ctx, userID, creds, false)
+	token, err := p.accessToken(ctx, userID, creds, false, spotify.RefreshShared)
 	if err != nil {
 		return res, err
 	}
@@ -144,7 +144,7 @@ func (p *Poller) poll(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 func (p *Poller) fetch(ctx context.Context, userID uuid.UUID, creds domain.SpotifyCredentials, token string, after time.Time) ([]spotify.PlayHistory, error) {
 	plays, err := p.dep.Spotify.RecentlyPlayed(ctx, token, after, recentlyPlayedLimit, recentlyPlayedPages)
 	if unauthorised(err) {
-		token, err = p.accessToken(ctx, userID, creds, true)
+		token, err = p.accessToken(ctx, userID, creds, true, spotify.RefreshShared)
 		if err != nil {
 			return nil, err
 		}
@@ -172,7 +172,18 @@ func (p *Poller) fetch(ctx context.Context, userID uuid.UUID, creds domain.Spoti
 // an empty value is passed straight through to the store, which reads it as
 // "keep what is there". Writing the empty value would leave the account unable
 // to refresh ever again.
-func (p *Poller) accessToken(ctx context.Context, userID uuid.UUID, creds domain.SpotifyCredentials, force bool) (string, error) {
+//
+// budget is the caller's, not this poller's. Every path through this function is
+// identical except for whose Spotify quota the refresh spends and what a 429 on
+// it stops, and that is precisely the thing a caller in another package knows
+// and this one does not.
+func (p *Poller) accessToken(
+	ctx context.Context,
+	userID uuid.UUID,
+	creds domain.SpotifyCredentials,
+	force bool,
+	budget spotify.RefreshBudget,
+) (string, error) {
 	if !force && creds.AccessTokenValid(p.now()) {
 		return creds.AccessToken, nil
 	}
@@ -181,7 +192,7 @@ func (p *Poller) accessToken(ctx context.Context, userID uuid.UUID, creds domain
 			"No refresh token is stored for this connection. Reconnect the account to restore synchronisation.")
 	}
 
-	tok, err := p.dep.Spotify.RefreshToken(ctx, creds.RefreshToken)
+	tok, err := p.dep.Spotify.RefreshToken(ctx, creds.RefreshToken, budget)
 	if err != nil {
 		if errors.Is(err, spotify.ErrInvalidGrant) {
 			// The listener revoked access, or Spotify invalidated the grant.
@@ -326,14 +337,42 @@ func notAfter(t, now time.Time) time.Time {
 // AccessToken returns a usable access token for one account, refreshing it when
 // the stored one has expired.
 //
-// Exported because the API needs it too. Creating a playlist acts on the
-// listener's own account and so must use the listener's own token, and the
-// refresh dance — including marking an account needs_reauth when Spotify has
-// revoked the grant — belongs here rather than duplicated in a handler.
+// Exported because the API and the library worker need it too. Creating a
+// playlist acts on the listener's own account and so must use the listener's own
+// token, and the refresh dance — including marking an account needs_reauth when
+// Spotify has revoked the grant — belongs here rather than duplicated in a
+// handler.
+//
+// The refresh is drawn from the shared catalogue budget, exactly as it has always
+// been, for every caller of this method. The one caller that must not be is
+// NowPlayingAccessToken below, which is a separate method for that single reason.
 func (p *Poller) AccessToken(ctx context.Context, userID uuid.UUID) (string, error) {
 	creds, err := p.dep.Accounts.Credentials.Get(ctx, p.dep.Store.DB(), userID)
 	if err != nil {
 		return "", err
 	}
-	return p.accessToken(ctx, userID, creds, false)
+	return p.accessToken(ctx, userID, creds, false, spotify.RefreshShared)
+}
+
+// NowPlayingAccessToken is AccessToken for the now-playing poller.
+//
+// It differs in one thing, and that thing is the whole reason it exists: the
+// refresh behind it draws on the now-playing poller's own rate budget rather
+// than the shared catalogue one. Everything else — reading the stored grant,
+// persisting a rotated refresh token, parking an account whose grant Spotify has
+// revoked outright — is the same code, because those are facts about the
+// account rather than about which loop noticed them.
+//
+// A separate method rather than an argument on AccessToken because the caller
+// that needs it is in another package and reaches this one through a
+// single-method interface. That interface is what keeps internal/nowplaying
+// unable to park an account of its own accord, and widening it to carry a budget
+// would hand that package a lever over every other caller's quota to no purpose:
+// there is exactly one now-playing poller, and it always wants this budget.
+func (p *Poller) NowPlayingAccessToken(ctx context.Context, userID uuid.UUID) (string, error) {
+	creds, err := p.dep.Accounts.Credentials.Get(ctx, p.dep.Store.DB(), userID)
+	if err != nil {
+		return "", err
+	}
+	return p.accessToken(ctx, userID, creds, false, spotify.RefreshNowPlaying)
 }

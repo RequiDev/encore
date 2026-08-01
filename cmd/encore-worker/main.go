@@ -242,7 +242,9 @@ func run() error {
 		// which cannot function without its own scope. This loop borrows it
 		// rather than duplicating it — and borrowing it as an interface is
 		// what keeps this package unable to park an account for a reason of
-		// its own.
+		// its own. The same poller, but its now-playing entry point: that one
+		// draws its refresh on the now-playing rate budget, so neither loop
+		// can stall or be stalled by the other.
 		Tokens: poller,
 		Logger: lg,
 	})

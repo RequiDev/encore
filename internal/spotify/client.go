@@ -66,6 +66,11 @@ const (
 	// interval is already paced by the interval — the isolation is. It is
 	// sized so one tick can clear a large instance without queueing: five a
 	// second is a hundred and fifty accounts inside a thirty-second tick.
+	//
+	// The poller's token refreshes share it (see RefreshBudget), which costs
+	// the bucket almost nothing: a token lives an hour, so a refresh is one
+	// extra request per account per hour against one poll per account per
+	// interval.
 	nowPlayingRate  = 5
 	nowPlayingBurst = 10
 	// nowPlayingWait is how long a poll may queue for a token before giving up

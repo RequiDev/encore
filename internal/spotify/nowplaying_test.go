@@ -161,6 +161,169 @@ func TestNowPlayingRateLimitTouchesNoOtherBudget(t *testing.T) {
 	}
 }
 
+// TestNowPlayingRefreshRateLimitTouchesNoOtherBudget is the test above applied
+// to the other request the poller makes.
+//
+// Every check is two requests, not one: a token refresh against
+// accounts.spotify.com whenever the stored token has aged out, and then the poll
+// itself. Only the poll was ever routed onto the poller's own budget, so the
+// refresh in front of it was instance-wide — and a 429 on it did precisely what
+// this whole phase exists to prevent: wrote app_settings.spotify_paused_until,
+// 409d "sync now" for every user, and stopped enrichment, sync and the library
+// enumerations at the worker's next construction. The least important request
+// Encore makes, taking the instance down.
+//
+// Fails when: RefreshNowPlaying stops mapping to classNowPlaying, or the poller
+// is routed back onto RefreshShared — the pause observer then fires and the
+// catalogue budget is the one holding the pause.
+func TestNowPlayingRefreshRateLimitTouchesNoOtherBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	var paused atomic.Int32
+	c := newTestClient(t, srv, newFakeClock(),
+		WithPauseObserver(func(time.Time) { paused.Add(1) }))
+
+	_, err := c.RefreshToken(context.Background(), "old-refresh", RefreshNowPlaying)
+	var pausedErr *PausedError
+	if !errors.As(err, &pausedErr) {
+		t.Fatalf("RefreshToken returned %v, want a *PausedError", err)
+	}
+
+	if got := paused.Load(); got != 0 {
+		t.Errorf("the pause observer fired %d times; a 429 on the poller's own "+
+			"token refresh must never pause Spotify instance-wide", got)
+	}
+	if until := c.Limiter().PausedUntil(); !until.IsZero() {
+		t.Errorf("the catalogue budget is paused until %v; enrichment, the "+
+			"recently-played poller and the library enumerations draw on it", until)
+	}
+	if until := c.signin.PausedUntil(); !until.IsZero() {
+		t.Errorf("the sign-in budget is paused until %v; nothing a background "+
+			"worker does may take authentication offline", until)
+	}
+	if c.nowPlaying.PausedUntil().IsZero() {
+		t.Error("the now-playing budget is not paused; the 429 backed nothing off at all")
+	}
+}
+
+// TestASharedRefreshStillPausesTheInstance pins the other side of the same
+// switch: giving the poller a budget of its own must not move anybody else.
+//
+// Every other caller of RefreshToken — the recently-played poller, the library
+// worker, and the API behind a playlist write — has always drawn on the shared
+// catalogue budget, and a 429 there is a fact about the whole instance that must
+// go on being recorded. A change that made *every* refresh private would leave a
+// quota ban forgotten across a restart, which is the bug WithPauseObserver was
+// added to fix.
+//
+// Fails when: RefreshShared stops mapping to classCatalogue, or is quietly made
+// the same value as RefreshNowPlaying.
+func TestASharedRefreshStillPausesTheInstance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	var paused atomic.Int32
+	c := newTestClient(t, srv, newFakeClock(),
+		WithPauseObserver(func(time.Time) { paused.Add(1) }))
+	// One attempt, for the reason TestOnlyACatalogueRateLimitPausesTheInstance
+	// gives: the count below is meant to say whether this class records a pause,
+	// not how many retries the policy happens to allow.
+	c.policy = c.policy.WithAttempts(1)
+
+	if _, err := c.RefreshToken(context.Background(), "old-refresh", RefreshShared); err == nil {
+		t.Fatal("RefreshToken: want an error on a 429")
+	}
+
+	if got := paused.Load(); got != 1 {
+		t.Errorf("the pause observer fired %d times, want 1: a refresh on the "+
+			"shared budget is instance-wide and must survive a restart", got)
+	}
+	if c.Limiter().PausedUntil().IsZero() {
+		t.Error("the catalogue budget is not paused; every other background caller draws on it")
+	}
+	if until := c.nowPlaying.PausedUntil(); !until.IsZero() {
+		t.Errorf("the now-playing budget is paused until %v by somebody else's "+
+			"refresh; the poller must not be stopped by work it did not do", until)
+	}
+}
+
+// TestACataloguePauseDoesNotStallTheNowPlayingRefresh is the isolation read in
+// the direction that used to fail silently.
+//
+// An enrichment 429 pauses the catalogue limiter for whatever Retry-After
+// Spotify names, which for an exhausted daily quota is most of a day. Within the
+// hour every stored access token expires, so every check needed a refresh — and
+// on the shared budget that refresh waits *unboundedly*, so the checks did not
+// fail, they blocked. Four goroutines, a WaitGroup that never returns, no tick
+// after that one, and nothing recorded as failed: checked_at simply stops
+// advancing while the card keeps rendering a present-tense "Playing" chip over
+// an observation a day old.
+//
+// The two halves are asserted together because the property is a difference. The
+// shared arm is what the fake clock measures the old behaviour as — a full hour
+// slept inside one call — and it must stay that way, because a background caller
+// with all day waiting out a pause is the design.
+//
+// Fails when: the poller's refresh is routed back onto the shared budget. The
+// now-playing arm then sleeps the hour too, and its sleep log stops being empty.
+func TestACataloguePauseDoesNotStallTheNowPlayingRefresh(t *testing.T) {
+	for name, tc := range map[string]struct {
+		budget    RefreshBudget
+		wantSlept time.Duration
+	}{
+		// Unchanged, and deliberately asserted: this is the hour the reviewer
+		// measured, and it is correct for a caller whose work the pause is about.
+		"shared waits the pause out": {RefreshShared, time.Hour},
+		// The poller's refresh draws on a limiter the pause never touched, so it
+		// neither queues nor fails: it simply goes.
+		"now playing is not held back at all": {RefreshNowPlaying, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w,
+					`{"access_token":"fresh-access","token_type":"Bearer","expires_in":3600}`)
+			}))
+			defer srv.Close()
+
+			clock := newFakeClock()
+			c := newTestClient(t, srv, clock)
+			// Exactly what an enrichment 429 does, without the 429: the recorded
+			// pause is restored into this limiter at startup by the same call.
+			c.Limiter().Pause(clock.Now().Add(time.Hour))
+
+			tok, err := c.RefreshToken(context.Background(), "old-refresh", tc.budget)
+			if err != nil {
+				t.Fatalf("RefreshToken: %v", err)
+			}
+			if tok.AccessToken != "fresh-access" {
+				t.Fatalf("AccessToken = %q, want fresh-access", tok.AccessToken)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("the token endpoint was called %d times, want 1", got)
+			}
+
+			var slept time.Duration
+			for _, d := range clock.sleeps() {
+				slept += d
+			}
+			if slept != tc.wantSlept {
+				t.Fatalf("the refresh waited %v, want %v: the poller must not queue "+
+					"behind a pause declared by work it has no part in", slept, tc.wantSlept)
+			}
+		})
+	}
+}
+
 // TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt is the "stopping is
 // the property" half: a 429 must back the poller off, not merely be recorded.
 //

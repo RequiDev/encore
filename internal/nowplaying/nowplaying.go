@@ -84,14 +84,24 @@ type SpotifyAPI interface {
 // Tokens supplies a usable Spotify access token for one account, refreshing and
 // persisting it when necessary.
 //
-// This is *sync.Poller's exported AccessToken, exactly as internal/library uses
-// it. Declared as an interface rather than imported directly so this package can
-// be tested without a database — and, more importantly here, so that the one
-// thing in this package which *can* park an account (a refresh Spotify rejects
-// outright, which is broken for every feature and not only this one) is
-// somebody else's method rather than this package's.
+// This is *sync.Poller's exported NowPlayingAccessToken. Declared as an
+// interface rather than imported directly so this package can be tested without
+// a database — and, more importantly here, so that the one thing in this package
+// which *can* park an account (a refresh Spotify rejects outright, which is
+// broken for every feature and not only this one) is somebody else's method
+// rather than this package's.
+//
+// The method is named for this caller rather than being *sync.Poller's general
+// AccessToken, and that is property 3 above rather than a naming preference. A
+// refresh made on this loop's behalf must draw on the poller's own rate budget:
+// on the shared one it both queued behind an enrichment pause — unbounded, so
+// every check blocked rather than failed and the card froze on a present-tense
+// claim — and paused the whole instance when Spotify rate limited it. Which
+// budget to spend is a fact about the caller, so the caller's own method is
+// where it is decided, and this interface is what carries the choice without
+// this package ever holding a Spotify client.
 type Tokens interface {
-	AccessToken(ctx context.Context, userID uuid.UUID) (string, error)
+	NowPlayingAccessToken(ctx context.Context, userID uuid.UUID) (string, error)
 }
 
 // Observations is the part of accounts.NowPlaying this package uses.
@@ -279,7 +289,7 @@ func (w *Watcher) check(ctx context.Context, account accounts.DueAccount) bool {
 		return false
 	}
 
-	token, err := w.dep.Tokens.AccessToken(ctx, account.UserID)
+	token, err := w.dep.Tokens.NowPlayingAccessToken(ctx, account.UserID)
 	if err != nil {
 		if ctx.Err() != nil {
 			// Shutting down, which is not this account's fault and not a failed

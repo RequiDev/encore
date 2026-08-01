@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"go/build"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"strings"
 	stdsync "sync"
 	"sync/atomic"
@@ -34,26 +34,52 @@ import (
 // A comment saying so can be ignored. An import that does not exist cannot be
 // used.
 //
+// The closure, not the direct imports. A deny-list over this package's own
+// import statements answers a weaker question than the one being asked: reaching
+// internal/store/listens through a package that merely re-exports a constructor
+// is the same reachability by a longer path, and Go's linker cares no more about
+// the length of it than a mistaken caller would. `go list -deps` is what the
+// property actually means, so it is what is asserted — the direct-import form
+// held at head only because nothing had yet added the intermediate package that
+// would have made it wrong silently.
+//
 // Fails when: somebody adds a listens repository to Deps to "also record the
-// play", or imports internal/sync to reuse a helper from it.
+// play", imports internal/sync to reuse a helper from it, or pulls in any
+// package that reaches one of those itself.
 func TestThePollerCannotReachAnythingThatWritesAListen(t *testing.T) {
-	pkg, err := build.ImportDir(".", 0)
+	// -deps of this package, one import path per line, the whole transitive
+	// closure including the standard library. The test binary is not built, so
+	// this file's own imports are not part of the answer — which is correct:
+	// what a test may reach says nothing about what ships.
+	out, err := exec.Command("go", "list", "-deps", ".").Output()
 	if err != nil {
-		t.Fatalf("read this package's imports: %v", err)
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			t.Fatalf("go list -deps: %v: %s", err, exit.Stderr)
+		}
+		t.Fatalf("go list -deps: %v", err)
 	}
+
 	forbidden := []string{
-		"/internal/store/listens",
-		"/internal/sync",
-		"/internal/importer",
+		"github.com/RequiDev/encore/internal/store/listens",
+		"github.com/RequiDev/encore/internal/sync",
+		"github.com/RequiDev/encore/internal/importer",
 	}
-	for _, imported := range pkg.Imports {
+	var closure int
+	for _, dep := range strings.Fields(string(out)) {
+		closure++
 		for _, bad := range forbidden {
-			if strings.HasSuffix(imported, bad) {
-				t.Errorf("this package imports %s, which can write listens; "+
+			if dep == bad {
+				t.Errorf("this package depends on %s, which can write listens; "+
 					"the now-playing poller is a read-only observer and "+
-					"/me/player/recently-played is the only ingestion path", imported)
+					"/me/player/recently-played is the only ingestion path", dep)
 			}
 		}
+	}
+	// A `go list` that answered nothing would pass the loop above without
+	// asserting anything at all.
+	if closure == 0 {
+		t.Fatal("go list -deps named no packages; the closure was never examined")
 	}
 }
 
@@ -1001,7 +1027,7 @@ type fakeTokens struct {
 	respond func(ctx context.Context) (string, error)
 }
 
-func (f *fakeTokens) AccessToken(ctx context.Context, userID uuid.UUID) (string, error) {
+func (f *fakeTokens) NowPlayingAccessToken(ctx context.Context, userID uuid.UUID) (string, error) {
 	f.calls.Add(1)
 	if f.respond != nil {
 		return f.respond(ctx)

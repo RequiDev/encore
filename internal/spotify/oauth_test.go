@@ -174,7 +174,7 @@ func TestRefreshToken(t *testing.T) {
 			defer srv.Close()
 
 			c := newTestClient(t, srv, newFakeClock())
-			tok, err := c.RefreshToken(context.Background(), "old-refresh")
+			tok, err := c.RefreshToken(context.Background(), "old-refresh", RefreshShared)
 
 			if tc.wantErrIs != nil {
 				if !errors.Is(err, tc.wantErrIs) {
@@ -209,7 +209,7 @@ func TestRefreshTokenRequiresAToken(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv, newFakeClock())
-	if _, err := c.RefreshToken(context.Background(), "  "); err == nil {
+	if _, err := c.RefreshToken(context.Background(), "  ", RefreshShared); err == nil {
 		t.Fatal("RefreshToken accepted an empty refresh token")
 	}
 }

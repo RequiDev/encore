@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"runtime"
+	stdsync "sync"
 	"testing"
 	"time"
 
@@ -28,14 +29,31 @@ var now = time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
 type fakeSpotify struct {
 	plays []spotify.PlayHistory
 	err   error
+
+	// budgets records which rate budget each refresh named, which is the only
+	// thing about a refresh this package decides on somebody else's behalf.
+	mu      stdsync.Mutex
+	budgets []spotify.RefreshBudget
 }
 
 func (f *fakeSpotify) RecentlyPlayed(context.Context, string, time.Time, int, int) ([]spotify.PlayHistory, error) {
 	return f.plays, f.err
 }
 
-func (f *fakeSpotify) RefreshToken(context.Context, string) (*spotify.Token, error) {
-	return nil, f.err
+func (f *fakeSpotify) RefreshToken(_ context.Context, _ string, budget spotify.RefreshBudget) (*spotify.Token, error) {
+	f.mu.Lock()
+	f.budgets = append(f.budgets, budget)
+	f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &spotify.Token{AccessToken: "refreshed-access-token", ExpiresAt: now.Add(time.Hour)}, nil
+}
+
+func (f *fakeSpotify) refreshBudgets() []spotify.RefreshBudget {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]spotify.RefreshBudget(nil), f.budgets...)
 }
 
 // testDeps builds the minimum a Poller needs to be constructed. The repositories
@@ -122,6 +140,50 @@ func TestNewPollerFillsInDefaults(t *testing.T) {
 	}
 	if p.stat == nil || p.log == nil || p.rnd == nil || p.running == nil {
 		t.Error("poller was built with a nil collaborator")
+	}
+}
+
+// TestARefreshSpendsTheBudgetItsCallerNamed pins that accessToken passes the
+// caller's budget through untouched.
+//
+// This poller refreshes tokens for three callers besides itself, and only one of
+// them — the now-playing loop — may leave the shared catalogue budget. A refresh
+// that quietly picked its own would put that loop back where it was: blocked
+// behind an enrichment pause with an unbounded wait, and able to pause the whole
+// instance with a 429 of its own. The integration suite pins each entry point
+// against a real database; this pins the parameter they all funnel through, so a
+// signature that grows a default has somewhere to fail cheaply.
+//
+// The refresh is made to fail, which is what keeps this a unit test: the failure
+// path answers before any credential is written, so no database is needed to
+// observe the choice that was already made.
+//
+// Fails when: accessToken stops passing budget to RefreshToken, or picks one of
+// its own.
+func TestARefreshSpendsTheBudgetItsCallerNamed(t *testing.T) {
+	for _, want := range []spotify.RefreshBudget{spotify.RefreshShared, spotify.RefreshNowPlaying} {
+		t.Run(want.String(), func(t *testing.T) {
+			api := &fakeSpotify{err: errors.New("spotify said no")}
+			deps := testDeps()
+			deps.Spotify = api
+			p, err := NewPoller(config.Sync{}, deps)
+			if err != nil {
+				t.Fatalf("NewPoller: %v", err)
+			}
+
+			creds := domain.SpotifyCredentials{UserID: uuid.New(), RefreshToken: "stored-refresh"}
+			if _, err := p.accessToken(context.Background(), creds.UserID, creds, true, want); err == nil {
+				t.Fatal("a refresh that failed was reported as a success")
+			}
+
+			got := api.refreshBudgets()
+			if len(got) != 1 {
+				t.Fatalf("%d refreshes were attempted, want 1", len(got))
+			}
+			if got[0] != want {
+				t.Fatalf("the refresh drew on the %s budget, want %s", got[0], want)
+			}
+		})
 	}
 }
 
