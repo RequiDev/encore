@@ -189,6 +189,12 @@ fresh AS (
 -- reports what a listener was playing from), so d — always source <> 0 here —
 -- never has anything to contribute, and leaving the columns out of the UPDATE
 -- simply preserves whatever the live sync already recorded.
+--
+-- device_type is absent for the same reason and a stronger one: no export of
+-- any vintage reports a Spotify Connect device, so d never has one to
+-- contribute, and leaving the column out of the UPDATE preserves whatever the
+-- playback-context backfill already attached. Adding it here would let an
+-- import erase a fact it does not carry.
 improve AS (
     UPDATE listens l
     SET ms_played    = d.ms_played,

@@ -327,11 +327,11 @@ type request struct {
 	class requestClass
 	// status, when non-nil, receives the status code of a successful response.
 	//
-	// Exactly one caller needs it. GET /v1/me/player/currently-playing answers
-	// 204 when nothing is playing, which is the commonest case and is not an
-	// error; decode() returns early on a 204 without touching out, so without
-	// this the zero-value body would be indistinguishable from a 200 carrying
-	// an advert with no item.
+	// Exactly one caller needs it. GET /v1/me/player answers 204 when there is
+	// no active device, which is the commonest case and is not an error;
+	// decode() returns early on a 204 without touching out, so without this the
+	// zero-value body would be indistinguishable from a 200 carrying an advert
+	// with no item.
 	status *int
 }
 

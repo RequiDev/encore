@@ -131,6 +131,10 @@ func (p *Poller) poll(ctx context.Context, userID uuid.UUID, creds domain.Spotif
 	if err != nil {
 		return res, err
 	}
+
+	// After the commit, never inside it. See backfillPlaybackContext.
+	p.backfillPlaybackContext(ctx, userID)
+
 	res.Imported = int(inserted)
 	res.Duplicates = len(b.staged) - res.Imported
 	return res, nil

@@ -28,19 +28,23 @@ type Repo struct {
 	Shares      *Shares
 	Playlists   *Playlists
 	NowPlaying  *NowPlaying
+	// PlaybackObservations is the short-lived log the now-playing poller
+	// appends to and the playback-context backfill reads.
+	PlaybackObservations *PlaybackObservations
 }
 
 // New builds every identity repository from one store.
 func New(db *store.Store) *Repo {
 	return &Repo{
-		Users:       NewUsers(db),
-		Credentials: NewCredentials(db),
-		Sessions:    NewSessions(db),
-		OAuthStates: NewOAuthStates(db),
-		Settings:    NewSettings(db),
-		Shares:      NewShares(db),
-		Playlists:   NewPlaylists(db),
-		NowPlaying:  NewNowPlaying(db),
+		Users:                NewUsers(db),
+		Credentials:          NewCredentials(db),
+		Sessions:             NewSessions(db),
+		OAuthStates:          NewOAuthStates(db),
+		Settings:             NewSettings(db),
+		Shares:               NewShares(db),
+		Playlists:            NewPlaylists(db),
+		NowPlaying:           NewNowPlaying(db),
+		PlaybackObservations: NewPlaybackObservations(db),
 	}
 }
 

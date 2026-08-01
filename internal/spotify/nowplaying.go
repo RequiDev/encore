@@ -9,10 +9,12 @@ import (
 
 // Device is the player a listener is using.
 //
-// A pointer everywhere it appears: GET /v1/me/player/currently-playing is
-// documented with the same response object as GET /v1/me/player but is observed
-// to omit this, so a caller must be able to say "no device reported" rather
-// than "a device with no name".
+// A pointer everywhere it appears, so a caller can say "no device reported"
+// rather than "a device with no name". GET /v1/me/player, which this package
+// polls, carries a device far more reliably than the narrower endpoint Encore
+// used before Phase 3c — but it still answers with none when nothing is active,
+// and a zero-valued struct would be indistinguishable from a real player whose
+// name and type happened to be empty.
 type Device struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -57,6 +59,29 @@ type Playback struct {
 	Timestamp  int64 `json:"timestamp"`
 	ProgressMs *int  `json:"progress_ms"`
 	IsPlaying  bool  `json:"is_playing"`
+	// ShuffleState is the shuffle toggle at the instant of the observation, or
+	// nil when Spotify did not report it.
+	//
+	// A pointer, and that is load bearing rather than tidy. This value is
+	// backfilled onto a listener's history by Phase 3c, and listens.shuffle
+	// follows migrations/00005's convention that NULL means "not reported",
+	// deliberately distinct from false. A bool here would decode an absent
+	// field to false and Encore would then state, on somebody's own listening
+	// history, that a play was not shuffled — about a fact it never received.
+	//
+	// It says what the *player* was set to, not how the track was chosen. A
+	// listener who turns shuffle on halfway through a track makes this true for
+	// a track shuffle did not select, and no window width fixes that; the
+	// backfill's own comment records it as the rule's known imprecision.
+	ShuffleState *bool `json:"shuffle_state"`
+	// RepeatState is "off", "track" or "context".
+	//
+	// Decoded and stored by nothing. §5 of the phase design declines it
+	// explicitly — "repeat_state and volume, available from /me/player and
+	// stored by nothing. No question asked for them" — and it is kept here for
+	// the reason Device.IsActive is: dropping a field from a response object
+	// makes the next reader wonder whether Spotify stopped sending it.
+	RepeatState string `json:"repeat_state"`
 	// CurrentlyPlayingType is "track", "episode", "ad" or "unknown". An advert
 	// arrives as "ad" with a null Item, which is why the item alone cannot
 	// classify a response.
@@ -66,13 +91,21 @@ type Playback struct {
 	Context              *PlayContext  `json:"context"`
 }
 
-// CurrentlyPlaying reads what the listener is playing right now, or nil when
-// nothing is.
+// Player reads what the listener is playing right now, or nil when nothing is.
 //
-// A nil result with a nil error is the endpoint's commonest answer and is not a
-// failure: Spotify replies 204 No Content when the player is idle. The caller
-// records that as "nothing is playing", which is a different fact from "Encore
-// has not managed to look", and neither is an error.
+// A nil result with a nil error is this endpoint's commonest answer and is not
+// a failure: Spotify replies 204 No Content when there is no active device. The
+// caller records that as "nothing is playing", which is a different fact from
+// "Encore has not managed to look", and neither is an error.
+//
+// The path is /v1/me/player, not /v1/me/player/currently-playing. The two are
+// documented with the same response object and this one is a strict superset in
+// practice: the same item, progress and playing state, plus shuffle_state,
+// repeat_state and a device the narrower endpoint is observed to omit. Both
+// require user-read-playback-state and both cost one request, so reading the
+// wider payload is free — where a second call to it, beside the narrower one,
+// would have doubled a loop that already makes roughly fourteen thousand
+// requests a day at five accounts and thirty seconds.
 //
 // additional_types=episode is required for a podcast to arrive with a name.
 // Without it Spotify answers item: null with currently_playing_type "episode",
@@ -82,9 +115,9 @@ type Playback struct {
 // 429 here pauses this budget alone. It never reaches the pause observer, so it
 // never writes app_settings.spotify_paused_until, so it can never 409 "sync
 // now" for every user or stop enrichment. See requestClass.
-func (c *Client) CurrentlyPlaying(ctx context.Context, accessToken string) (*Playback, error) {
+func (c *Client) Player(ctx context.Context, accessToken string) (*Playback, error) {
 	if accessToken == "" {
-		return nil, fmt.Errorf("spotify: currently playing: no access token")
+		return nil, fmt.Errorf("spotify: player: no access token")
 	}
 
 	q := url.Values{}
@@ -96,14 +129,14 @@ func (c *Client) CurrentlyPlaying(ctx context.Context, accessToken string) (*Pla
 	)
 	if err := c.do(ctx, request{
 		method: http.MethodGet,
-		url:    c.endpoint("/v1/me/player/currently-playing", q),
-		label:  "get currently playing",
+		url:    c.endpoint("/v1/me/player", q),
+		label:  "get player state",
 		bearer: accessToken,
 		out:    &body,
 		status: &status,
 		class:  classNowPlaying,
 	}); err != nil {
-		return nil, fmt.Errorf("spotify: currently playing: %w", err)
+		return nil, fmt.Errorf("spotify: player: %w", err)
 	}
 	if status == http.StatusNoContent {
 		return nil, nil

@@ -1,7 +1,7 @@
 // Command encore-worker runs Encore's background work: import jobs, catalogue
 // enrichment, the recently-played poller, the daily library enumerations, the
 // optional now-playing poller, rollup maintenance and the reaper that clears
-// expired sessions and OAuth states.
+// expired sessions, OAuth states and playback observations older than a day.
 //
 // It is a separate process from the API on purpose. A one-million-record import
 // saturates a database connection for minutes, and letting that compete with a
@@ -231,12 +231,17 @@ func run() error {
 
 	watcher, err := nowplaying.New(cfg.NowPlaying, nowplaying.Deps{
 		Store: db,
-		// The single-table repository, not accountsRepo: with no handle on the
-		// credentials repository this loop cannot park an account, and a 403
-		// from an optional read scope must never stop ingesting a listening
-		// history that reads perfectly.
-		NowPlaying: accountsRepo.NowPlaying,
-		Spotify:    client,
+		// Still the single-table repositories, not accountsRepo: with no handle
+		// on the credentials repository this loop cannot park an account, and a
+		// 403 from an optional read scope must never stop ingesting a listening
+		// history that reads perfectly. The observation log is a second
+		// single-table repository for the same reason, and neither of the two
+		// can reach listens.
+		NowPlaying: nowplaying.Store{
+			NowPlaying:   accountsRepo.NowPlaying,
+			Observations: accountsRepo.PlaybackObservations,
+		},
+		Spotify: client,
 		// The token refresh dance, including parking an account when Spotify
 		// has revoked the grant outright, belongs to recently-played sync,
 		// which cannot function without its own scope. This loop borrows it
@@ -306,15 +311,17 @@ func run() error {
 	return nil
 }
 
-// reapInterval is how often expired sessions and OAuth states are deleted.
+// reapInterval is how often expired sessions, OAuth states and playback
+// observations are deleted.
 //
-// Neither is a security boundary: both carry an expiry column and every read
-// filters on it, so an expired row is already unusable. This is disk hygiene,
-// and a few minutes is far more often than it needs to be for two indexed
-// deletes.
+// None is a security boundary: each carries an expiry or an age column and
+// every read filters on it, so an expired row is already unusable. This is
+// disk hygiene, and a few minutes is far more often than it needs to be for
+// three indexed deletes.
 const reapInterval = 5 * time.Minute
 
-// reaper deletes expired sessions and OAuth states until ctx is cancelled.
+// reaper deletes expired sessions, OAuth states and playback observations
+// until ctx is cancelled.
 func reaper(db *store.Store, repo *accounts.Repo, lg *slog.Logger) func(context.Context) error {
 	log := lg.With("component", "reaper")
 
@@ -340,6 +347,19 @@ func reaper(db *store.Store, repo *accounts.Repo, lg *slog.Logger) func(context.
 				}
 			} else if n > 0 {
 				log.Info("expired oauth states deleted", "count", n)
+			}
+
+			// Observations older than a day can no longer reach any listen the
+			// backfill will look at, so keeping them costs storage and buys
+			// nothing. Bounded by age and nothing else — there is no set to
+			// reconcile against here, deliberately.
+			cutoff := time.Now().Add(-accounts.ObservationRetention)
+			if n, err := repo.PlaybackObservations.DeleteExpired(ctx, db.DB(), cutoff); err != nil {
+				if ctx.Err() == nil {
+					log.Warn("could not delete expired playback observations", logging.Err(err))
+				}
+			} else if n > 0 {
+				log.Info("expired playback observations deleted", "count", n)
 			}
 
 			select {

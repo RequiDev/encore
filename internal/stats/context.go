@@ -5,13 +5,22 @@ package stats
 //
 // Two properties govern every query here.
 //
-// The columns are partial. platform, conn_country, reason_start, reason_end,
-// shuffle, skipped, offline and incognito are written only by the extended-export
-// importer. Live sync and account-data rows carry NULL in all eight. So every
-// figure travels with its own denominator, and the denominator is counted per
-// column — count(*) FILTER (WHERE col IS NOT NULL) — never per source, because
-// an export may omit an individual field and keying on source = 2 would
-// silently overstate it.
+// The columns are partial, and they are partial in two different ways now.
+//
+// platform, conn_country, reason_start, reason_end, skipped, offline and
+// incognito are written only by the extended-export importer; a live-synced or
+// account-data row carries NULL in all seven. shuffle and device_type are the
+// exception: the now-playing poller observes both while a listener is playing,
+// and internal/store/listens' BackfillPlaybackContext attaches them to
+// live-synced rows afterwards — so those two can be populated on an instance
+// with no export at all, and are populated for nothing at all on an instance
+// that never set ENCORE_NOWPLAYING_INTERVAL.
+//
+// Which is exactly why every figure travels with its own denominator, and why
+// the denominator is counted per column — count(*) FILTER (WHERE col IS NOT
+// NULL) — never per source. Keying on source = 2 was already wrong because an
+// export may omit an individual field; it is now wrong twice over, because two
+// of these columns have a second and entirely independent source.
 //
 // listen_daily_rollup cannot serve any of this. It is keyed by (user, day,
 // track) and carries no context columns at all, so these always scan the fact
@@ -50,6 +59,12 @@ type PlaybackContext struct {
 
 	Platforms        []ContextSlice
 	PlatformCoverage Coverage
+
+	// Devices is the Spotify Connect device-type breakdown, and is not
+	// Platforms. The two answer the same question from different vocabularies
+	// and different sources and are never merged; see migrations/00018.
+	Devices        []ContextSlice
+	DeviceCoverage Coverage
 
 	Countries       []ContextSlice
 	CountryCoverage Coverage
@@ -111,7 +126,9 @@ WHERE %s`, rangeFilter("l", "$1", "$2", "$3"))
 //
 // Parameters are $1 user, $2 from, $3 to.
 var contextBreakdownSQL = fmt.Sprintf(`
-WITH scoped AS (SELECT l.platform, l.conn_country, l.reason_end FROM listens l WHERE %s)
+WITH scoped AS (
+    SELECT l.platform, l.conn_country, l.reason_end, l.device_type FROM listens l WHERE %s
+)
 SELECT 'platform' AS kind, s.platform AS key, count(*)::bigint
 FROM scoped s WHERE s.platform IS NOT NULL GROUP BY s.platform
 UNION ALL
@@ -119,7 +136,10 @@ SELECT 'country', s.conn_country, count(*)::bigint
 FROM scoped s WHERE s.conn_country IS NOT NULL GROUP BY s.conn_country
 UNION ALL
 SELECT 'reason_end', s.reason_end, count(*)::bigint
-FROM scoped s WHERE s.reason_end IS NOT NULL GROUP BY s.reason_end`,
+FROM scoped s WHERE s.reason_end IS NOT NULL GROUP BY s.reason_end
+UNION ALL
+SELECT 'device', s.device_type, count(*)::bigint
+FROM scoped s WHERE s.device_type IS NOT NULL GROUP BY s.device_type`,
 	rangeFilter("l", "$1", "$2", "$3"))
 
 // playlistContextSQL groups in-range listens by what the listener was playing
@@ -226,6 +246,8 @@ func (s *Service) PlaybackContext(
 
 	families := map[string]int64{}
 	var platformTotal int64
+	devices := map[string]int64{}
+	var deviceTotal int64
 	for rows.Next() {
 		var (
 			kind  string
@@ -243,6 +265,9 @@ func (s *Service) PlaybackContext(
 			out.Countries = append(out.Countries, ContextSlice{Key: key, Plays: plays})
 		case "reason_end":
 			out.EndReasons = append(out.EndReasons, ContextSlice{Key: key, Plays: plays})
+		case "device":
+			devices[DeviceFamily(key)] += plays
+			deviceTotal += plays
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -251,6 +276,8 @@ func (s *Service) PlaybackContext(
 
 	out.Platforms = sortedSlices(families)
 	out.PlatformCoverage = Coverage{Covered: platformTotal, Total: total}
+	out.Devices = sortedSlices(devices)
+	out.DeviceCoverage = Coverage{Covered: deviceTotal, Total: total}
 	out.CountryCoverage = Coverage{Covered: sumSlices(out.Countries), Total: total}
 	sortSlices(out.Countries)
 	sortSlices(out.EndReasons)

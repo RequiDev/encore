@@ -140,8 +140,8 @@ func TestNowPlayingRateLimitTouchesNoOtherBudget(t *testing.T) {
 	c := newTestClient(t, srv, newFakeClock(),
 		WithPauseObserver(func(time.Time) { paused.Add(1) }))
 
-	if _, err := c.CurrentlyPlaying(context.Background(), "user-token"); err == nil {
-		t.Fatal("CurrentlyPlaying: want an error on a 429")
+	if _, err := c.Player(context.Background(), "user-token"); err == nil {
+		t.Fatal("Player: want an error on a 429")
 	}
 
 	if got := paused.Load(); got != 0 {
@@ -364,7 +364,7 @@ func TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt(t *testing.T) {
 	clock := newFakeClock()
 	c := newTestClient(t, srv, clock)
 
-	if _, err := c.CurrentlyPlaying(context.Background(), "user-token"); err == nil {
+	if _, err := c.Player(context.Background(), "user-token"); err == nil {
 		t.Fatal("the first call: want an error on a 429")
 	}
 	if got := calls.Load(); got != 1 {
@@ -377,7 +377,7 @@ func TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := c.CurrentlyPlaying(context.Background(), "user-token")
+		_, err := c.Player(context.Background(), "user-token")
 		done <- err
 	}()
 	select {
@@ -395,8 +395,8 @@ func TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt(t *testing.T) {
 	}
 }
 
-// TestCurrentlyPlayingReportsNoContentAsNothingPlaying pins the endpoint's
-// commonest answer.
+// TestPlayerReportsNoContentAsNothingPlaying pins the endpoint's commonest
+// answer.
 //
 // 204 is not an error and is not "an advert with no item". It is the state the
 // card renders as "Nothing is playing.", which has to stay distinct from both
@@ -406,33 +406,42 @@ func TestNowPlayingRateLimitStopsTheNextRequestWithoutSendingIt(t *testing.T) {
 // without touching r.out, so the zero-value Playback would come back non-nil
 // and every idle listener would be reported as playing something
 // unidentifiable.
-func TestCurrentlyPlayingReportsNoContentAsNothingPlaying(t *testing.T) {
+func TestPlayerReportsNoContentAsNothingPlaying(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	c := newTestClient(t, srv, newFakeClock())
-	got, err := c.CurrentlyPlaying(context.Background(), "user-token")
+	got, err := c.Player(context.Background(), "user-token")
 	if err != nil {
-		t.Fatalf("CurrentlyPlaying: %v", err)
+		t.Fatalf("Player: %v", err)
 	}
 	if got != nil {
-		t.Fatalf("CurrentlyPlaying = %+v, want nil for a 204", got)
+		t.Fatalf("Player = %+v, want nil for a 204", got)
 	}
 }
 
-// TestCurrentlyPlayingDecodesATrack pins the fields the card renders, the
-// listener's own token, and the query.
+// TestPlayerDecodesATrack pins the endpoint, the fields the card renders, the
+// three facts the backfill needs, the listener's own token, and the query.
+//
+// The path is /v1/me/player rather than /v1/me/player/currently-playing, and
+// that is the whole of Phase 3c's request budget: /me/player returns a strict
+// superset of the narrower endpoint — the same item, progress and playing
+// state, plus shuffle_state, repeat_state and a device that the narrower one is
+// observed to omit — for the same single request. A second call would have
+// doubled a loop that already makes fourteen thousand requests a day at five
+// accounts and thirty seconds, without the operator changing a key.
 //
 // additional_types=episode is not decoration: without it Spotify answers a
 // podcast with item: null and currently_playing_type "episode", so a named
 // episode would render as "something Encore cannot identify".
 //
-// Fails when: additional_types is dropped; the application token is used
-// instead of the listener's, which answers for nobody; or the path changes to
-// /v1/me/player, which carries a payload this phase does not use.
-func TestCurrentlyPlayingDecodesATrack(t *testing.T) {
+// Fails when: the path reverts to /v1/me/player/currently-playing, which does
+// not carry shuffle_state and leaves every backfilled listen NULL for ever;
+// additional_types is dropped; or the application token is used instead of the
+// listener's, which answers for nobody.
+func TestPlayerDecodesATrack(t *testing.T) {
 	var gotPath, gotQuery, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
@@ -441,6 +450,8 @@ func TestCurrentlyPlayingDecodesATrack(t *testing.T) {
             "timestamp": 1785000000000,
             "progress_ms": 161000,
             "is_playing": true,
+            "shuffle_state": true,
+            "repeat_state": "off",
             "currently_playing_type": "track",
             "device": {"id":"d1","name":"Kitchen speaker","type":"Speaker","is_active":true},
             "item": {
@@ -453,16 +464,16 @@ func TestCurrentlyPlayingDecodesATrack(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv, newFakeClock())
-	got, err := c.CurrentlyPlaying(context.Background(), "user-token")
+	got, err := c.Player(context.Background(), "user-token")
 	if err != nil {
-		t.Fatalf("CurrentlyPlaying: %v", err)
+		t.Fatalf("Player: %v", err)
 	}
 	if got == nil {
-		t.Fatal("CurrentlyPlaying returned nil for a 200 carrying an item")
+		t.Fatal("Player returned nil for a 200 carrying an item")
 	}
 
-	if gotPath != "/v1/me/player/currently-playing" {
-		t.Errorf("path = %q, want /v1/me/player/currently-playing", gotPath)
+	if gotPath != "/v1/me/player" {
+		t.Errorf("path = %q, want /v1/me/player", gotPath)
 	}
 	if gotQuery != "additional_types=episode" {
 		t.Errorf("query = %q, want additional_types=episode", gotQuery)
@@ -473,11 +484,17 @@ func TestCurrentlyPlayingDecodesATrack(t *testing.T) {
 	if !got.IsPlaying {
 		t.Error("IsPlaying = false, want true")
 	}
+	if got.ShuffleState == nil || !*got.ShuffleState {
+		t.Errorf("ShuffleState = %v, want a pointer to true", got.ShuffleState)
+	}
+	if got.RepeatState != "off" {
+		t.Errorf("RepeatState = %q, want off", got.RepeatState)
+	}
 	if got.ProgressMs == nil || *got.ProgressMs != 161000 {
 		t.Errorf("ProgressMs = %v, want 161000", got.ProgressMs)
 	}
-	if got.Device == nil || got.Device.Name != "Kitchen speaker" {
-		t.Errorf("Device = %+v, want the Kitchen speaker", got.Device)
+	if got.Device == nil || got.Device.Name != "Kitchen speaker" || got.Device.Type != "Speaker" {
+		t.Errorf("Device = %+v, want the Kitchen speaker, type Speaker", got.Device)
 	}
 	if got.Item == nil || got.Item.Name != "The Wheel" || got.Item.DurationMs != 255000 {
 		t.Errorf("Item = %+v, want The Wheel at 255000 ms", got.Item)
@@ -487,12 +504,82 @@ func TestCurrentlyPlayingDecodesATrack(t *testing.T) {
 	}
 }
 
-// TestCurrentlyPlayingForbiddenIsNotRetried pins that a grant without
+// TestPlayerReportsAnAbsentShuffleStateAsUnknown is the "unknown is not false"
+// rule at the very first place a Spotify value enters the system.
+//
+// A bool field would decode a missing shuffle_state to false, and Encore would
+// then write "this play was not shuffled" onto a listener's history about a
+// fact it never received. Every guard further down the pipeline — the nullable
+// column, the IS NOT NULL in the backfill's WHERE — is downstream of this one
+// and cannot recover the distinction once it has been lost here.
+//
+// Fails when: ShuffleState goes back to being a bool. It then decodes to false
+// and the pointer check below cannot be satisfied.
+func TestPlayerReportsAnAbsentShuffleStateAsUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// No shuffle_state and no device: everything Encore would like and
+		// Spotify did not send.
+		_, _ = io.WriteString(w, `{
+            "is_playing": true,
+            "currently_playing_type": "track",
+            "item": {"id":"track-1","name":"The Wheel","type":"track","duration_ms":255000}
+        }`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	got, err := c.Player(context.Background(), "user-token")
+	if err != nil {
+		t.Fatalf("Player: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Player returned nil for a 200 carrying an item")
+	}
+	if got.ShuffleState != nil {
+		t.Errorf("ShuffleState = %v, want nil: an absent shuffle_state is "+
+			"\"not reported\", which is a different fact from \"not shuffled\"",
+			*got.ShuffleState)
+	}
+	if got.Device != nil {
+		t.Errorf("Device = %+v, want nil when Spotify reported none", got.Device)
+	}
+}
+
+// TestPlayerMakesExactlyOneRequest pins this phase's whole cost story.
+//
+// Phase 3c reads shuffle_state and a device by moving to a wider endpoint, not
+// by asking twice. The operator chose ENCORE_NOWPLAYING_INTERVAL knowing the
+// quota table in docs/configuration.md, and a second call per tick would double
+// every figure in it silently.
+//
+// Fails when: Player calls /me/player/currently-playing as well "for the item",
+// or grows a device lookup through /me/player/devices — the counter below then
+// reads 2 rather than 1.
+func TestPlayerMakesExactlyOneRequest(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, newFakeClock())
+	if _, err := c.Player(context.Background(), "user-token"); err != nil {
+		t.Fatalf("Player: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("one poll made %d requests, want exactly 1: a second call "+
+			"doubles what the operator agreed to spend", got)
+	}
+}
+
+// TestPlayerForbiddenIsNotRetried pins that a grant without
 // user-read-playback-state costs one request, not six.
 //
-// Fails when: classify stops wrapping non-429 4xx in retry.Stop, or
-// CurrentlyPlaying grows a retry loop of its own.
-func TestCurrentlyPlayingForbiddenIsNotRetried(t *testing.T) {
+// Fails when: classify stops wrapping non-429 4xx in retry.Stop, or Player
+// grows a retry loop of its own.
+func TestPlayerForbiddenIsNotRetried(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -501,7 +588,7 @@ func TestCurrentlyPlayingForbiddenIsNotRetried(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv, newFakeClock())
-	_, err := c.CurrentlyPlaying(context.Background(), "user-token")
+	_, err := c.Player(context.Background(), "user-token")
 	apiErr, ok := AsAPIError(err)
 	if !ok || !apiErr.IsForbidden() {
 		t.Fatalf("error = %v, want a 403 APIError", err)

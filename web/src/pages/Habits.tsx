@@ -2,15 +2,21 @@
  * Habits: how you listened, as opposed to what you listened to.
  *
  * Every figure on this page is partial in a way the top lists and Genres are
- * not. Platform, country, shuffle, offline, incognito and the reason a play
- * ended are columns Spotify's *extended* streaming history export writes and
- * a live-synced play or a one-year account-data export never does — so an
- * instance built from sync alone has none of this, and a fresh import of the
- * one-year export still has none of it either. Showing four zero percentages
- * in that situation would read as "you never skip, shuffle, go offline or use
- * incognito," which is not a measurement, it is silence mistaken for a fact.
- * The coverage banner above everything else exists so the page says which
- * situation it is in before it says anything else.
+ * not, and they are partial in two different ways.
+ *
+ * Platform, country, incognito, offline and the reason a play ended are columns
+ * Spotify's *extended* streaming history export writes and nothing else does —
+ * a live-synced play and a one-year account-data export carry NULL in all of
+ * them. Shuffle and the device are the exception: since Phase 3c the
+ * now-playing poller observes both while somebody is listening and the sync
+ * path attaches them afterwards, so those two can be populated on an instance
+ * that has never imported anything, and are empty for ever on one that never
+ * turns the poller on.
+ *
+ * Showing zero percentages in either situation would read as "you never skip,
+ * shuffle, go offline or use incognito," which is not a measurement, it is
+ * silence mistaken for a fact. The coverage banner above everything else exists
+ * so the page says which situation it is in before it says anything else.
  *
  * The four rates get their own coverage rather than one shared figure for the
  * whole page, because the columns are independent: an export can carry
@@ -34,7 +40,7 @@ import { api } from '../lib/api'
 import { qk } from '../lib/query'
 import { useRange } from '../lib/range'
 import { useSession } from '../lib/session'
-import { formatCount, formatPercent, formatRatio } from '../lib/format'
+import { formatCount, formatPercent, formatPlural, formatRatio } from '../lib/format'
 import type { PlaybackContextResponse, PlaylistContextEntry, Rate, TasteResponse } from '../lib/types'
 import {
   EmptyState,
@@ -81,6 +87,29 @@ const PLATFORM_LABELS: Record<string, string> = {
   cast: 'Cast',
   partner: 'Partner device',
   other: 'Other',
+}
+
+/**
+ * Spotify Connect's device types, as somebody would say them. `labelFor` falls
+ * back to the raw key, so a type Spotify adds tomorrow shows up under its own
+ * name rather than disappearing — which is the same rule the server's
+ * `DeviceFamily` follows, and for the same reason: a category nobody has seen
+ * yet must still be counted.
+ */
+const DEVICE_LABELS: Record<string, string> = {
+  computer: 'Computer',
+  smartphone: 'Phone',
+  tablet: 'Tablet',
+  speaker: 'Speaker',
+  tv: 'TV',
+  avr: 'Receiver',
+  stb: 'Set-top box',
+  audiodongle: 'Audio dongle',
+  gameconsole: 'Games console',
+  castvideo: 'Chromecast (video)',
+  castaudio: 'Chromecast (audio)',
+  automobile: 'Car',
+  unknown: 'Unknown',
 }
 
 /**
@@ -211,6 +240,12 @@ export default function Habits(): ReactElement {
   // of the rest per this file's own doc comment above — collapsed the page
   // to "No playback detail yet" whenever an export happened to omit
   // `reason_end` while still carrying `platform`, `shuffle` and the rest.
+  //
+  // `deviceCoverage` is in this list even though it has the opposite lineage
+  // from the six beside it — the poller fills it, no export ever does — because
+  // a sync-only instance with the poller on has zero coverage on all six and
+  // real coverage here, and gating that case out would hide the one chart that
+  // instance actually has.
   const noContext =
     context.isSuccess &&
     (data?.skipRate.covered ?? 0) === 0 &&
@@ -218,7 +253,8 @@ export default function Habits(): ReactElement {
     (data?.offlineRate.covered ?? 0) === 0 &&
     (data?.incognitoRate.covered ?? 0) === 0 &&
     (data?.platformCoverage.covered ?? 0) === 0 &&
-    (data?.countryCoverage.covered ?? 0) === 0
+    (data?.countryCoverage.covered ?? 0) === 0 &&
+    (data?.deviceCoverage.covered ?? 0) === 0
 
   // Playlist/album context is written only by live sync, never by any
   // Spotify export — the opposite lineage from the six figures `noContext`
@@ -257,6 +293,15 @@ export default function Habits(): ReactElement {
     [data],
   )
   const platformData = useMemo(() => toBarData(data?.platforms ?? [], PLATFORM_LABELS), [data])
+  const deviceData = useMemo(() => toBarData(data?.devices ?? [], DEVICE_LABELS), [data])
+  // The coverage sentence this figure ships with, per the project rule that a
+  // statistic states its denominator in prose rather than in a tooltip. It says
+  // *why* the number is what it is as well as what it is: a listener seeing 3.1%
+  // has to be told that is a property of how the fact is gathered, not a bug.
+  const devicesDescription =
+    (data?.deviceCoverage.covered ?? 0) === 0
+      ? 'Encore was not watching your player during this range, so it does not know what any of it played on.'
+      : `Known for ${formatRatio(data?.deviceCoverage.covered ?? 0, data?.deviceCoverage.total ?? 0)} of your listening in this range — ${formatPlural(data?.deviceCoverage.covered ?? 0, 'play')} of ${formatCount(data?.deviceCoverage.total ?? 0)}. Encore learns this by watching your player, so only listening it saw live can be counted.`
   const countries = useMemo(() => data?.countries ?? [], [data])
   const countryData = useMemo(() => toBarData(countries.slice(0, TOP_COUNTRIES)), [countries])
   // Only worth naming the cut-off when it actually trims something: "the top
@@ -327,13 +372,17 @@ export default function Habits(): ReactElement {
             title="No playback detail yet"
             description={
               <>
-                Skip, shuffle, offline and incognito are recorded only by Spotify's extended
-                streaming history export — an instance built from live sync, or from the
-                shorter one-year account-data export, has none of it yet. Bring one in from{' '}
+                How a play ended, and whether it was offline or in a private session, are recorded
+                only by Spotify's extended streaming history export — bring one in from{' '}
                 <Link to="/imports" className="text-lamp hover:underline">
                   Imports
+                </Link>
+                . Shuffle and the device you played on can also be filled in as you listen, by the
+                now-playing poller — see{' '}
+                <Link to="/settings" className="text-lamp hover:underline">
+                  Settings
                 </Link>{' '}
-                to see how you listen, not just what.
+                for whether this instance runs it.
               </>
             }
           />
@@ -405,20 +454,40 @@ export default function Habits(): ReactElement {
             </ChartCard>
           </div>
 
-          <ChartCard title="Countries" description={countriesDescription}>
-            {context.isPending ? (
-              <ChartLoading label="Loading countries" />
-            ) : (
-              <BarChart
-                data={countryData}
-                label="Plays by country"
-                valueName="plays"
-                slot={2}
-                busy={context.isFetching}
-                emptyDescription="No play in this range recorded a country."
-              />
-            )}
-          </ChartCard>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ChartCard title="What you played on" description={devicesDescription}>
+              {context.isPending ? (
+                <ChartLoading label="Loading devices" />
+              ) : (
+                <BarChart
+                  data={deviceData}
+                  label="Plays by device"
+                  valueName="plays"
+                  /* SERIES_LIMIT is 4, so slots wrap; one bar chart is one
+                     colour whatever it ranks, and two cards on the same hue
+                     cost nothing because neither is read against the other. */
+                  slot={3}
+                  busy={context.isFetching}
+                  emptyDescription="No play in this range recorded a device."
+                />
+              )}
+            </ChartCard>
+
+            <ChartCard title="Countries" description={countriesDescription}>
+              {context.isPending ? (
+                <ChartLoading label="Loading countries" />
+              ) : (
+                <BarChart
+                  data={countryData}
+                  label="Plays by country"
+                  valueName="plays"
+                  slot={2}
+                  busy={context.isFetching}
+                  emptyDescription="No play in this range recorded a country."
+                />
+              )}
+            </ChartCard>
+          </div>
 
           <p className="text-xs text-ink-faint">
             A skip is a track ended with the forward button. Going back is counted separately.

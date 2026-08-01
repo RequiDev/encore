@@ -361,8 +361,8 @@ func (m MetadataFallback) Enabled() bool { return strings.TrimSpace(m.URL) != ""
 // dominant consumer of Spotify.
 const NowPlayingMinInterval = 10 * time.Second
 
-// NowPlaying configures the poller that reads GET /v1/me/player/currently-playing
-// for each connected account.
+// NowPlaying configures the poller that reads GET /v1/me/player for each
+// connected account.
 //
 // It is off unless Interval is set, which is a different shape from Sync,
 // Library and Enrich — each of which has an explicit Enabled bool beside its
@@ -611,8 +611,7 @@ func DefaultScopes() []string {
 		// Playlist names, so a listen's playlist context can be named.
 		"playlist-read-private",
 		// Playback state for the optional now-playing poller, which reads
-		// GET /v1/me/player/currently-playing when ENCORE_NOWPLAYING_INTERVAL
-		// is set.
+		// GET /v1/me/player when ENCORE_NOWPLAYING_INTERVAL is set.
 		"user-read-playback-state",
 	}
 }

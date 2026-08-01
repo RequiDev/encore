@@ -374,7 +374,7 @@ func samePtr(a, b *int) bool {
 // answer a paused budget returns immediately, and the only correct response to
 // "no request will reach Spotify for the next while" is to stop asking.
 //
-// Fails when: check() grows a retry around CurrentlyPlaying — the request count
+// Fails when: check() grows a retry around Player — the request count
 // below stops being one; or the failure path calls Record instead of
 // RecordFailure, which would replace a true observation with an empty one.
 func TestARateLimitedPollIsNotRetriedAndKeepsWhatWasAlreadyKnown(t *testing.T) {
@@ -946,6 +946,159 @@ func TestHasScopeReadsALegacySpaceJoinedGrant(t *testing.T) {
 	}
 }
 
+// TestLogEntryRecordsOnlyWhatCanBeMatchedAndOnlyWhatWasSaid is the whole rule
+// for what enters the observation log, in one table.
+//
+// Two independent gates, and both matter. The first is matchability: the
+// backfill joins on (user_id, track_id, observed_at), so anything without a
+// catalogue track id can never match a listen and logging it would grow a table
+// nothing can read. The second is that a row must say something: an observation
+// with neither a shuffle state nor a device type teaches a listen nothing, and
+// writing it would spend a row and a CHECK violation to record silence.
+//
+// is_playing is required because a paused player is not a play. A track left
+// paused overnight at a thirty-second interval would otherwise write nearly
+// three thousand rows all claiming the same instant-by-instant device, any of
+// which could then be attributed to a later, genuinely different play of the
+// same track.
+//
+// Fails when: the is_playing gate is dropped (the "paused" case then logs);
+// kindOf's result stops being consulted (episode, local and advert log); or the
+// "says something" guard is removed (the last case logs, and the CHECK in
+// 00018 turns a silent observation into a failed write).
+func TestLogEntryRecordsOnlyWhatCanBeMatchedAndOnlyWhatWasSaid(t *testing.T) {
+	at := time.Date(2026, time.August, 1, 20, 0, 0, 0, time.UTC)
+	yes, no := true, false
+
+	track := func(mutate func(*spotify.Playback)) *spotify.Playback {
+		pb := &spotify.Playback{
+			IsPlaying:            true,
+			ShuffleState:         &yes,
+			CurrentlyPlayingType: "track",
+			Device:               &spotify.Device{Name: "Kitchen speaker", Type: "Speaker"},
+			Item: &spotify.PlaybackItem{
+				ID: "spotifytrack00000001", Name: "The Wheel", Type: "track", DurationMs: 255000,
+			},
+		}
+		if mutate != nil {
+			mutate(pb)
+		}
+		return pb
+	}
+
+	for name, tc := range map[string]struct {
+		pb      *spotify.Playback
+		wantLog bool
+		want    domain.PlaybackObservation
+	}{
+		"a playing catalogue track": {
+			pb: track(nil), wantLog: true,
+			want: domain.PlaybackObservation{
+				TrackID: "spotifytrack00000001", ObservedAt: at, Shuffle: &yes,
+				DeviceType: "Speaker", DeviceName: "Kitchen speaker",
+			},
+		},
+		"shuffle off is still a fact": {
+			pb: track(func(pb *spotify.Playback) { pb.ShuffleState = &no }), wantLog: true,
+			want: domain.PlaybackObservation{
+				TrackID: "spotifytrack00000001", ObservedAt: at, Shuffle: &no,
+				DeviceType: "Speaker", DeviceName: "Kitchen speaker",
+			},
+		},
+		"a device with no shuffle state": {
+			pb: track(func(pb *spotify.Playback) { pb.ShuffleState = nil }), wantLog: true,
+			want: domain.PlaybackObservation{
+				TrackID: "spotifytrack00000001", ObservedAt: at, Shuffle: nil,
+				DeviceType: "Speaker", DeviceName: "Kitchen speaker",
+			},
+		},
+		"a shuffle state with no device": {
+			pb: track(func(pb *spotify.Playback) { pb.Device = nil }), wantLog: true,
+			want: domain.PlaybackObservation{
+				TrackID: "spotifytrack00000001", ObservedAt: at, Shuffle: &yes,
+			},
+		},
+		"nothing is playing": {pb: nil, wantLog: false},
+		"a paused player":    {pb: track(func(pb *spotify.Playback) { pb.IsPlaying = false }), wantLog: false},
+		"a podcast episode":  {pb: track(func(pb *spotify.Playback) { pb.Item.Type = "episode" }), wantLog: false},
+		"a local file":       {pb: track(func(pb *spotify.Playback) { pb.Item.IsLocal = true }), wantLog: false},
+		"a track with no id": {pb: track(func(pb *spotify.Playback) { pb.Item.ID = "" }), wantLog: false},
+		"an advert": {
+			pb:      &spotify.Playback{IsPlaying: true, CurrentlyPlayingType: "ad", ShuffleState: &yes},
+			wantLog: false,
+		},
+		"nothing worth saying": {
+			pb: track(func(pb *spotify.Playback) {
+				pb.ShuffleState = nil
+				pb.Device = nil
+			}),
+			wantLog: false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := logEntry(tc.pb, at)
+			if ok != tc.wantLog {
+				t.Fatalf("logEntry logged = %v, want %v (got %+v)", ok, tc.wantLog, got)
+			}
+			if !tc.wantLog {
+				return
+			}
+			if got.TrackID != tc.want.TrackID || !got.ObservedAt.Equal(tc.want.ObservedAt) {
+				t.Errorf("TrackID/ObservedAt = %q/%v, want %q/%v",
+					got.TrackID, got.ObservedAt, tc.want.TrackID, tc.want.ObservedAt)
+			}
+			switch {
+			case (got.Shuffle == nil) != (tc.want.Shuffle == nil):
+				t.Errorf("Shuffle = %v, want %v", got.Shuffle, tc.want.Shuffle)
+			case got.Shuffle != nil && *got.Shuffle != *tc.want.Shuffle:
+				t.Errorf("Shuffle = %v, want %v", *got.Shuffle, *tc.want.Shuffle)
+			}
+			if got.DeviceType != tc.want.DeviceType || got.DeviceName != tc.want.DeviceName {
+				t.Errorf("Device = %q/%q, want %q/%q",
+					got.DeviceType, got.DeviceName, tc.want.DeviceType, tc.want.DeviceName)
+			}
+		})
+	}
+}
+
+// TestAFailedLogDoesNotFailTheCheck keeps the card, which is the product, from
+// being taken down by the backfill, which is a bonus.
+//
+// The two writes are independent facts about the same instant: now_playing is
+// what the listener sees, playback_observations is evidence for a join that may
+// happen minutes later. A log write that fails must be a warning on a line, not
+// a check recorded as failed — a failed check makes the card say the display is
+// stale when it is not.
+//
+// Fails when: check starts returning false on a Log error, or routes it through
+// recordFailure — the observation count below then drops to zero and the
+// failure count rises.
+func TestAFailedLogDoesNotFailTheCheck(t *testing.T) {
+	user := uuid.New()
+	obs := &fakeObservations{due: []accountsDue{playbackAccount(user)}, logErr: errors.New("disk on fire")}
+	api := &fakeSpotify{playback: playingTrackPlayback()}
+	w := newWatcherWith(t, config.NowPlaying{Interval: 30 * time.Second}, api, obs, &fakeTokens{})
+
+	got, err := w.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("RunOnce checked %d accounts, want 1: a log failure is not a failed check", got)
+	}
+	if n := obs.totalFailures(); n != 0 {
+		t.Errorf("RecordFailure was called %d times; a card that is correct must not be "+
+			"reported as stale because a bonus write went wrong", n)
+	}
+	if n := obs.recordCount(); n != 1 {
+		t.Errorf("Record was called %d times, want 1", n)
+	}
+	if n := obs.logCount(); n != 1 {
+		t.Errorf("Log was called %d times, want 1: check() must still attempt the log even "+
+			"though this fake makes it fail", n)
+	}
+}
+
 // accountsDue is accounts.DueAccount under a shorter name, so the tables above
 // read without the package qualifier.
 type accountsDue = accounts.DueAccount
@@ -972,9 +1125,26 @@ func playing(id, title string) *spotify.Playback {
 	}
 }
 
+// playingTrackPlayback is a full playback response worth logging: playing, a
+// catalogue track, a device and a shuffle state. Unlike playing() above, which
+// the check()-level tests use and which sets neither, this is what
+// TestAFailedLogDoesNotFailTheCheck needs so that logEntry actually has
+// something to log — otherwise the observation log's own error would never be
+// reached and the test would pass without exercising anything.
+func playingTrackPlayback() *spotify.Playback {
+	yes := true
+	return &spotify.Playback{
+		IsPlaying: true, CurrentlyPlayingType: "track", ShuffleState: &yes,
+		Device: &spotify.Device{Name: "Kitchen speaker", Type: "Speaker"},
+		Item: &spotify.PlaybackItem{
+			ID: "spotifytrack00000001", Name: "The Wheel", Type: "track", DurationMs: 255000,
+		},
+	}
+}
+
 // tokenFor is the token fakeTokens mints for one account. Tokens are per-account
-// so a fake Spotify can tell its callers apart: CurrentlyPlaying is handed a
-// token and nothing else, exactly as the real client is.
+// so a fake Spotify can tell its callers apart: Player is handed a token and
+// nothing else, exactly as the real client is.
 func tokenFor(id uuid.UUID) string { return "token-" + id.String() }
 
 // fakeSpotify satisfies SpotifyAPI without a network, and counts what was
@@ -996,7 +1166,7 @@ type fakeSpotify struct {
 	err      error
 }
 
-func (f *fakeSpotify) CurrentlyPlaying(ctx context.Context, token string) (*spotify.Playback, error) {
+func (f *fakeSpotify) Player(ctx context.Context, token string) (*spotify.Playback, error) {
 	f.calls.Add(1)
 	if f.mirror != nil {
 		f.mirror.Add(1)
@@ -1051,6 +1221,10 @@ type fakeObservations struct {
 	// recFn fails a write the way the pool does when the caller's context is
 	// already gone, which a fixed error cannot express.
 	recFn func(ctx context.Context) error
+	// logErr fails Log, the way a real write can, without touching Record or
+	// RecordFailure: the observation log is a different table than the one
+	// those two write to.
+	logErr error
 
 	mu        stdsync.Mutex
 	listings  int
@@ -1058,6 +1232,7 @@ type fakeObservations struct {
 	mirror    *atomic.Int32
 	successes map[uuid.UUID]domain.NowPlaying
 	failures  map[uuid.UUID]int
+	logs      int
 }
 
 func (f *fakeObservations) ListDue(
@@ -1136,6 +1311,28 @@ func (f *fakeObservations) failureCount(userID uuid.UUID) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.failures[userID]
+}
+
+// Log satisfies the fourth method Observations gained: append to the
+// observation log. It deliberately shares no state with Record or
+// RecordFailure above — the two tables it stands in for have nothing in
+// common but the account they describe.
+func (f *fakeObservations) Log(
+	_ context.Context, _ store.Querier, _ uuid.UUID, _ domain.PlaybackObservation,
+) error {
+	f.mu.Lock()
+	f.logs++
+	f.mu.Unlock()
+	if f.logErr != nil {
+		return f.logErr
+	}
+	return nil
+}
+
+func (f *fakeObservations) logCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.logs
 }
 
 func (f *fakeObservations) totalFailures() int {

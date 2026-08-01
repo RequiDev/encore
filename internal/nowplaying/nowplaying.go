@@ -77,8 +77,13 @@ const tickJitter = 0.2
 //
 // One method, and that is the whole of this package's reach into Spotify. A nil
 // result with a nil error means nothing is playing.
+//
+// It is GET /v1/me/player rather than the narrower /currently-playing this
+// package first shipped against, for one request rather than two: the wider
+// endpoint carries shuffle_state and a reliable device, which is what the
+// playback-context backfill reads, at the same cost and on the same budget.
 type SpotifyAPI interface {
-	CurrentlyPlaying(ctx context.Context, accessToken string) (*spotify.Playback, error)
+	Player(ctx context.Context, accessToken string) (*spotify.Playback, error)
 }
 
 // Tokens supplies a usable Spotify access token for one account, refreshing and
@@ -104,15 +109,54 @@ type Tokens interface {
 	NowPlayingAccessToken(ctx context.Context, userID uuid.UUID) (string, error)
 }
 
-// Observations is the part of accounts.NowPlaying this package uses.
+// Observations is the part of accounts' now-playing storage this package uses.
 //
 // An interface for the ordinary reason — the loop is exercised without a
-// database — and the set is deliberately narrow: list, record, record a failure.
-// There is no method here that touches any other table.
+// database — and the set is deliberately narrow: list, record, record a failure,
+// and append to the observation log. There is no method here that touches any
+// other table, and in particular none that can reach listens. The import-graph
+// test at the top of this package's test file is what actually enforces that;
+// this comment only says why.
 type Observations interface {
 	ListDue(ctx context.Context, q store.Querier, olderThan time.Time, limit int) ([]accounts.DueAccount, error)
 	Record(ctx context.Context, q store.Querier, userID uuid.UUID, n domain.NowPlaying) error
 	RecordFailure(ctx context.Context, q store.Querier, userID uuid.UUID, t time.Time) error
+	Log(ctx context.Context, q store.Querier, userID uuid.UUID, o domain.PlaybackObservation) error
+}
+
+// Store composes the two single-table repositories this package writes to.
+//
+// Two repositories rather than one, because they are two tables with two
+// lifetimes and two readers: now_playing is one row per account read by the API
+// for the live card, playback_observations is an append-only log read by the
+// backfill and gone within a day. Composing them here rather than widening
+// either repository keeps each one's SQL beside the table it owns, and keeps
+// this package's view of storage to the four methods Observations names.
+type Store struct {
+	NowPlaying interface {
+		ListDue(ctx context.Context, q store.Querier, olderThan time.Time, limit int) ([]accounts.DueAccount, error)
+		Record(ctx context.Context, q store.Querier, userID uuid.UUID, n domain.NowPlaying) error
+		RecordFailure(ctx context.Context, q store.Querier, userID uuid.UUID, t time.Time) error
+	}
+	Observations interface {
+		Log(ctx context.Context, q store.Querier, userID uuid.UUID, o domain.PlaybackObservation) error
+	}
+}
+
+func (s Store) ListDue(ctx context.Context, q store.Querier, olderThan time.Time, limit int) ([]accounts.DueAccount, error) {
+	return s.NowPlaying.ListDue(ctx, q, olderThan, limit)
+}
+
+func (s Store) Record(ctx context.Context, q store.Querier, userID uuid.UUID, n domain.NowPlaying) error {
+	return s.NowPlaying.Record(ctx, q, userID, n)
+}
+
+func (s Store) RecordFailure(ctx context.Context, q store.Querier, userID uuid.UUID, t time.Time) error {
+	return s.NowPlaying.RecordFailure(ctx, q, userID, t)
+}
+
+func (s Store) Log(ctx context.Context, q store.Querier, userID uuid.UUID, o domain.PlaybackObservation) error {
+	return s.Observations.Log(ctx, q, userID, o)
 }
 
 // Deps are the collaborators a Watcher needs.
@@ -301,7 +345,7 @@ func (w *Watcher) check(ctx context.Context, account accounts.DueAccount) bool {
 		return false
 	}
 
-	pb, err := w.dep.Spotify.CurrentlyPlaying(ctx, token)
+	pb, err := w.dep.Spotify.Player(ctx, token)
 	if err != nil {
 		if ctx.Err() != nil {
 			// Shutting down. The next tick picks the account up and nothing is
@@ -326,6 +370,19 @@ func (w *Watcher) check(ctx context.Context, account accounts.DueAccount) bool {
 		}
 		log.Error("could not record what is playing", logging.Err(err))
 		return false
+	}
+
+	// The observation log, which is a different table with a different lifetime
+	// and a different reader. Best effort by design: this is evidence for a
+	// join that may happen minutes from now, where the row above is what the
+	// listener is looking at. A card that is correct must not be reported as
+	// stale because a bonus write went wrong, so a failure here is a line in the
+	// log and nothing else.
+	if obs, ok := logEntry(pb, w.now()); ok {
+		if err := w.dep.NowPlaying.Log(ctx, w.dep.Store.DB(), account.UserID, obs); err != nil &&
+			ctx.Err() == nil {
+			log.Warn("could not log a playback observation", logging.Err(err))
+		}
 	}
 	return true
 }
@@ -426,6 +483,51 @@ func observe(pb *spotify.Playback, at time.Time) domain.NowPlaying {
 	// expects their music. The interface has one sentence for this state and
 	// needs no name to render it.
 	return out
+}
+
+// logEntry decides whether this observation is worth keeping as evidence, and
+// what of it.
+//
+// Pure, and separate from observe for a reason: observe answers "what does the
+// card say", which has an answer for every response Spotify can give, while
+// this answers "can this be attached to a play later", which has an answer for
+// very few of them.
+//
+// Three gates, each independent:
+//
+//   - is_playing. A paused player is not a play. A track left paused overnight
+//     at thirty seconds would otherwise write nearly three thousand rows, any
+//     of which could later be attributed to a genuinely different play of the
+//     same track.
+//   - a catalogue track. The backfill joins on (user_id, track_id, observed_at);
+//     a podcast, a local file and an advert have no id that can ever match a
+//     listen, so logging one would grow a table nothing can read.
+//   - something to say. An observation with neither a shuffle state nor a
+//     device type teaches a listen nothing, and 00018's
+//     playback_observations_says_something would refuse the write anyway.
+//
+// The device *name* is carried here and stops at the log: it never reaches
+// listens. See migrations/00018.
+func logEntry(pb *spotify.Playback, at time.Time) (domain.PlaybackObservation, bool) {
+	if pb == nil || !pb.IsPlaying || pb.Item == nil {
+		return domain.PlaybackObservation{}, false
+	}
+	if kindOf(pb) != domain.PlaybackItemTrack {
+		return domain.PlaybackObservation{}, false
+	}
+	obs := domain.PlaybackObservation{
+		TrackID:    pb.Item.ID,
+		ObservedAt: at,
+		Shuffle:    pb.ShuffleState,
+	}
+	if pb.Device != nil {
+		obs.DeviceType = pb.Device.Type
+		obs.DeviceName = pb.Device.Name
+	}
+	if !obs.SaysSomething() {
+		return domain.PlaybackObservation{}, false
+	}
+	return obs, true
 }
 
 // kindOf classifies what is in the player.

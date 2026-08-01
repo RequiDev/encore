@@ -1046,11 +1046,23 @@ type PlaylistContextEntryResponse struct {
 // PlaybackContextResponse is the whole "how you listen" payload.
 //
 // Every rate carries its own denominator because the underlying columns are
-// written only by the extended-export importer, and an export may omit any one
-// of them independently. Playlists and PlaylistCoverage are the one exception
-// to that rule: context_type and context_id are written only by live sync, so
-// their coverage is independent of — and typically disjoint from — the six
-// export-derived figures above.
+// partial, and an export may omit any one of them independently. Most of them
+// are written only by the extended-export importer; ShuffleRate is not, and has
+// not been since Phase 3c — the now-playing poller observes the shuffle state
+// while somebody is listening and the sync path attaches it afterwards, so that
+// one figure can be real on an instance that has never imported anything.
+//
+// Playlists and PlaylistCoverage are one exception to the export lineage:
+// context_type and context_id are written only by live sync, so their coverage
+// is independent of — and typically disjoint from — the export-derived figures
+// above.
+//
+// Devices and DeviceCoverage are the second exception, and have the opposite
+// lineage from Playlists: device_type is written by the now-playing poller's
+// backfill, never by any export. It is deliberately a separate figure from
+// Platforms rather than folded into it — platform holds an export's free text
+// and device_type holds Spotify Connect's own vocabulary, and a client that
+// merged them would be counting two incompatible answers as one.
 type PlaybackContextResponse struct {
 	EndReasons        []ContextSliceEntry `json:"endReasons"`
 	EndReasonCoverage CoverageResponse    `json:"endReasonCoverage"`
@@ -1058,6 +1070,8 @@ type PlaybackContextResponse struct {
 	ShuffleRate       RateResponse        `json:"shuffleRate"`
 	Platforms         []ContextSliceEntry `json:"platforms"`
 	PlatformCoverage  CoverageResponse    `json:"platformCoverage"`
+	Devices           []ContextSliceEntry `json:"devices"`
+	DeviceCoverage    CoverageResponse    `json:"deviceCoverage"`
 	Countries         []ContextSliceEntry `json:"countries"`
 	CountryCoverage   CoverageResponse    `json:"countryCoverage"`
 	OfflineRate       RateResponse        `json:"offlineRate"`
@@ -1116,6 +1130,8 @@ func toPlaybackContext(c stats.PlaybackContext) PlaybackContextResponse {
 		ShuffleRate:       toRate(c.ShuffleRate, c.ShuffleCoverage),
 		Platforms:         toContextSlices(c.Platforms),
 		PlatformCoverage:  toCoverage(c.PlatformCoverage),
+		Devices:           toContextSlices(c.Devices),
+		DeviceCoverage:    toCoverage(c.DeviceCoverage),
 		Countries:         toContextSlices(c.Countries),
 		CountryCoverage:   toCoverage(c.CountryCoverage),
 		OfflineRate:       toRate(c.OfflineRate, c.OfflineCoverage),

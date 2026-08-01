@@ -128,3 +128,99 @@ func TestContextWithNoExtendedRowsIsZeroNotAnError(t *testing.T) {
 		t.Errorf("expected no platforms, got %+v", got.Platforms)
 	}
 }
+
+// TestDevicesAreCountedWithTheirOwnDenominator pins the new breakdown and the
+// coverage figure beside it.
+//
+// The denominator is per column, exactly as this package's header requires:
+// count of rows carrying a device_type, over every in-range listen. Not per
+// source — a live-synced row may carry a device and no shuffle, or shuffle and
+// no device, depending on what Spotify reported at the instant Encore looked, so
+// keying on source would overstate it.
+//
+// Two spellings of one device type are seeded, for the reason
+// TestPlatformsAreGroupedByFamily seeds two Android strings: it is what
+// distinguishes "the classifier ran" from "the raw column was returned". They
+// differ only in case, because case is the only variation Connect's own
+// vocabulary can produce.
+//
+// Fails when: the fourth UNION ALL branch drops its "device_type IS NOT NULL"
+// filter (the unobserved rows arrive as an empty-keyed bar and deviceTotal
+// overstates coverage); deviceTotal is summed from the wrong branch, at which
+// point coverage reports the platform count; or DeviceFamily stops being applied
+// and the two spellings arrive as two slices.
+func TestDevicesAreCountedWithTheirOwnDenominator(t *testing.T) {
+	f := seedStats(t)
+
+	// Three of the eight in-range plays were seen by the now-playing poller.
+	// Deliberately not via seedContext: device_type has the opposite lineage
+	// from every column that function writes, and a fixture that set both would
+	// not notice the breakdown being wired to the export's source.
+	f.env.Exec(`
+        WITH ordered AS (
+            SELECT id, row_number() OVER (ORDER BY played_at) AS n
+            FROM listens WHERE user_id = $1
+        )
+        UPDATE listens l SET
+            device_type = CASE o.n WHEN 1 THEN 'Speaker'
+                                   WHEN 2 THEN 'SPEAKER'
+                                   WHEN 3 THEN 'Computer' END
+        FROM ordered o
+        WHERE l.id = o.id AND o.n <= 3`, f.user.ID)
+
+	got, err := f.svc.PlaybackContext(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz)
+	if err != nil {
+		t.Fatalf("playback context: %v", err)
+	}
+
+	by := map[string]int64{}
+	for _, d := range got.Devices {
+		by[d.Key] = d.Plays
+	}
+	if by["speaker"] != 2 {
+		t.Errorf("speaker = %d, want 2 — two spellings of one device type should collapse "+
+			"into one slice", by["speaker"])
+	}
+	if by["computer"] != 1 {
+		t.Errorf("computer = %d, want 1", by["computer"])
+	}
+	if len(got.Devices) != 2 {
+		t.Errorf("got %d device types, want 2: %+v", len(got.Devices), got.Devices)
+	}
+
+	if got.DeviceCoverage.Covered != 3 || got.DeviceCoverage.Total != 8 {
+		t.Errorf("device coverage = %+v, want 3/8 — the denominator is every in-range "+
+			"listen, and the numerator only those carrying a device_type", got.DeviceCoverage)
+	}
+	// The platform figures must not have moved. The two vocabularies share a
+	// statistic and nothing else.
+	if len(got.Platforms) != 0 || got.PlatformCoverage.Covered != 0 {
+		t.Errorf("platforms = %+v, coverage = %+v; seeding device_type changed the platform "+
+			"breakdown, which means the two are reading one column", got.Platforms, got.PlatformCoverage)
+	}
+}
+
+// TestAnInstanceThatNeverObservedAnythingReportsNoDevices is the state of every
+// instance that has not set ENCORE_NOWPLAYING_INTERVAL, which is most of them.
+//
+// It is the device half of TestContextWithNoExtendedRowsIsZeroNotAnError: an
+// empty breakdown and a zero numerator over a real denominator, rather than an
+// error or a bar labelled with an empty string.
+//
+// Fails when: the breakdown emits a slice for NULL device_type, or the coverage
+// total stops being all in-range listens.
+func TestAnInstanceThatNeverObservedAnythingReportsNoDevices(t *testing.T) {
+	f := seedStats(t)
+	seedContext(t, f)
+
+	got, err := f.svc.PlaybackContext(f.env.Ctx(), f.env.Store.DB(), f.user.ID, f.fullRange(), f.tz)
+	if err != nil {
+		t.Fatalf("playback context: %v", err)
+	}
+	if len(got.Devices) != 0 {
+		t.Errorf("expected no devices on a history nothing observed, got %+v", got.Devices)
+	}
+	if got.DeviceCoverage.Covered != 0 || got.DeviceCoverage.Total != 8 {
+		t.Errorf("device coverage = %+v, want 0/8", got.DeviceCoverage)
+	}
+}
